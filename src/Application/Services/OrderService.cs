@@ -1,0 +1,370 @@
+using Application.DTOs.Orders;
+using Application.DTOs.MasterData;
+using Application.Interfaces.Repositories;
+using Application.Interfaces.Services;
+using ClosedXML.Excel;
+using Domain.Entities;
+using Application.Common;
+using Shared.Exceptions;
+using Shared.Responses;
+
+namespace Application.Services;
+
+public sealed class OrderService : IOrderService
+{
+    private readonly IOrderRepository _repository;
+    private readonly INewInvoiceRepository _newInvoiceRepository;
+
+    public OrderService(IOrderRepository repository, INewInvoiceRepository newInvoiceRepository)
+    {
+        _repository = repository;
+        _newInvoiceRepository = newInvoiceRepository;
+    }
+
+    public async Task<LaravelApiResponse> GetOrdersAsync(OrderFilterDto filter, CancellationToken cancellationToken) =>
+        LaravelApiResponse.Success("orders", await _repository.GetOrdersAsync(filter, cancellationToken));
+
+    public async Task<LaravelApiResponse> GetOrderAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken)
+    {
+        var order = await _repository.GetOrderAsync(id, actorUserId, cancellationToken) ?? throw NotFound("Order not found");
+        var response = LaravelApiResponse.Success("order", order);
+        response.Extra["order_details"] = await _repository.GetOrderDetailsAsync(id, cancellationToken);
+        return response;
+    }
+
+    public async Task<LaravelApiResponse> GetOptionsAsync(ulong? actorUserId, CancellationToken cancellationToken) =>
+        LaravelApiResponse.Success("options", await _repository.GetOptionsAsync(actorUserId, cancellationToken));
+
+    public async Task<LaravelApiResponse> GetProductsByFamilyAsync(ulong familyId, CancellationToken cancellationToken) =>
+        LaravelApiResponse.Success("products", await _repository.GetProductsByFamilyAsync(familyId, cancellationToken));
+
+    public async Task<LaravelApiResponse> CreateOrderAsync(OrderRequestDto request, ulong? actorUserId, CancellationToken cancellationToken)
+    {
+        RequireId(request.SellerId, "Dealer is required.");
+        RequireId(request.ExecutiveId, "Employee is required.");
+        RequireValue(request.Type, "Customer Type is required.");
+
+        var type = NormalizeCustomerType(request.Type);
+        if (type != "DEALER") RequireId(request.BuyerId, "Customer is required.");
+        if (type != "DEALER" && request.BuyerId.HasValue &&
+            !await _repository.IsApprovedRetailerAsync(request.BuyerId.Value, cancellationToken))
+        {
+            throw new LaravelHttpException(LaravelStatusCodes.Forbidden,
+                "Retailer must be approved before an order can be placed.");
+        }
+        if (request.OrderDetail.Count == 0) throw BadRequest("At least one order item is required.");
+
+        var rows = request.OrderDetail.Where(x => x.ProductId.HasValue && (x.Quantity ?? 0) > 0).ToArray();
+        if (rows.Length == 0) throw BadRequest("At least one valid product row is required.");
+
+        var now = DateTime.Now;
+        var order = new Order
+        {
+            Active = "Y",
+            BuyerId = type == "DEALER" ? null : request.BuyerId,
+            SellerId = request.SellerId,
+            ExecutiveId = request.ExecutiveId,
+            TotalQty = ToLongQuantity(request.TotalQty ?? rows.Sum(x => x.Quantity ?? 0)),
+            ShippedQty = 0,
+            OrderDate = request.OrderDate?.Date ?? now.Date,
+            TotalGst = request.TotalGst ?? rows.Sum(x => x.TaxAmount ?? 0),
+            SubTotal = request.SubTotal ?? rows.Sum(x => x.LineTotal ?? 0),
+            GrandTotal = request.GrandTotal ?? rows.Sum(x => x.LineTotal ?? 0),
+            OrderTaking = "Web",
+            OrderType = type == "DEALER" ? "MASTER_DISTRIBUTER" : "SECONDARY_CUSTOMER",
+            OrderRemark = request.OrderRemark,
+            CreatedBy = actorUserId,
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+
+        await _repository.AddOrderAsync(order, cancellationToken);
+        await _repository.SaveChangesAsync(cancellationToken);
+
+        order.OrderNo = $"{now:yyyy}-{order.SellerId ?? 0}-{order.BuyerId ?? 0}-{order.Id}";
+        order.UpdatedAt = now;
+
+        var details = rows.Select(row =>
+        {
+            var lineTotal = row.LineTotal ?? ((row.Quantity ?? 0) * (row.Mrp ?? 0));
+            var tax = row.TaxAmount ?? 0;
+            return new OrderDetail
+            {
+                Active = "Y",
+                OrderId = order.Id,
+                ProductId = row.ProductId,
+                ProductDetailId = row.ProductDetail,
+                Quantity = ToLongQuantity(row.Quantity),
+                ShippedQty = 0,
+                Price = row.Mrp ?? 0,
+                Gst = row.Gst ?? 0,
+                TaxAmount = tax,
+                LineTotal = lineTotal,
+                GstAmount = lineTotal + tax,
+                SubcategoryId = row.SubcategoryId,
+                CategoryId = row.CategoryId,
+                CreatedAt = now,
+                UpdatedAt = now
+            };
+        }).ToArray();
+
+        await _repository.AddOrderDetailsAsync(details, cancellationToken);
+        await _repository.SaveChangesAsync(cancellationToken);
+
+        return LaravelApiResponse.Success("order", await _repository.GetOrderAsync(order.Id, actorUserId, cancellationToken), "Order Created Successfully");
+    }
+
+    public async Task<LaravelApiResponse> UpdateOrderAsync(ulong id, OrderRequestDto request, ulong? actorUserId, CancellationToken cancellationToken)
+    {
+        RequireId(request.SellerId, "Dealer is required.");
+        RequireId(request.ExecutiveId, "Employee is required.");
+        RequireValue(request.Type, "Customer Type is required.");
+
+        var order = await _repository.GetOrderEntityAsync(id, cancellationToken) ?? throw NotFound("Order not found");
+        if (order.StatusId == 4) throw BadRequest("Canceled order cannot be edited.");
+        var rows = request.OrderDetail.Where(x => x.ProductId.HasValue && (x.Quantity ?? 0) > 0).ToArray();
+        if (rows.Length == 0) throw BadRequest("At least one valid product row is required.");
+
+        var type = NormalizeCustomerType(request.Type);
+        if (type != "DEALER") RequireId(request.BuyerId, "Customer is required.");
+
+        var now = DateTime.Now;
+        order.BuyerId = type == "DEALER" ? null : request.BuyerId;
+        order.SellerId = request.SellerId;
+        order.ExecutiveId = request.ExecutiveId;
+        order.TotalQty = ToLongQuantity(request.TotalQty ?? rows.Sum(x => x.Quantity ?? 0));
+        order.OrderDate = request.OrderDate?.Date ?? order.OrderDate;
+        order.TotalGst = request.TotalGst ?? rows.Sum(x => x.TaxAmount ?? 0);
+        order.SubTotal = request.SubTotal ?? rows.Sum(x => x.LineTotal ?? 0);
+        order.GrandTotal = request.GrandTotal ?? rows.Sum(x => x.LineTotal ?? 0);
+        order.OrderType = type == "DEALER" ? "MASTER_DISTRIBUTER" : "SECONDARY_CUSTOMER";
+        order.OrderRemark = request.OrderRemark;
+        order.UpdatedBy = actorUserId;
+        order.UpdatedAt = now;
+
+        var existingDetails = await _repository.GetOrderDetailEntitiesAsync(id, cancellationToken);
+        _repository.RemoveOrderDetails(existingDetails);
+        await _repository.AddOrderDetailsAsync(rows.Select(row =>
+        {
+            var lineTotal = row.LineTotal ?? ((row.Quantity ?? 0) * (row.Mrp ?? 0));
+            var tax = row.TaxAmount ?? 0;
+            return new OrderDetail
+            {
+                Active = "Y",
+                OrderId = id,
+                ProductId = row.ProductId,
+                ProductDetailId = row.ProductDetail,
+                Quantity = ToLongQuantity(row.Quantity),
+                ShippedQty = 0,
+                Price = row.Mrp ?? 0,
+                Gst = row.Gst ?? 0,
+                TaxAmount = tax,
+                LineTotal = lineTotal,
+                GstAmount = lineTotal + tax,
+                SubcategoryId = row.SubcategoryId,
+                CategoryId = row.CategoryId,
+                CreatedAt = now,
+                UpdatedAt = now
+            };
+        }).ToArray(), cancellationToken);
+
+        await _repository.SaveChangesAsync(cancellationToken);
+        return LaravelApiResponse.Success("order", await _repository.GetOrderAsync(id, actorUserId, cancellationToken), "Order Updated Successfully");
+    }
+
+    public async Task<LaravelApiResponse> DeleteOrderAsync(ulong id, CancellationToken cancellationToken)
+    {
+        if (!await _repository.DeleteOrderAsync(id, cancellationToken)) throw NotFound("Order not found");
+        return LaravelApiResponse.MessageOnly("success", "Order deleted successfully!");
+    }
+
+    public async Task<LaravelApiResponse> SetActiveAsync(ulong id, OrderActiveRequestDto request, CancellationToken cancellationToken)
+    {
+        var order = await _repository.GetOrderEntityAsync(id, cancellationToken) ?? throw NotFound("Order not found");
+        order.Active = string.Equals(request.Active, "Y", StringComparison.OrdinalIgnoreCase) ? "Y" : "N";
+        order.UpdatedAt = DateTime.Now;
+        await _repository.SaveChangesAsync(cancellationToken);
+        return LaravelApiResponse.Success("order", await _repository.GetOrderAsync(id, null, cancellationToken), "Status changed successfully");
+    }
+
+    public async Task<LaravelApiResponse> SetStatusAsync(ulong id, OrderStatusRequestDto request, CancellationToken cancellationToken)
+    {
+        var order = await _repository.GetOrderEntityAsync(id, cancellationToken) ?? throw NotFound("Order not found");
+        if (order.StatusId == 4) throw BadRequest("Canceled order status cannot be changed.");
+        var details = await _repository.GetOrderDetailEntitiesAsync(id, cancellationToken);
+        var now = DateTime.Now;
+        order.StatusId = request.StatusId == 0 ? null : request.StatusId;
+        order.OrderRemark = string.IsNullOrWhiteSpace(request.Remark) ? order.OrderRemark : request.Remark;
+        // Preserve quantities already shipped when a partially dispatched order is cancelled.
+        order.ShippedQty = order.StatusId == 1
+            ? order.TotalQty
+            : Math.Max(0, details.Sum(x => x.ShippedQty));
+        order.CompletedDate = order.StatusId == 1 ? now.Date : order.CompletedDate;
+        order.UpdatedAt = now;
+
+        foreach (var detail in details)
+        {
+            detail.StatusId = order.StatusId;
+            detail.ShippedQty = order.StatusId == 1 ? detail.Quantity : order.StatusId is null ? 0 : detail.ShippedQty;
+            detail.UpdatedAt = now;
+        }
+
+        await _repository.SaveChangesAsync(cancellationToken);
+        var message = order.StatusId switch
+        {
+            1 => "Order dispatched successfully !!",
+            2 => "Order partially dispatched successfully !!",
+            4 => "Order cancle successfully !!",
+            null => "Order pendding successfully !!",
+            _ => "Order status updated successfully !!"
+        };
+        return LaravelApiResponse.Success("order", await _repository.GetOrderAsync(id, null, cancellationToken), message);
+    }
+
+    public async Task<LaravelApiResponse> DispatchAsync(ulong id, OrderDispatchRequestDto request, ulong? actorUserId, CancellationToken cancellationToken)
+    {
+        _ = await _repository.GetOrderAsync(id, actorUserId, cancellationToken) ?? throw NotFound("Order not found");
+        var order = await _repository.GetOrderEntityAsync(id, cancellationToken) ?? throw NotFound("Order not found");
+        if (order.StatusId == 4) throw BadRequest("Canceled order cannot be dispatched.");
+        if (string.IsNullOrWhiteSpace(request.InvoiceNo)) throw BadRequest("Invoice number is required.");
+        if (!request.InvoiceDate.HasValue) throw BadRequest("Invoice date is required.");
+        if (!request.DispatchDate.HasValue) throw BadRequest("Dispatch date is required.");
+        if (request.DispatchDate.Value.Date < request.InvoiceDate.Value.Date) throw BadRequest("Dispatch date cannot be before invoice date.");
+
+        var mode = request.Mode.Trim().ToLowerInvariant();
+        if (mode is not ("full" or "partial")) throw BadRequest("Dispatch mode must be full or partial.");
+        request.Mode = mode;
+        var details = await _repository.GetOrderDetailEntitiesAsync(id, cancellationToken);
+        if (details.Count == 0) throw BadRequest("Order has no products.");
+        var removedIds = request.RemovedOrderDetailIds.ToHashSet();
+        if (removedIds.Any(x => details.All(d => d.Id != x))) throw BadRequest("One or more removed product rows do not belong to this order.");
+        if (details.Any(x => removedIds.Contains(x.Id) && x.ShippedQty > 0)) throw BadRequest("A product that was already dispatched cannot be removed from the order.");
+        var requested = request.Items.Where(x => x.OrderDetailId.HasValue).GroupBy(x => x.OrderDetailId!.Value).ToDictionary(x => x.Key, x => x.Sum(y => y.Quantity));
+        var detailIds = details.Select(x => x.Id).ToHashSet();
+        if (requested.Keys.Any(x => !detailIds.Contains(x) || removedIds.Contains(x))) throw BadRequest("One or more dispatch product rows do not belong to the active order items.");
+        var hasQuantity = false;
+        foreach (var detail in details.Where(x => !removedIds.Contains(x.Id)))
+        {
+            var remaining = Math.Max(0, detail.Quantity - detail.ShippedQty);
+            var quantity = mode == "full" ? remaining : requested.GetValueOrDefault(detail.Id);
+            if (quantity < 0 || quantity > remaining) throw BadRequest($"Dispatch quantity for product row {detail.Id} must be between 0 and {remaining}.");
+            hasQuantity |= quantity > 0;
+        }
+        var newItems = request.Items.Where(x => !x.OrderDetailId.HasValue).ToArray();
+        if (newItems.Any(x => !x.ProductId.HasValue || x.Quantity <= 0)) throw BadRequest("Each new product requires a product and quantity greater than zero.");
+        if (newItems.GroupBy(x => x.ProductId).Any(x => x.Count() > 1)) throw BadRequest("The same new product cannot be added more than once.");
+        hasQuantity |= newItems.Any();
+        if (request.LoyaltySchemeId.HasValue)
+        {
+            if (!order.BuyerId.HasValue) throw BadRequest("A scheme can only be selected for a retailer order.");
+            if (string.IsNullOrWhiteSpace(request.InvoiceAttachment)) throw BadRequest("Invoice attachment is required when a scheme is selected.");
+            if (!actorUserId.HasValue) throw new LaravelHttpException(LaravelStatusCodes.Unauthorized, "Unauthenticated.");
+            var schemes = await _newInvoiceRepository.GetEligibleSchemeOptionsAsync(order.BuyerId.Value, request.InvoiceDate.Value, cancellationToken);
+            if (schemes.All(x => x.Id != request.LoyaltySchemeId.Value)) throw BadRequest("Selected scheme is not active or eligible for this retailer and invoice date.");
+            if (await _newInvoiceRepository.InvoiceNumberExistsAsync(request.InvoiceNo!.Trim(), null, cancellationToken))
+                throw BadRequest("This invoice number already exists in Loyalty Management.");
+        }
+        if (!hasQuantity) throw BadRequest("At least one remaining product quantity is required for dispatch.");
+        await _repository.DispatchAsync(order, details, request, actorUserId, cancellationToken);
+        var completed = order.StatusId == 1;
+        return LaravelApiResponse.Success("order", await _repository.GetOrderAsync(id, actorUserId, cancellationToken), completed ? "Order fully dispatched successfully." : "Order partially dispatched successfully.");
+    }
+
+    public async Task<LaravelApiResponse> GetDispatchesAsync(string? mode, ulong? actorUserId, CancellationToken cancellationToken) =>
+        LaravelApiResponse.Success("dispatches", await _repository.GetDispatchesAsync(mode, actorUserId, cancellationToken));
+
+    public async Task<LaravelApiResponse> GetDispatchDetailAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken) =>
+        LaravelApiResponse.Success("dispatch", await _repository.GetDispatchDetailAsync(id, actorUserId, cancellationToken)
+            ?? throw NotFound("Dispatch record not found"));
+
+    public async Task<MasterDataFileDto> ExportOrdersAsync(OrderFilterDto filter, CancellationToken cancellationToken)
+    {
+        var rows = await _repository.GetOrderExportRowsAsync(filter, cancellationToken);
+        var headings = new[]
+        {
+            "Order Date", "Order No", "Employee Name", "Reporting Manager", "Designation", "Branch",
+            "Retailer Name", "Distributor Name", "Distributor Code", "Product Code", "Product Name",
+            "Order Quantity", "Shipped Qty", "Cancel Qty", "Pending Qty", "Status", "Rate", "Total Order Value", "Employee Code", "Retailer ID", "Distributor ID",
+            "Order Remark", "Segment", "Family", "id", "Zone"
+        };
+
+        using var workbook = new XLWorkbook();
+        var worksheet = workbook.AddWorksheet("Orders");
+        worksheet.Style.Font.FontName = "Calibri";
+        worksheet.Style.Font.FontSize = 9;
+
+        for (var column = 0; column < headings.Length; column++)
+        {
+            worksheet.Cell(1, column + 1).Value = headings[column];
+            worksheet.Cell(1, column + 1).Style.Font.Bold = true;
+        }
+
+        var rowNumber = 2;
+        foreach (var row in rows)
+        {
+            worksheet.Cell(rowNumber, 1).Value = row.OrderDate?.ToString("yyyy-MM-dd") ?? string.Empty;
+            worksheet.Cell(rowNumber, 2).Value = row.OrderNo;
+            worksheet.Cell(rowNumber, 3).Value = row.EmployeeName ?? string.Empty;
+            worksheet.Cell(rowNumber, 4).Value = row.ReportingManager ?? string.Empty;
+            worksheet.Cell(rowNumber, 5).Value = row.Designation ?? string.Empty;
+            worksheet.Cell(rowNumber, 6).Value = row.Branch ?? string.Empty;
+            worksheet.Cell(rowNumber, 7).Value = row.RetailerName ?? string.Empty;
+            worksheet.Cell(rowNumber, 8).Value = row.DistributorName ?? string.Empty;
+            worksheet.Cell(rowNumber, 9).Value = row.DistributorCode ?? string.Empty;
+            worksheet.Cell(rowNumber, 10).Value = row.ProductCode ?? string.Empty;
+            worksheet.Cell(rowNumber, 11).Value = row.ProductName ?? string.Empty;
+            worksheet.Cell(rowNumber, 12).Value = row.OrderQuantity;
+            worksheet.Cell(rowNumber, 13).Value = row.ShippedQuantity;
+            worksheet.Cell(rowNumber, 14).Value = row.CancelledQuantity;
+            worksheet.Cell(rowNumber, 15).Value = row.PendingQuantity;
+            worksheet.Cell(rowNumber, 16).Value = row.Status;
+            worksheet.Cell(rowNumber, 17).Value = row.Rate;
+            worksheet.Cell(rowNumber, 18).Value = row.TotalOrderValue;
+            worksheet.Cell(rowNumber, 19).Value = row.EmployeeCode ?? string.Empty;
+            worksheet.Cell(rowNumber, 20).Value = row.RetailerId?.ToString() ?? string.Empty;
+            worksheet.Cell(rowNumber, 21).Value = row.DistributorId?.ToString() ?? string.Empty;
+            worksheet.Cell(rowNumber, 22).Value = row.OrderRemark ?? string.Empty;
+            worksheet.Cell(rowNumber, 23).Value = row.Segment ?? string.Empty;
+            worksheet.Cell(rowNumber, 24).Value = row.Family ?? string.Empty;
+            worksheet.Cell(rowNumber, 25).Value = row.DetailId;
+            worksheet.Cell(rowNumber, 26).Value = row.Zone ?? string.Empty;
+            rowNumber++;
+        }
+
+        worksheet.Columns().AdjustToContents();
+        using var stream = new MemoryStream();
+        workbook.SaveAs(stream);
+        return new MasterDataFileDto { FileName = "orders.xlsx", Content = stream.ToArray() };
+    }
+
+    private static void RequireValue(string? value, string message)
+    {
+        if (string.IsNullOrWhiteSpace(value)) throw BadRequest(message);
+    }
+
+    private static string NormalizeCustomerType(string? value)
+    {
+        var normalized = value?.Trim().ToUpperInvariant();
+        return normalized switch
+        {
+            "DEALER" or "DISTRIBUTOR" or "DISTRIBUTER" => "DEALER",
+            "RETAILER" => "RETAILER",
+            "INFLUENCER" or "INFLUENCERS" => "INFLUENCER",
+            _ => throw BadRequest("Customer Type must be Dealer, Retailer or Influencer.")
+        };
+    }
+
+    private static void RequireId(ulong? value, string message)
+    {
+        if (value is null or 0) throw BadRequest(message);
+    }
+
+    private static long ToLongQuantity(decimal? value) =>
+        Convert.ToInt64(Math.Round(value ?? 0, 0, MidpointRounding.AwayFromZero));
+
+    private static LaravelHttpException BadRequest(string message) =>
+        new(LaravelStatusCodes.BadRequest, message);
+
+    private static LaravelHttpException NotFound(string message) =>
+        new(LaravelStatusCodes.NotFound, message);
+}
