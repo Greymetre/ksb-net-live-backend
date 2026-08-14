@@ -15,10 +15,17 @@ namespace Api.Controllers;
 public sealed class FieldKonnectCheckinController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
+    private readonly IHttpClientFactory _httpClientFactory;
+    private readonly IConfiguration _configuration;
 
-    public FieldKonnectCheckinController(AppDbContext dbContext)
+    public FieldKonnectCheckinController(
+        AppDbContext dbContext,
+        IHttpClientFactory httpClientFactory,
+        IConfiguration configuration)
     {
         _dbContext = dbContext;
+        _httpClientFactory = httpClientFactory;
+        _configuration = configuration;
     }
 
     [AcceptVerbs("GET", "POST")]
@@ -113,7 +120,8 @@ ORDER BY checkin_date DESC, checkin_time DESC LIMIT 1", cancellationToken, ("@us
             var now = IndiaNow();
             var beatScheduleId = request.BeatScheduleId ?? await DetectBeatSchedule(request.EntityType!, request.EntityId.Value, now.Date, cancellationToken);
             var distance = await Distance(request.EntityType!, request.EntityId.Value, request.CheckinLatitude!, request.CheckinLongitude!, cancellationToken);
-            var address = FirstNonEmpty(request.CheckinAddress, request.Address) ?? string.Empty;
+            var address = FirstNonEmpty(request.CheckinAddress, request.Address)
+                ?? await ReverseGeocodeAsync(request.CheckinLatitude!, request.CheckinLongitude!, cancellationToken);
 
             var insertedId = await QueryScalar(@"INSERT INTO check_in (active, user_id, customer_id, entity_type, entity_id, checkin_date, checkin_time,
 checkin_latitude, checkin_longitude, checkin_address, distance, beatscheduleid, created_at, updated_at)
@@ -216,7 +224,8 @@ LIMIT 1", cancellationToken, ("@id", request.CheckinId!.Value), ("@user_id", Cur
             var now = IndiaNow();
             var checkinAt = CombineDateTime(Obj(checkin, "checkin_date"), Obj(checkin, "checkin_time"));
             var timeInterval = checkinAt.HasValue ? now.Subtract(checkinAt.Value).ToString(@"hh\:mm\:ss", CultureInfo.InvariantCulture) : "00:00:00";
-            var address = FirstNonEmpty(request.CheckoutAddress, request.Address) ?? string.Empty;
+            var address = FirstNonEmpty(request.CheckoutAddress, request.Address)
+                ?? await ReverseGeocodeAsync(request.CheckoutLatitude!, request.CheckoutLongitude!, cancellationToken);
 
             var updated = await Execute(@"UPDATE check_in SET checkout_date = @checkout_date, checkout_time = @checkout_time,
 checkout_latitude = @lat, checkout_longitude = @lng, checkout_address = @address, time_interval = @time_interval, updated_at = @now
@@ -684,6 +693,67 @@ ORDER BY bs.id DESC LIMIT 1", cancellationToken, ("@user_id", CurrentUserId()), 
     private static bool IsValidEntityType(string? entityType) => NormalizeEntityType(entityType) is "customer" or "distributor" or "secondary_customer";
     private static string? GpsPart(string gps, int index) => gps.Split(',', StringSplitOptions.TrimEntries).ElementAtOrDefault(index);
     private static double DegreesToRadians(double degrees) => degrees * Math.PI / 180d;
+
+    private async Task<string> ReverseGeocodeAsync(string latitudeValue, string longitudeValue, CancellationToken cancellationToken)
+    {
+        if (!double.TryParse(latitudeValue, NumberStyles.Float, CultureInfo.InvariantCulture, out var latitude) ||
+            !double.TryParse(longitudeValue, NumberStyles.Float, CultureInfo.InvariantCulture, out var longitude) ||
+            latitude is < -90 or > 90 || longitude is < -180 or > 180)
+        {
+            return string.Empty;
+        }
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(10));
+        var client = _httpClientFactory.CreateClient();
+
+        try
+        {
+            var apiKey = FirstNonEmpty(
+                _configuration["ThirdParty:GoogleMaps:ApiKey"],
+                Environment.GetEnvironmentVariable("GOOGLE_MAPS_API_KEY"));
+            if (!string.IsNullOrWhiteSpace(apiKey))
+            {
+                var googleUrl = $"https://maps.googleapis.com/maps/api/geocode/json?latlng={latitude.ToString(CultureInfo.InvariantCulture)},{longitude.ToString(CultureInfo.InvariantCulture)}&key={Uri.EscapeDataString(apiKey)}";
+                using var googleResponse = await client.GetAsync(googleUrl, timeout.Token);
+                if (googleResponse.IsSuccessStatusCode)
+                {
+                    using var document = JsonDocument.Parse(await googleResponse.Content.ReadAsStreamAsync(timeout.Token));
+                    if (document.RootElement.TryGetProperty("results", out var results) &&
+                        results.ValueKind == JsonValueKind.Array && results.GetArrayLength() > 0 &&
+                        results[0].TryGetProperty("formatted_address", out var formattedAddress))
+                    {
+                        var address = formattedAddress.GetString();
+                        if (!string.IsNullOrWhiteSpace(address)) return address.Trim();
+                    }
+                }
+            }
+
+            // Key-free fallback keeps check-in compatible with the already-published app.
+            var nominatimUrl = $"https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat={latitude.ToString(CultureInfo.InvariantCulture)}&lon={longitude.ToString(CultureInfo.InvariantCulture)}&zoom=18&addressdetails=1";
+            using var request = new HttpRequestMessage(HttpMethod.Get, nominatimUrl);
+            request.Headers.UserAgent.ParseAdd("FieldKonnect/1.0 (support@ksbindia.co.in)");
+            using var response = await client.SendAsync(request, timeout.Token);
+            if (!response.IsSuccessStatusCode) return string.Empty;
+            using var fallbackDocument = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(timeout.Token));
+            return fallbackDocument.RootElement.TryGetProperty("display_name", out var displayName)
+                ? displayName.GetString()?.Trim() ?? string.Empty
+                : string.Empty;
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return string.Empty;
+        }
+        catch (HttpRequestException)
+        {
+            return string.Empty;
+        }
+        catch (JsonException)
+        {
+            return string.Empty;
+        }
+    }
+
     private static object? Obj(Dictionary<string, object?> row, string key) => row.TryGetValue(key, out var value) && value is not DBNull ? value : null;
     private static string Str(Dictionary<string, object?> row, string key) => Convert.ToString(Obj(row, key), CultureInfo.InvariantCulture) ?? string.Empty;
     private static ulong ULong(Dictionary<string, object?> row, string key) => Obj(row, key) is null ? 0 : Convert.ToUInt64(Obj(row, key), CultureInfo.InvariantCulture);

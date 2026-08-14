@@ -58,6 +58,10 @@ public sealed class AppDbContext : DbContext
     public DbSet<Expense> Expenses => Set<Expense>();
     public DbSet<ExpenseLog> ExpenseLogs => Set<ExpenseLog>();
     public DbSet<Media> Media => Set<Media>();
+    public DbSet<PromotionalActivity> PromotionalActivities => Set<PromotionalActivity>();
+    public DbSet<PromotionalActivityParticipant> PromotionalActivityParticipants => Set<PromotionalActivityParticipant>();
+    public DbSet<PromotionalActivityExpense> PromotionalActivityExpenses => Set<PromotionalActivityExpense>();
+    public DbSet<PromotionalActivityPhoto> PromotionalActivityPhotos => Set<PromotionalActivityPhoto>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {

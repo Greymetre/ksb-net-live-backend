@@ -37,6 +37,7 @@ builder.Services.AddLaravelCompatibleSwagger();
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddSingleton<ISmtpEmailSender, SmtpEmailSender>();
+builder.Services.AddHttpClient();
 
 var jwt = builder.Configuration.GetSection("Jwt");
 var jwtKey = jwt["Key"] ?? throw new InvalidOperationException("Jwt:Key is not configured.");
@@ -192,6 +193,7 @@ if (!IsDisabled(Environment.GetEnvironmentVariable("SKIP_DB_BOOTSTRAP")))
     Console.WriteLine("Automatic database bootstrap completed.");
 }
 
+app.UseMiddleware<ApiTrafficLoggingMiddleware>();
 app.UseMiddleware<LaravelExceptionMiddleware>();
 
 if (app.Environment.IsDevelopment())

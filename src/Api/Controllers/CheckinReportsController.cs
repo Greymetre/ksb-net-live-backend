@@ -118,8 +118,8 @@ OUTER APPLY (SELECT SUM(o.total_qty) order_qty,SUM(o.grand_total) order_value,CO
             var checkinLongitude = S(reader,"checkin_longitude");
             var checkoutLatitude = S(reader,"checkout_latitude");
             var checkoutLongitude = S(reader,"checkout_longitude");
-            var checkinAddress = AddressOrCoordinates(S(reader,"checkin_address"), checkinLatitude, checkinLongitude);
-            var checkoutAddress = AddressOrCoordinates(S(reader,"checkout_address"), checkoutLatitude, checkoutLongitude);
+            var checkinAddress = S(reader,"checkin_address");
+            var checkoutAddress = S(reader,"checkout_address");
             var distance = S(reader,"distance");
             if (string.IsNullOrWhiteSpace(distance))
                 distance = DistanceKm(checkinLatitude, checkinLongitude, S(reader,"customer_latitude"), S(reader,"customer_longitude"));
@@ -132,12 +132,6 @@ OUTER APPLY (SELECT SUM(o.total_qty) order_qty,SUM(o.grand_total) order_value,CO
             });
         }
         return rows;
-    }
-
-    private static string AddressOrCoordinates(string address, string latitude, string longitude)
-    {
-        if (!string.IsNullOrWhiteSpace(address)) return address;
-        return ValidCoordinate(latitude, longitude) ? $"{latitude}, {longitude}" : "";
     }
 
     // Laravel's distance() helper stores the straight-line distance between the

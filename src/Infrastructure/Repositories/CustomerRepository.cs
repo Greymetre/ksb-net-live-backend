@@ -120,14 +120,22 @@ public sealed class CustomerRepository : ICustomerRepository
         if (filter.UserId.HasValue)
         {
             var userId = filter.UserId.Value.ToString();
-            query = query.Where(x => x.CustomFields != null &&
+            var assignedCustomerIds = await QueryULongListAsync(
+                @"SELECT DISTINCT customer_id
+FROM employee_details
+WHERE user_id = {0}
+  AND customer_id IS NOT NULL
+  AND deleted_at IS NULL
+  AND active = 'Y'",
+                [filter.UserId.Value], cancellationToken);
+            query = query.Where(x => assignedCustomerIds.Contains(x.Id) || (x.CustomFields != null &&
                 (EF.Functions.Like(x.CustomFields, $"%\"employee_id\":\"{userId}\"%")
                  || EF.Functions.Like(x.CustomFields, $"%\"employee_id\":{userId},%")
                  || EF.Functions.Like(x.CustomFields, $"%\"employee_id\":{userId}}}%")
                  || EF.Functions.Like(x.CustomFields, $"%\"employee_id\":[%{userId}%]%")
                  || EF.Functions.Like(x.CustomFields, $"%\"sales_executive_id\":\"{userId}\"%")
                  || EF.Functions.Like(x.CustomFields, $"%\"sales_executive_id\":{userId},%")
-                 || EF.Functions.Like(x.CustomFields, $"%\"sales_executive_id\":{userId}}}%")));
+                 || EF.Functions.Like(x.CustomFields, $"%\"sales_executive_id\":{userId}}}%"))));
         }
 
         if (filter.DesignationIds is { Length: > 0 })
