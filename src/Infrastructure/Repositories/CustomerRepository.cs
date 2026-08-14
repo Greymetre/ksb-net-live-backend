@@ -175,6 +175,7 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
         var customers = rows.Select(row => ToCustomerDto(row.Customer, row.CreatedByName, row.ParentName)).ToList();
         await AttachAddressFallbackAsync(customers, cancellationToken);
         await AttachAddressNamesAsync(customers, cancellationToken);
+        await AttachAssignmentFallbackAsync(customers, cancellationToken);
         await AttachLookupNamesAsync(customers, cancellationToken);
         return new PagedResult<CustomerDto>(customers, total, page, filter.Unpaged ? customers.Count : pageSize);
     }
@@ -218,6 +219,7 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
         var dto = ToCustomerDto(row.Customer, row.CreatedByName, row.ParentName);
         await AttachAddressFallbackAsync([dto], cancellationToken);
         await AttachAddressNamesAsync([dto], cancellationToken);
+        await AttachAssignmentFallbackAsync([dto], cancellationToken);
         await AttachLookupNamesAsync([dto], cancellationToken);
         await AttachPointSummaryAsync(dto, row.Customer, cancellationToken);
         return dto;
@@ -876,6 +878,72 @@ INNER JOIN (
         }
     }
 
+    private async Task AttachAssignmentFallbackAsync(IReadOnlyCollection<CustomerDto> customers, CancellationToken cancellationToken)
+    {
+        if (customers.Count == 0) return;
+        var customerIds = customers.Select(x => x.Id).Distinct().ToArray();
+        var customerIdCsv = string.Join(',', customerIds);
+        var relationRows = new List<(ulong CustomerId, ulong UserId)>();
+        var connection = _dbContext.Database.GetDbConnection();
+        if (connection.State != ConnectionState.Open) await connection.OpenAsync(cancellationToken);
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText = $@"SELECT DISTINCT customer_id, user_id
+FROM employee_details
+WHERE customer_id IN ({customerIdCsv})
+  AND customer_id IS NOT NULL
+  AND user_id IS NOT NULL
+  AND deleted_at IS NULL
+  AND (active = 'Y' OR active IS NULL)";
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                var customerId = Convert.ToUInt64(reader.GetValue(0));
+                var userId = Convert.ToUInt64(reader.GetValue(1));
+                if (customerId > 0 && userId > 0) relationRows.Add((customerId, userId));
+            }
+        }
+
+        var assignedByCustomer = relationRows
+            .GroupBy(x => x.CustomerId)
+            .ToDictionary(x => x.Key, x => x.Select(row => row.UserId).Distinct().ToArray());
+        var allAssignedIds = customers
+            .SelectMany(customer => new[] { "employee_id", "sales_executive_id" }
+                .SelectMany(key => ReadULongs(ReadField(customer.CustomFields, key))))
+            .Concat(relationRows.Select(x => x.UserId))
+            .Distinct()
+            .ToArray();
+        var reportingIds = await _dbContext.Users.AsNoTracking()
+            .Where(user => allAssignedIds.Contains(user.Id))
+            .Select(user => new { user.Id, user.ReportingId })
+            .ToDictionaryAsync(user => user.Id, user => user.ReportingId, cancellationToken);
+
+        foreach (var customer in customers)
+        {
+            var assignmentKey = customer.CustomerType == DistributorCustomerType ? "sales_executive_id" : "employee_id";
+            var assignedIds = new[] { "employee_id", "sales_executive_id" }
+                .SelectMany(key => ReadULongs(ReadField(customer.CustomFields, key)))
+                .Concat(assignedByCustomer.GetValueOrDefault(customer.Id) ?? [])
+                .Where(id => id > 0)
+                .Distinct()
+                .ToArray();
+            if (assignedIds.Length > 0) customer.CustomFields[assignmentKey] = string.Join(',', assignedIds);
+
+            var supervisorIds = ReadULongs(ReadField(customer.CustomFields, "supervisor_id"));
+            if (supervisorIds.Length == 0)
+            {
+                supervisorIds = assignedIds
+                    .Where(reportingIds.ContainsKey)
+                    .Select(id => reportingIds[id])
+                    .Where(id => id.HasValue && id.Value > 0)
+                    .Select(id => id!.Value)
+                    .Distinct()
+                    .ToArray();
+            }
+            if (supervisorIds.Length > 0) customer.CustomFields["supervisor_id"] = supervisorIds[0].ToString();
+        }
+    }
+
     private static string JoinExportValues(IEnumerable<string?> values) =>
         string.Join(", ", values.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase));
 
@@ -1195,7 +1263,7 @@ INNER JOIN (
     };
 
     private static ulong? ReadULong(IReadOnlyDictionary<string, string?> fields, string key) =>
-        ulong.TryParse(ReadField(fields, key), out var parsed) ? parsed : null;
+        ReadULongs(ReadField(fields, key)).FirstOrDefault() is var parsed && parsed > 0 ? parsed : null;
 
     private static void SetFieldIfPresent(IDictionary<string, string?> fields, string key, string? value)
     {
@@ -1214,48 +1282,58 @@ INNER JOIN (
         return value > 0 ? value : null;
     }
 
-    private static ulong? FirstULong(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value)) return null;
-        var first = value.Trim();
-        if (first.StartsWith("[", StringComparison.Ordinal))
-        {
-            try
-            {
-                var values = JsonSerializer.Deserialize<List<ulong>>(first, JsonOptions);
-                return values?.FirstOrDefault(x => x > 0);
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        first = first.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault() ?? first;
-        return ulong.TryParse(first, out var parsed) ? parsed : null;
-    }
+    private static ulong? FirstULong(string? value) =>
+        ReadULongs(value).FirstOrDefault() is var parsed && parsed > 0 ? parsed : null;
 
     private static ulong[] ReadULongs(string? value)
     {
         if (string.IsNullOrWhiteSpace(value)) return [];
-        var trimmed = value.Trim();
-        if (trimmed.StartsWith("[", StringComparison.Ordinal))
+        var values = new HashSet<ulong>();
+
+        void Collect(string? candidate, int depth)
         {
+            if (depth > 6 || string.IsNullOrWhiteSpace(candidate)) return;
+            var trimmed = candidate.Trim();
+            if (ulong.TryParse(trimmed, out var scalar) && scalar > 0)
+            {
+                values.Add(scalar);
+                return;
+            }
             try
             {
-                return JsonSerializer.Deserialize<List<ulong>>(trimmed, JsonOptions)?.Where(id => id > 0).ToArray() ?? [];
+                using var document = JsonDocument.Parse(trimmed);
+                var root = document.RootElement;
+                if (root.ValueKind == JsonValueKind.String)
+                {
+                    Collect(root.GetString(), depth + 1);
+                    return;
+                }
+                if (root.ValueKind == JsonValueKind.Number && root.TryGetUInt64(out var number) && number > 0)
+                {
+                    values.Add(number);
+                    return;
+                }
+                if (root.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in root.EnumerateArray())
+                        Collect(item.ValueKind == JsonValueKind.String ? item.GetString() : item.GetRawText(), depth + 1);
+                    return;
+                }
             }
             catch
             {
-                return [];
+                // Legacy imports can contain CSV or partially escaped JSON.
+            }
+
+            foreach (var item in trimmed.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                var cleaned = item.Trim(' ', '[', ']', '"', '\\');
+                if (ulong.TryParse(cleaned, out var parsed) && parsed > 0) values.Add(parsed);
             }
         }
 
-        return trimmed
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(item => ulong.TryParse(item, out var parsed) ? parsed : 0)
-            .Where(id => id > 0)
-            .ToArray();
+        Collect(value, 0);
+        return values.ToArray();
     }
 
     private static void SetCustomerLookupName(Dictionary<string, string?> fields, string key, IReadOnlyDictionary<ulong, string> names)
