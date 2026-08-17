@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Api.Filters;
+using Application.Interfaces.Repositories;
 using ClosedXML.Excel;
 using Infrastructure.Data;
 using Microsoft.AspNetCore.Authorization;
@@ -12,7 +13,8 @@ namespace Api.Controllers;
 public sealed class ActivityReportExportsController : ControllerBase
 {
     private readonly AppDbContext _db;
-    public ActivityReportExportsController(AppDbContext db) => _db = db;
+    private readonly IHrRepository _hr;
+    public ActivityReportExportsController(AppDbContext db, IHrRepository hr) { _db = db; _hr = hr; }
 
     [HttpGet("options"), RequirePermission("activity_report_access")]
     public async Task<IActionResult> Options(CancellationToken ct)
@@ -112,12 +114,8 @@ public sealed class ActivityReportExportsController : ControllerBase
         return filter.ZoneId.HasValue ? result.Where(x => x.DivisionId == filter.ZoneId).ToList() : result;
     }
 
-    private async Task<HashSet<ulong>> VisibleIds(ulong current, CancellationToken ct) {
-        var all = await _db.Users.AsNoTracking().Where(x => x.Active == "Y" && !x.IsDeleted && x.DeletedAt == null).Select(x => new { x.Id, x.ReportingId }).ToListAsync(ct);
-        var admin = await _db.ModelHasRoles.AsNoTracking().Where(x => x.ModelId == current && x.ModelType == "App\\Models\\User").Join(_db.Roles.AsNoTracking(), x => x.RoleId, x => x.Id, (_, r) => r.Name).AnyAsync(x => x.ToLower().Contains("admin"), ct);
-        if (admin) return all.Select(x => x.Id).ToHashSet(); var result = new HashSet<ulong> { current }; var frontier = new HashSet<ulong> { current };
-        while (frontier.Count > 0) frontier = all.Where(x => x.ReportingId.HasValue && frontier.Contains(x.ReportingId.Value) && result.Add(x.Id)).Select(x => x.Id).ToHashSet(); return result;
-    }
+    private async Task<HashSet<ulong>> VisibleIds(ulong current, CancellationToken ct) =>
+        (await _hr.GetVisibleUserIdsAsync(current, ct)).ToHashSet();
 
     private IActionResult Workbook(List<ActivityExportRow> rows, ActivityReportFilter filter, string kind, bool distributor) {
         using var book = new XLWorkbook(); var sheet = book.Worksheets.Add("Activity Report");

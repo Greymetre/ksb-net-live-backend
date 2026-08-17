@@ -19,6 +19,7 @@ public sealed class CityAssignmentRepository : ICityAssignmentRepository
 
     public async Task<IReadOnlyList<CityAssignmentDto>> GetAssignmentsAsync(CityAssignmentFilterDto filter, CancellationToken cancellationToken)
     {
+        var visibleUserIds = await ReportingVisibility.GetVisibleUserIdsAsync(_db, filter.ActorUserId, cancellationToken);
         var query =
             from assignment in _db.UserCityAssigns.AsNoTracking()
             join user in _db.Users.AsNoTracking() on assignment.UserId equals user.Id into users
@@ -38,6 +39,7 @@ public sealed class CityAssignmentRepository : ICityAssignmentRepository
             from state in states.DefaultIfEmpty()
             select new { assignment, user, userDesignation, reporting, reportingDesignation, city, district, state };
 
+        if (filter.ActorUserId.HasValue) query = query.Where(x => visibleUserIds.Contains(x.assignment.UserId));
         if (filter.UserId.HasValue) query = query.Where(x => x.assignment.UserId == filter.UserId.Value);
         if (!string.IsNullOrWhiteSpace(filter.Search))
         {
@@ -81,6 +83,7 @@ public sealed class CityAssignmentRepository : ICityAssignmentRepository
 
     public async Task<int> CountAssignmentsAsync(CityAssignmentFilterDto filter, CancellationToken cancellationToken)
     {
+        var visibleUserIds = await ReportingVisibility.GetVisibleUserIdsAsync(_db, filter.ActorUserId, cancellationToken);
         var query =
             from assignment in _db.UserCityAssigns.AsNoTracking()
             join user in _db.Users.AsNoTracking() on assignment.UserId equals user.Id into users
@@ -100,6 +103,7 @@ public sealed class CityAssignmentRepository : ICityAssignmentRepository
             from state in states.DefaultIfEmpty()
             select new { assignment, user, reporting, city, district, state };
 
+        if (filter.ActorUserId.HasValue) query = query.Where(x => visibleUserIds.Contains(x.assignment.UserId));
         if (filter.UserId.HasValue) query = query.Where(x => x.assignment.UserId == filter.UserId.Value);
         if (!string.IsNullOrWhiteSpace(filter.Search))
         {

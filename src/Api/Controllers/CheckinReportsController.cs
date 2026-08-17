@@ -189,7 +189,7 @@ OUTER APPLY (SELECT SUM(o.total_qty) order_qty,SUM(o.grand_total) order_value,CO
     private static string FirstMobile(string? value) => string.IsNullOrWhiteSpace(value) ? "" : value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault() ?? "";
     private ulong CurrentUserId() => ulong.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var id) ? id : throw new UnauthorizedAccessException("Authenticated user id is missing.");
     private async Task<IReadOnlyCollection<ulong>> VisibleUserIds(CancellationToken ct) =>
-        (await _hr.GetVisibleUserIdsAsync(CurrentUserId(), ct)).Append(CurrentUserId()).Distinct().ToArray();
+        (await _hr.GetVisibleUserIdsAsync(CurrentUserId(), ct)).Distinct().ToArray();
 
     public sealed class CheckinFilter
     {

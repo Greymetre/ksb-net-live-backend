@@ -4,6 +4,7 @@ using System.Security.Claims;
 using System.Text.Json;
 using Api.Filters;
 using Application.DTOs.Customers;
+using Application.Interfaces.Repositories;
 using Application.Interfaces.Services;
 using Infrastructure.Data;
 using Domain.Constants;
@@ -21,12 +22,18 @@ public sealed class FieldKonnectCustomerRestController : ControllerBase
     private readonly AppDbContext _dbContext;
     private readonly IWebHostEnvironment _environment;
     private readonly ICustomerService _customerService;
+    private readonly IHrRepository _hrRepository;
 
-    public FieldKonnectCustomerRestController(AppDbContext dbContext, IWebHostEnvironment environment, ICustomerService customerService)
+    public FieldKonnectCustomerRestController(
+        AppDbContext dbContext,
+        IWebHostEnvironment environment,
+        ICustomerService customerService,
+        IHrRepository hrRepository)
     {
         _dbContext = dbContext;
         _environment = environment;
         _customerService = customerService;
+        _hrRepository = hrRepository;
     }
 
     [HttpGet("master-distributors")]
@@ -291,6 +298,15 @@ ORDER BY page.created_at DESC, page.id DESC", cancellationToken, parameters.ToAr
         try
         {
             var targetUserId = ULongQuery("user_id") ?? CurrentUserId();
+            var visibleUserIds = await VisibleHierarchyUserIds(CurrentUserId(), cancellationToken);
+            if (!visibleUserIds.Contains(targetUserId))
+            {
+                return StatusCode(StatusCodes.Status403Forbidden, new
+                {
+                    status = false,
+                    message = "You can only view beats for an assigned ASR/DSR."
+                });
+            }
             var page = Page();
             var perPage = PerPage(15);
             var offset = (page - 1) * perPage;
@@ -1272,20 +1288,18 @@ LIMIT 1", cancellationToken, parameters.ToArray())).FirstOrDefault();
             parameters.Add(("@search", "%" + search.Trim() + "%"));
         }
 
+        var access = await AssignedCustomerAccess(CurrentUserId(), cancellationToken, includeHrAndHo: false);
         if (ULongQuery("for_user_id") is { } forUserId)
         {
-            where.Add(AssignedCustomerPredicate([forUserId]));
-            parameters.Add(("@for_user_id", forUserId));
+            where.Add(access.AllAccess || access.UserIds.Contains(forUserId)
+                ? AssignedCustomerPredicate([forUserId])
+                : "1 = 0");
         }
-        else
+        else if (!access.AllAccess)
         {
-            var access = await AssignedCustomerAccess(CurrentUserId(), cancellationToken, includeHrAndHo: false);
-            if (!access.AllAccess)
-            {
-                where.Add(access.UserIds.Count == 0
-                    ? "1 = 0"
-                    : AssignedCustomerPredicate(access.UserIds));
-            }
+            where.Add(access.UserIds.Count == 0
+                ? "1 = 0"
+                : AssignedCustomerPredicate(access.UserIds));
         }
 
         return (string.Join(" AND ", where), parameters);
@@ -1333,20 +1347,18 @@ LIMIT 1", cancellationToken, parameters.ToArray())).FirstOrDefault();
             parameters.Add(("@status", status.Trim()));
         }
 
+        var access = await AssignedCustomerAccess(CurrentUserId(), cancellationToken, includeHrAndHo: true);
         if (ULongQuery("for_user_id") is { } forUserId)
         {
-            where.Add(AssignedCustomerPredicate([forUserId]));
-            parameters.Add(("@for_user_id", forUserId));
+            where.Add(access.AllAccess || access.UserIds.Contains(forUserId)
+                ? AssignedCustomerPredicate([forUserId])
+                : "1 = 0");
         }
-        else
+        else if (!access.AllAccess)
         {
-            var access = await AssignedCustomerAccess(CurrentUserId(), cancellationToken, includeHrAndHo: true);
-            if (!access.AllAccess)
-            {
-                where.Add(access.UserIds.Count == 0
-                    ? "1 = 0"
-                    : AssignedCustomerPredicate(access.UserIds));
-            }
+            where.Add(access.UserIds.Count == 0
+                ? "1 = 0"
+                : AssignedCustomerPredicate(access.UserIds));
         }
 
         return (string.Join(" AND ", where), parameters);
@@ -1378,64 +1390,20 @@ OR {string.Join(" OR ", migratedFieldMatches)}
     }
 
     private async Task<List<ulong>> VisibleUserIds(ulong userId, CancellationToken cancellationToken)
-    {
-        var rows = await QueryRows("SELECT id, reportingid FROM users WHERE deleted_at IS NULL", cancellationToken);
-        var visible = new HashSet<ulong> { userId };
-        var changed = true;
-        while (changed)
-        {
-            changed = false;
-            foreach (var row in rows)
-            {
-                var id = ULong(row, "id");
-                var reportingId = ULong(row, "reportingid");
-                if (reportingId > 0 && visible.Contains(reportingId) && visible.Add(id)) changed = true;
-            }
-        }
-        return visible.ToList();
-    }
+        => (await _hrRepository.GetVisibleUserIdsAsync(userId, cancellationToken)).ToList();
 
     private async Task<List<ulong>> VisibleHierarchyUserIds(ulong userId, CancellationToken cancellationToken)
-    {
-        if (await HasAdminRole(userId, cancellationToken))
-        {
-            return await NonCustomerUserIds(null, cancellationToken);
-        }
-
-        if (await HasRoleId(userId, RoleIds.BranchManager, cancellationToken))
-        {
-            var user = (await QueryRows("SELECT branch_id FROM users WHERE id = @user_id AND deleted_at IS NULL", cancellationToken, ("@user_id", userId))).FirstOrDefault();
-            var branchId = user is null ? null : Obj(user, "branch_id");
-            return await NonCustomerUserIds(branchId, cancellationToken);
-        }
-
-        var rows = await QueryRows(@"SELECT u.id, u.reportingid
-FROM users u
-WHERE u.deleted_at IS NULL
-AND NOT EXISTS (
-    SELECT 1 FROM model_has_roles m
-    INNER JOIN roles r ON r.id = m.role_id
-    WHERE m.model_id = u.id
-    AND (m.role_id = 61 OR r.name = 'Distributor')
-)", cancellationToken);
-        var visible = new HashSet<ulong> { userId };
-        var changed = true;
-        while (changed)
-        {
-            changed = false;
-            foreach (var row in rows)
-            {
-                var id = ULong(row, "id");
-                var reportingId = ULong(row, "reportingid");
-                if (reportingId > 0 && visible.Contains(reportingId) && visible.Add(id)) changed = true;
-            }
-        }
-
-        return visible.ToList();
-    }
+        => (await _hrRepository.GetVisibleUserIdsAsync(userId, cancellationToken)).ToList();
 
     private async Task<(bool AllAccess, List<ulong> UserIds)> SecondaryCustomerAccess(ulong userId, CancellationToken cancellationToken)
     {
+        // A Distributor login is always assignment-scoped, even if another role
+        // containing "admin" is accidentally attached to the same CRM user.
+        if (await HasAnyRole(userId, cancellationToken, "Distributor"))
+        {
+            return (false, await VisibleHierarchyUserIds(userId, cancellationToken));
+        }
+
         if (await HasAdminRole(userId, cancellationToken))
         {
             return (true, await NonCustomerUserIds(null, cancellationToken));
@@ -1446,6 +1414,11 @@ AND NOT EXISTS (
 
     private async Task<(bool AllAccess, List<ulong> UserIds)> AssignedCustomerAccess(ulong userId, CancellationToken cancellationToken, bool includeHrAndHo)
     {
+        if (await HasAnyRole(userId, cancellationToken, "Distributor"))
+        {
+            return (false, await VisibleHierarchyUserIds(userId, cancellationToken));
+        }
+
         var allAccessRoles = includeHrAndHo
             ? new[] { "superadmin", "Admin", "Sub_Admin", "subAdmin", "HR_Admin", "HO_Account" }
             : new[] { "superadmin", "Admin", "Sub_Admin", "subAdmin" };

@@ -129,7 +129,7 @@ public sealed class MobileAttendanceSummaryController : ControllerBase
         if (ids.Length == 0)
             return BadRequest(new { status = "error", message = "attendance_id is invalid." });
 
-        var visibleIds = (await _hr.GetVisibleUserIdsAsync(CurrentUserId(), ct)).Append(CurrentUserId()).Distinct().ToArray();
+        var visibleIds = (await _hr.GetVisibleUserIdsAsync(CurrentUserId(), ct)).Distinct().ToArray();
         var rows = await _db.Attendances.Where(x => ids.Contains(x.Id) && x.UserId.HasValue && visibleIds.Contains(x.UserId.Value)).ToListAsync(ct);
         if (rows.Count != ids.Length)
             return NotFound(new { status = "error", message = "One or more attendance records were not found or are not accessible." });

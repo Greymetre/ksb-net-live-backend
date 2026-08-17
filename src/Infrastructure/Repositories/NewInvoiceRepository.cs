@@ -24,7 +24,8 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
 
     public async Task<PagedResult<NewInvoiceDto>> GetInvoicesAsync(NewInvoiceFilterDto filter, ulong? actorUserId, CancellationToken cancellationToken)
     {
-        var distributorCustomerId = await GetDistributorCustomerIdAsync(actorUserId, cancellationToken);
+        var distributorCustomerId = filter.DistributorCustomerId
+            ?? await GetDistributorCustomerIdAsync(actorUserId, cancellationToken);
         var query = ApplyFilters(BaseQuery(distributorCustomerId), filter);
         var page = Pagination.Page(filter.Page);
         var pageSize = Pagination.PageSize(filter.PageSize);
@@ -225,6 +226,13 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
 
     private IQueryable<InvoiceRow> ApplyFilters(IQueryable<InvoiceRow> query, NewInvoiceFilterDto filter)
     {
+        if (filter.SecondaryCustomerIds is not null)
+        {
+            var customerIds = filter.SecondaryCustomerIds;
+            query = customerIds.Count == 0
+                ? query.Where(_ => false)
+                : query.Where(x => customerIds.Contains(x.Invoice.SecondaryCustomerId));
+        }
         if (filter.SchemeId.HasValue) query = query.Where(x => x.Invoice.LoyaltySchemeId == filter.SchemeId.Value);
         if (!string.IsNullOrWhiteSpace(filter.RetailerSearch))
         {

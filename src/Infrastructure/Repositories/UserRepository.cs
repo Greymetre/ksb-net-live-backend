@@ -20,8 +20,17 @@ public sealed class UserRepository : IUserRepository
 
     public async Task<IReadOnlyCollection<UserDto>> GetUsersAsync(UserListFiltersDto filters, CancellationToken cancellationToken)
     {
-        var query = ApplyUserFilters(_dbContext.Users.AsNoTracking(), new UserExportFiltersDto
+        var baseQuery = _dbContext.Users.AsNoTracking();
+        if (await ReportingVisibility.IsDistributorUserAsync(_dbContext, filters.ActorUserId, cancellationToken))
         {
+            var visibleUserIds = await ReportingVisibility.GetVisibleUserIdsAsync(_dbContext, filters.ActorUserId, cancellationToken);
+            baseQuery = ReportingVisibility.InternalUsersQuery(_dbContext, baseQuery)
+                .Where(user => visibleUserIds.Contains(user.Id));
+        }
+
+        var query = ApplyUserFilters(baseQuery, new UserExportFiltersDto
+        {
+            ActorUserId = filters.ActorUserId,
             UserType = filters.UserType,
             Active = filters.Active,
             DivisionId = filters.DivisionId,
@@ -46,9 +55,17 @@ public sealed class UserRepository : IUserRepository
         return users;
     }
 
-    public async Task<UserDto?> GetUserDtoAsync(ulong id, CancellationToken cancellationToken)
+    public async Task<UserDto?> GetUserDtoAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken)
     {
-        var users = await ProjectUsersAsync(_dbContext.Users.AsNoTracking().Where(x => x.Id == id), cancellationToken);
+        var query = _dbContext.Users.AsNoTracking().Where(x => x.Id == id);
+        if (await ReportingVisibility.IsDistributorUserAsync(_dbContext, actorUserId, cancellationToken))
+        {
+            var visibleUserIds = await ReportingVisibility.GetVisibleUserIdsAsync(_dbContext, actorUserId, cancellationToken);
+            query = ReportingVisibility.InternalUsersQuery(_dbContext, query)
+                .Where(user => visibleUserIds.Contains(user.Id));
+        }
+
+        var users = await ProjectUsersAsync(query, cancellationToken);
         return users.FirstOrDefault();
     }
 
@@ -114,7 +131,15 @@ public sealed class UserRepository : IUserRepository
 
     public async Task<IReadOnlyCollection<UserExcelRowDto>> ExportUsersAsync(UserExportFiltersDto filters, CancellationToken cancellationToken)
     {
-        var query = ApplyUserFilters(_dbContext.Users.AsNoTracking(), filters);
+        var baseQuery = _dbContext.Users.AsNoTracking();
+        if (await ReportingVisibility.IsDistributorUserAsync(_dbContext, filters.ActorUserId, cancellationToken))
+        {
+            var visibleUserIds = await ReportingVisibility.GetVisibleUserIdsAsync(_dbContext, filters.ActorUserId, cancellationToken);
+            baseQuery = ReportingVisibility.InternalUsersQuery(_dbContext, baseQuery)
+                .Where(user => visibleUserIds.Contains(user.Id));
+        }
+
+        var query = ApplyUserFilters(baseQuery, filters);
 
         var users = await (
             from user in query

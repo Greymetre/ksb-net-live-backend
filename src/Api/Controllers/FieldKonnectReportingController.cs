@@ -3,8 +3,8 @@ using System.Globalization;
 using System.Security.Claims;
 using System.Text.Json;
 using Api.Filters;
+using Application.Interfaces.Repositories;
 using Infrastructure.Data;
-using Domain.Constants;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -17,10 +17,12 @@ namespace Api.Controllers;
 public sealed class FieldKonnectReportingController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
+    private readonly IHrRepository _hrRepository;
 
-    public FieldKonnectReportingController(AppDbContext dbContext)
+    public FieldKonnectReportingController(AppDbContext dbContext, IHrRepository hrRepository)
     {
         _dbContext = dbContext;
+        _hrRepository = hrRepository;
     }
 
     [HttpGet("user-monitoring/options")]
@@ -745,88 +747,7 @@ ORDER BY u.name ASC", cancellationToken, parameters.ToArray());
     }
 
     private async Task<List<ulong>> VisibleReportingUserIds(ulong userId, CancellationToken cancellationToken)
-    {
-        if (await HasAdminRole(userId, cancellationToken))
-        {
-            return await NonCustomerUserIds(cancellationToken);
-        }
-
-        if (await HasRoleId(userId, RoleIds.BranchManager, cancellationToken))
-        {
-            var actor = (await QueryRows("SELECT branch_id FROM users WHERE id=@user_id AND deleted_at IS NULL", cancellationToken, ("@user_id", userId))).FirstOrDefault();
-            var branches = actor is null ? string.Empty : Str(actor, "branch_id");
-            if (string.IsNullOrWhiteSpace(branches)) return [userId];
-            return await NonCustomerUserIdsByBranches(branches, cancellationToken);
-        }
-
-        var rows = await QueryRows(@"SELECT u.id, u.reportingid
-FROM users u
-WHERE u.deleted_at IS NULL
-AND NOT EXISTS (
-    SELECT 1 FROM model_has_roles m
-    INNER JOIN roles r ON r.id = m.role_id
-    WHERE m.model_id = u.id
-    AND (m.role_id = 61 OR r.name = 'Distributor')
-)", cancellationToken);
-        var visible = new HashSet<ulong> { userId };
-        var changed = true;
-        while (changed)
-        {
-            changed = false;
-            foreach (var row in rows)
-            {
-                var id = ULong(row, "id");
-                var reportingId = ULong(row, "reportingid");
-                if (reportingId > 0 && visible.Contains(reportingId) && visible.Add(id)) changed = true;
-            }
-        }
-        return visible.ToList();
-    }
-
-    private async Task<List<ulong>> NonCustomerUserIds(CancellationToken cancellationToken)
-    {
-        var rows = await QueryRows(@"SELECT u.id
-FROM users u
-WHERE u.deleted_at IS NULL
-AND NOT EXISTS (
-    SELECT 1 FROM model_has_roles m
-    INNER JOIN roles r ON r.id = m.role_id
-    WHERE m.model_id = u.id
-    AND (m.role_id = 61 OR r.name = 'Distributor')
-)", cancellationToken);
-        return rows.Select(row => ULong(row, "id")).Where(id => id > 0).ToList();
-    }
-
-    private async Task<List<ulong>> NonCustomerUserIdsByBranches(string branches, CancellationToken cancellationToken)
-    {
-        var branchIds = ParseIds(branches);
-        if (branchIds.Count == 0) return [];
-        var branchWhere = string.Join(" OR ", branchIds.Select(id => $"FIND_IN_SET({id}, u.branch_id)"));
-        var rows = await QueryRows($@"SELECT u.id FROM users u
-WHERE u.deleted_at IS NULL AND ({branchWhere})
-AND NOT EXISTS (SELECT 1 FROM model_has_roles m INNER JOIN roles r ON r.id=m.role_id
-WHERE m.model_id=u.id AND (m.role_id={RoleIds.Customer} OR r.name='Distributor'))", cancellationToken);
-        return rows.Select(row => ULong(row, "id")).Where(id => id > 0).Distinct().ToList();
-    }
-
-    private async Task<bool> HasRoleId(ulong userId, ulong roleId, CancellationToken cancellationToken) =>
-        await QueryScalarLong("SELECT COUNT(*) FROM model_has_roles WHERE model_id=@user_id AND role_id=@role_id", cancellationToken,
-            ("@user_id", userId), ("@role_id", roleId)) > 0;
-
-    private async Task<bool> HasAnyRole(ulong userId, CancellationToken cancellationToken, params string[] roles)
-    {
-        var quoted = string.Join(',', roles.Select(role => $"'{role.Replace("'", "''")}'"));
-        return await QueryScalarLong($@"SELECT COUNT(*)
-FROM model_has_roles m
-INNER JOIN roles r ON r.id = m.role_id
-WHERE m.model_id = @user_id AND r.name IN ({quoted})", cancellationToken, ("@user_id", userId)) > 0;
-    }
-
-    private async Task<bool> HasAdminRole(ulong userId, CancellationToken cancellationToken) =>
-        await QueryScalarLong(@"SELECT COUNT(*)
-FROM model_has_roles m
-INNER JOIN roles r ON r.id = m.role_id
-WHERE m.model_id = @user_id AND LOWER(r.name) LIKE '%admin%'", cancellationToken, ("@user_id", userId)) > 0;
+        => (await _hrRepository.GetVisibleUserIdsAsync(userId, cancellationToken)).ToList();
 
     private async Task<Dictionary<string, string>> RequestValues(CancellationToken cancellationToken)
     {

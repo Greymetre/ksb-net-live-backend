@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Api.Filters;
+using Application.Interfaces.Repositories;
 using Domain.Entities;
 using Infrastructure.Data;
 using Microsoft.AspNetCore.Authorization;
@@ -14,14 +15,31 @@ namespace Api.Controllers;
 public sealed class BeatsController : ControllerBase
 {
     private readonly AppDbContext _db;
+    private readonly IHrRepository _hrRepository;
 
-    public BeatsController(AppDbContext db) => _db = db;
+    public BeatsController(AppDbContext db, IHrRepository hrRepository)
+    {
+        _db = db;
+        _hrRepository = hrRepository;
+    }
 
     [HttpGet]
     [RequirePermission("beat_access")]
     public async Task<IActionResult> List([FromQuery] string? search, [FromQuery] int page = 1, [FromQuery(Name = "page_size")] int pageSize = 10, CancellationToken ct = default)
     {
         var query = _db.Beats.AsNoTracking();
+        List<BeatUserRow>? visibleBeatUsers = null;
+        if (await IsDistributorUserAsync(ct))
+        {
+            var visibleUserIds = (await _hrRepository.GetVisibleUserIdsAsync(CurrentUserId(), ct)).ToHashSet();
+            visibleBeatUsers = (await _db.Database.SqlQueryRaw<BeatUserRow>(
+                    "SELECT CAST(beat_id AS bigint) AS BeatId, CAST(user_id AS bigint) AS UserId FROM beat_users WHERE beat_id IS NOT NULL AND user_id IS NOT NULL")
+                .ToListAsync(ct))
+                .Where(x => x.BeatId > 0 && x.UserId > 0 && visibleUserIds.Contains((ulong)x.UserId))
+                .ToList();
+            var visibleBeatIds = visibleBeatUsers.Select(x => (ulong)x.BeatId).Distinct().ToArray();
+            query = query.Where(x => visibleBeatIds.Contains(x.Id));
+        }
         if (!string.IsNullOrWhiteSpace(search))
             query = query.Where(x => x.BeatName.Contains(search) || x.Description.Contains(search));
 
@@ -30,8 +48,10 @@ public sealed class BeatsController : ControllerBase
         var total = await query.LongCountAsync(ct);
         var beats = await query.OrderByDescending(x => x.Id).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct);
         var ids = beats.Select(x => x.Id).ToArray();
-        var users = await _db.Database.SqlQueryRaw<BeatCountRow>(
-            "SELECT CAST(beat_id AS bigint) AS BeatId, COUNT(*) AS Total FROM beat_users WHERE beat_id IS NOT NULL GROUP BY beat_id").ToListAsync(ct);
+        var users = visibleBeatUsers is null
+            ? await _db.Database.SqlQueryRaw<BeatCountRow>(
+                "SELECT CAST(beat_id AS bigint) AS BeatId, COUNT(*) AS Total FROM beat_users WHERE beat_id IS NOT NULL GROUP BY beat_id").ToListAsync(ct)
+            : visibleBeatUsers.GroupBy(x => x.BeatId).Select(x => new BeatCountRow { BeatId = x.Key, Total = x.Count() }).ToList();
         var customers = await _db.Database.SqlQueryRaw<BeatCountRow>(
             "SELECT CAST(beat_id AS bigint) AS BeatId, COUNT(*) AS Total FROM beat_customers WHERE beat_id IS NOT NULL AND customer_id IS NOT NULL GROUP BY beat_id").ToListAsync(ct);
         var schedules = await _db.BeatSchedules.AsNoTracking().Where(x => x.BeatId != null && ids.Contains(x.BeatId.Value))
@@ -49,7 +69,8 @@ public sealed class BeatsController : ControllerBase
     [RequirePermission("beat_access", "beat_create", "beat_edit")]
     public async Task<IActionResult> Options(CancellationToken ct)
     {
-        var users = await _db.Users.AsNoTracking().Where(x => x.Active == "Y" && !x.IsDeleted)
+        var visibleUserIds = await _hrRepository.GetVisibleUserIdsAsync(CurrentUserId(), ct);
+        var users = await _db.Users.AsNoTracking().Where(x => x.Active == "Y" && !x.IsDeleted && visibleUserIds.Contains(x.Id))
             .OrderBy(x => x.Name).Select(x => new { x.Id, name = x.Name, x.Mobile }).ToListAsync(ct);
         var customers = await _db.Customers.AsNoTracking().Where(x => x.Active == "Y" && x.DeletedAt == null)
             .OrderBy(x => x.Name).Select(x => new { x.Id, name = x.Name, x.Mobile, x.CustomerType }).ToListAsync(ct);
@@ -62,11 +83,20 @@ public sealed class BeatsController : ControllerBase
     [RequirePermission("beat_show")]
     public async Task<IActionResult> Get(ulong id, CancellationToken ct)
     {
+        var visibleUserIds = (await _hrRepository.GetVisibleUserIdsAsync(CurrentUserId(), ct)).ToHashSet();
+        var isDistributor = await IsDistributorUserAsync(ct);
         var beat = await _db.Beats.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, ct);
         if (beat is null) return NotFound(new { message = "Beat not found." });
-        return Ok(new { beat, userIds = await LinkIds("beat_users", "user_id", id, ct),
+        var userIds = await LinkIds("beat_users", "user_id", id, ct);
+        if (isDistributor && !userIds.Any(visibleUserIds.Contains))
+            return Forbid();
+        if (isDistributor)
+            userIds = userIds.Where(visibleUserIds.Contains).ToList();
+        return Ok(new { beat, userIds,
             customerIds = await LinkIds("beat_customers", "customer_id", id, ct),
-            schedules = await _db.BeatSchedules.AsNoTracking().Where(x => x.BeatId == id).OrderBy(x => x.BeatDate)
+            schedules = await _db.BeatSchedules.AsNoTracking().Where(x => x.BeatId == id
+                    && (!isDistributor || (x.UserId.HasValue && visibleUserIds.Contains(x.UserId.Value))))
+                .OrderBy(x => x.BeatDate)
                 .Select(x => new { x.Id, x.UserId, x.BeatDate, x.Active }).ToListAsync(ct) });
     }
 
@@ -116,6 +146,12 @@ public sealed class BeatsController : ControllerBase
         var cityIds = request.CityIds.Distinct().ToArray();
         if (userIds.Length != await _db.Users.CountAsync(x => userIds.Contains(x.Id) && !x.IsDeleted, ct))
             return BadRequest(new { message = "One or more selected users are invalid." });
+        if (await IsDistributorUserAsync(ct))
+        {
+            var visibleUserIds = (await _hrRepository.GetVisibleUserIdsAsync(CurrentUserId(), ct)).ToHashSet();
+            if (userIds.Any(x => !visibleUserIds.Contains(x)))
+                return Forbid();
+        }
         if (customerIds.Length != await _db.Customers.CountAsync(x => customerIds.Contains(x.Id) && x.DeletedAt == null, ct))
             return BadRequest(new { message = "One or more selected customers are invalid." });
         if (cityIds.Length != await _db.Cities.CountAsync(x => cityIds.Contains(x.Id) && x.DeletedAt == null, ct))
@@ -161,6 +197,21 @@ public sealed class BeatsController : ControllerBase
         return values.Where(x => x > 0).Select(x => (ulong)x).ToList();
     }
 
+    private ulong? CurrentUserId()
+    {
+        var raw = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub");
+        return ulong.TryParse(raw, out var id) ? id : null;
+    }
+
+    private async Task<bool> IsDistributorUserAsync(CancellationToken ct)
+    {
+        var userId = CurrentUserId();
+        return userId.HasValue && await _db.ModelHasRoles.AsNoTracking()
+            .Where(x => x.ModelId == userId.Value)
+            .Join(_db.Roles.AsNoTracking(), x => x.RoleId, role => role.Id, (_, role) => role.Name)
+            .AnyAsync(name => name == "Distributor", ct);
+    }
+
     public sealed class BeatRequest
     {
         public string? BeatName { get; set; }
@@ -174,4 +225,5 @@ public sealed class BeatsController : ControllerBase
     public sealed class BeatScheduleRequest { public ulong UserId { get; set; } public DateTime BeatDate { get; set; } }
     public sealed class BeatStatusRequest { public string? Active { get; set; } }
     public sealed class BeatCountRow { public long BeatId { get; set; } public int Total { get; set; } }
+    public sealed class BeatUserRow { public long BeatId { get; set; } public long UserId { get; set; } }
 }

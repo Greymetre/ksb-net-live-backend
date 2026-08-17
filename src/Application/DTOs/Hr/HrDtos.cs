@@ -53,6 +53,8 @@ public sealed class HolidayRequestDto
 
 public sealed class LeaveListFilterDto
 {
+    [System.Text.Json.Serialization.JsonIgnore]
+    public ulong? ActorUserId { get; init; }
     public ulong? ExecutiveId { get; init; }
     public DateTime? StartDate { get; init; }
     public DateTime? EndDate { get; init; }

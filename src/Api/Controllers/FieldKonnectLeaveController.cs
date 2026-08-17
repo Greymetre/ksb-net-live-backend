@@ -2,6 +2,7 @@ using System.Data;
 using System.Globalization;
 using System.Security.Claims;
 using System.Text.Json;
+using Application.Interfaces.Repositories;
 using Infrastructure.Data;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -18,10 +19,12 @@ public sealed class FieldKonnectLeaveController : ControllerBase
     private static readonly HashSet<string> ValidLeaveTypes = ["Leave", "Full Day Leave", "First Half Leave", "Second Half Leave"];
     private static readonly HashSet<string> ValidBalanceTypes = ["Casual Balance", "Sick Balance", "Earned Balance", "Comp-off Balance"];
     private readonly AppDbContext _dbContext;
+    private readonly IHrRepository _hrRepository;
 
-    public FieldKonnectLeaveController(AppDbContext dbContext)
+    public FieldKonnectLeaveController(AppDbContext dbContext, IHrRepository hrRepository)
     {
         _dbContext = dbContext;
+        _hrRepository = hrRepository;
     }
 
     [AcceptVerbs("GET", "POST")]
@@ -35,6 +38,11 @@ public sealed class FieldKonnectLeaveController : ControllerBase
             if (errors.Count > 0)
             {
                 return BadRequest(new { status = "error", message = "Validation failed", errors });
+            }
+
+            if (!await CanAccessUserAsync(request.UserId!.Value, cancellationToken))
+            {
+                return StatusCode(StatusCodes.Status403Forbidden, new { status = "error", message = "You can only manage leave for an assigned ASR/DSR." });
             }
 
             var user = (await QueryRows("SELECT id, casual_leave_balance, sick_leave_balance, earned_leave_balance, compb_off FROM users WHERE id = @id AND deleted_at IS NULL LIMIT 1", cancellationToken, ("@id", request.UserId!.Value))).FirstOrDefault();
@@ -99,6 +107,11 @@ SELECT CAST(SCOPE_IDENTITY() AS bigint);", cancellationToken,
             if (!userId.HasValue)
             {
                 return BadRequest(new { status = "error", message = "Validation failed", errors = new { user_id = new[] { "The user id field is required." } } });
+            }
+
+            if (!await CanAccessUserAsync(userId.Value, cancellationToken))
+            {
+                return StatusCode(StatusCodes.Status403Forbidden, new { status = "error", message = "You can only view leave for an assigned ASR/DSR." });
             }
 
             var exists = await QueryScalarLong("SELECT COUNT(*) FROM users WHERE id = @id AND deleted_at IS NULL", cancellationToken, ("@id", userId.Value));
@@ -338,6 +351,12 @@ WHERE l.id = @id LIMIT 1", cancellationToken, ("@id", leaveId))).FirstOrDefault(
     private static DateTime IndiaNow() => DateTime.UtcNow.AddHours(5).AddMinutes(30);
     private ulong CurrentUserId() => ulong.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var userId) ? userId : throw new InvalidOperationException("Unauthenticated.");
     private ulong CurrentUserIdOr(ulong fallback) => ulong.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var userId) ? userId : fallback;
+
+    private async Task<bool> CanAccessUserAsync(ulong userId, CancellationToken cancellationToken)
+    {
+        var visibleUserIds = await _hrRepository.GetVisibleUserIdsAsync(CurrentUserId(), cancellationToken);
+        return visibleUserIds.Contains(userId);
+    }
 
     private async Task<LeaveForm> ReadLeaveForm(CancellationToken cancellationToken)
     {

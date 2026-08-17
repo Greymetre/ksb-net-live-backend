@@ -27,17 +27,19 @@ public sealed class MobileAppController : ControllerBase
     private readonly AppDbContext _dbContext;
     private readonly IMasterDataService _masterDataService;
     private readonly INewInvoiceRepository _invoiceRepository;
+    private readonly INewInvoiceService _newInvoiceService;
     private readonly ITokenService _tokenService;
     private readonly IPasswordHasher _passwordHasher;
     private readonly ISmtpEmailSender _emailSender;
     private readonly IWebHostEnvironment _environment;
     private readonly IConfiguration _configuration;
 
-    public MobileAppController(AppDbContext dbContext, IMasterDataService masterDataService, INewInvoiceRepository invoiceRepository, ITokenService tokenService, IPasswordHasher passwordHasher, ISmtpEmailSender emailSender, IWebHostEnvironment environment, IConfiguration configuration)
+    public MobileAppController(AppDbContext dbContext, IMasterDataService masterDataService, INewInvoiceRepository invoiceRepository, INewInvoiceService newInvoiceService, ITokenService tokenService, IPasswordHasher passwordHasher, ISmtpEmailSender emailSender, IWebHostEnvironment environment, IConfiguration configuration)
     {
         _dbContext = dbContext;
         _masterDataService = masterDataService;
         _invoiceRepository = invoiceRepository;
+        _newInvoiceService = newInvoiceService;
         _tokenService = tokenService;
         _passwordHasher = passwordHasher;
         _emailSender = emailSender;
@@ -345,7 +347,10 @@ public sealed class MobileAppController : ControllerBase
         var wallet = await BuildWallet(customer.Id, invoices, cancellationToken);
         var walletCards = await BuildDashboardWalletCards(customer, wallet, invoices, cancellationToken);
         var currentSchemes = await CurrentRunningSchemes(null, cancellationToken, invoices);
-        var pendingInvoices = invoices.Count(x => x.ApprovalStatus != NewInvoice.StatusApprovedHo && x.ApprovalStatus != NewInvoice.StatusRejected);
+        // Customer-facing status intentionally exposes only three states:
+        // HO approval is Approved, an explicit rejection is Rejected, and all
+        // intermediate workflow states (Pending/SS/Sales) remain Pending.
+        var pendingInvoices = invoices.Count(x => x.ApprovalStatus is not NewInvoice.StatusApprovedHo and not NewInvoice.StatusRejected);
 
         return Ok(new
         {
@@ -364,9 +369,322 @@ public sealed class MobileAppController : ControllerBase
                 active_wallets = walletCards.Count(x => x.IsActive),
                 wallets = walletCards,
                 current_schemes = currentSchemes,
-                recent_invoices = invoices.OrderByDescending(x => x.InvoiceDate).Take(5)
+                recent_invoices = BuildInvoiceListItems(invoices).Take(5)
             }
         });
+    }
+
+    [Authorize]
+    [HttpGet("dealer/dashboard")]
+    public async Task<IActionResult> DealerDashboard(CancellationToken cancellationToken)
+    {
+        var dealer = await CurrentCustomer(cancellationToken);
+        if (dealer is null) return Unauthorized(new { status = "error", message = "Unauthenticated." });
+        if (dealer.CustomerType != DealerType)
+            return StatusCode(StatusCodes.Status403Forbidden, new { status = "error", message = "Dealer dashboard is available only for dealer/distributor accounts." });
+
+        var assignedRetailers = await DealerAssignedRetailers(dealer.Id).ToListAsync(cancellationToken);
+        var assignedRetailerIds = assignedRetailers.Select(x => x.Id).ToHashSet();
+
+        var invoices = (await _invoiceRepository.GetInvoicesAsync(new NewInvoiceFilterDto
+        {
+            DistributorCustomerId = dealer.Id,
+            Unpaged = true
+        }, null, cancellationToken)).Items;
+
+        var invoiceItems = BuildInvoiceListItems(invoices, showIntermediateAsInProcess: true);
+        var distinctInvoices = invoices.GroupBy(x => x.Id).Select(x => x.First()).ToList();
+        var earnedReward = invoiceItems.Where(x => x.Status == "approved").Sum(x => x.RewardAmount);
+        var expectedReward = invoiceItems.Where(x => x.Status is "pending" or "in_process").Sum(x => x.ExpectedRewardAmount);
+        var totalInvoiceAmount = distinctInvoices.Sum(x => x.Amount);
+        var approvedInvoiceAmount = distinctInvoices
+            .Where(x => x.ApprovalStatus == NewInvoice.StatusApprovedHo)
+            .Sum(x => x.HoApprovedAmount ?? x.Amount);
+        var expectedInvoiceAmount = distinctInvoices
+            .Where(x => x.ApprovalStatus is not NewInvoice.StatusApprovedHo and not NewInvoice.StatusRejected)
+            .Sum(x => x.SalesApprovedAmount ?? x.SsApprovedAmount ?? x.Amount);
+        var activeRetailerIds = distinctInvoices
+            .Select(x => x.SecondaryCustomerId)
+            .Where(assignedRetailerIds.Contains)
+            .ToHashSet();
+        var activeRetailers = assignedRetailers.Where(x => activeRetailerIds.Contains(x.Id)).ToList();
+        // Keep this in sync with the retailer redemption/profile KYC status. A retailer is
+        // pending KYC until every required document is approved.
+        var pendingKycRetailers = activeRetailers.Count(x => !string.Equals(KycStatusValue(ReadFields(x)), "approved", StringComparison.OrdinalIgnoreCase));
+
+        return Ok(new
+        {
+            status = "success",
+            data = new
+            {
+                dealer_id = dealer.Id,
+                profile = ToProfile(dealer),
+                assigned_retailers = assignedRetailers.Count,
+                active_retailers = activeRetailers.Count,
+                pending_kyc_retailers = pendingKycRetailers,
+                total_invoices = distinctInvoices.Count,
+                total_invoice_amount = totalInvoiceAmount,
+                approved_invoice_amount = approvedInvoiceAmount,
+                expected_invoice_amount = expectedInvoiceAmount,
+                total_reward_earned = earnedReward,
+                total_expected_reward = expectedReward,
+                recent_invoices = invoiceItems.Take(5)
+            }
+        });
+    }
+
+    [Authorize]
+    [HttpGet("dealer/retailers")]
+    public async Task<IActionResult> DealerRetailers(
+        [FromQuery] string? search,
+        [FromQuery] int? page,
+        [FromQuery(Name = "page_size")] int? pageSize,
+        [FromQuery(Name = "include_metrics")] bool? includeMetrics,
+        CancellationToken cancellationToken)
+    {
+        var dealer = await CurrentDealer(cancellationToken);
+        if (dealer.Result is not null) return dealer.Result;
+
+        var assignedQuery = DealerAssignedRetailers(dealer.Customer!.Id);
+        var shouldIncludeMetrics = includeMetrics ?? (page.HasValue || pageSize.HasValue);
+        var assignedRetailersForSummary = shouldIncludeMetrics
+            ? await assignedQuery.ToListAsync(cancellationToken)
+            : [];
+        var totalRetailers = shouldIncludeMetrics
+            ? assignedRetailersForSummary.Count
+            : await assignedQuery.CountAsync(cancellationToken);
+        // The Retailers screen shows KYC coverage for every assigned retailer,
+        // including retailers who have not uploaded an invoice yet.
+        var pendingKycRetailers = shouldIncludeMetrics
+            ? assignedRetailersForSummary.Count(retailer =>
+                !string.Equals(KycStatusValue(ReadFields(retailer)), "approved", StringComparison.OrdinalIgnoreCase))
+            : 0;
+        var activeRetailers = shouldIncludeMetrics
+            ? await assignedQuery.CountAsync(retailer => _dbContext.NewInvoices
+                .AsNoTracking()
+                .Any(invoice => invoice.SecondaryCustomerId == retailer.Id), cancellationToken)
+            : 0;
+
+        var query = assignedQuery;
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var term = search.Trim();
+            query = query.Where(x => x.Name.Contains(term)
+                || x.CustomerCode.Contains(term)
+                || (x.Mobile != null && x.Mobile.Contains(term))
+                || (x.CustomFields != null && x.CustomFields.Contains(term)));
+        }
+
+        var filteredTotal = await query.CountAsync(cancellationToken);
+        var requestedPage = Math.Max(1, page ?? 1);
+        var requestedPageSize = Math.Clamp(pageSize ?? 200, 1, 200);
+        var orderedQuery = query.OrderBy(x => x.Name).ThenBy(x => x.Id);
+        var retailers = page.HasValue || pageSize.HasValue
+            ? await orderedQuery.Skip((requestedPage - 1) * requestedPageSize).Take(requestedPageSize).ToListAsync(cancellationToken)
+            : await orderedQuery.Take(requestedPageSize).ToListAsync(cancellationToken);
+        var retailerIds = retailers.Select(x => x.Id).ToArray();
+        var pageInvoices = shouldIncludeMetrics && retailerIds.Length > 0
+            ? (await _invoiceRepository.GetInvoicesAsync(new NewInvoiceFilterDto
+            {
+                DistributorCustomerId = dealer.Customer.Id,
+                SecondaryCustomerIds = retailerIds,
+                Unpaged = true
+            }, null, cancellationToken)).Items
+            : [];
+        var retailerInvoiceSummary = BuildInvoiceListItems(pageInvoices, showIntermediateAsInProcess: true)
+            .GroupBy(x => x.RetailerId)
+            .ToDictionary(
+                x => x.Key,
+                x => new
+                {
+                    InvoiceCount = x.Count(),
+                    RewardPoints = x.Where(i => i.Status == "approved").Sum(i => i.RewardAmount)
+                });
+        return Ok(new
+        {
+            status = "success",
+            data = retailers.Select(x =>
+            {
+                var fields = ReadFields(x);
+                var kycStatus = KycStatusValue(fields);
+                var invoiceSummary = retailerInvoiceSummary.GetValueOrDefault(x.Id);
+                return new
+                {
+                    id = x.Id,
+                    code = x.CustomerCode,
+                    name = DisplayName(x),
+                    owner_name = FirstField(fields, "owner_name", "contact_person", "proprietor_name") ?? x.Name,
+                    shop_name = FirstField(fields, "shop_name", "firm_name") ?? x.Name,
+                    mobile = x.Mobile ?? x.ContactNumber ?? FirstField(fields, "mobile_number", "mobile_numbers"),
+                    beat_name = FirstField(fields, "beat_name", "beat_route", "beat") ?? string.Empty,
+                    kyc_status = kycStatus,
+                    kyc_status_label = string.Equals(kycStatus, "approved", StringComparison.OrdinalIgnoreCase) ? "Verified" : "Pending",
+                    reward_points = invoiceSummary?.RewardPoints ?? 0,
+                    invoice_count = invoiceSummary?.InvoiceCount ?? 0,
+                    is_active = invoiceSummary is not null
+                };
+            }),
+            summary = new
+            {
+                total_retailers = totalRetailers,
+                active_retailers = activeRetailers,
+                pending_kyc_retailers = pendingKycRetailers
+            },
+            pagination = new
+            {
+                page = requestedPage,
+                page_size = requestedPageSize,
+                total = filteredTotal
+            }
+        });
+    }
+
+    [Authorize]
+    [HttpGet("dealer/invoices")]
+    public async Task<IActionResult> DealerInvoices([FromQuery] MobileInvoiceFilter filter, CancellationToken cancellationToken)
+    {
+        var dealer = await CurrentDealer(cancellationToken);
+        if (dealer.Result is not null) return dealer.Result;
+        var (fromDate, toDate) = DateRange(filter.FromDate, filter.ToDate);
+        var invoices = (await _invoiceRepository.GetInvoicesAsync(new NewInvoiceFilterDto
+        {
+            DistributorCustomerId = dealer.Customer!.Id,
+            Search = filter.Search,
+            FromDate = fromDate,
+            ToDate = toDate,
+            Unpaged = true
+        }, null, cancellationToken)).Items;
+        if (!string.IsNullOrWhiteSpace(filter.Status)) invoices = invoices.Where(x => DealerInvoiceStatusMatches(x, filter.Status)).ToList();
+
+        var allItems = BuildInvoiceListItems(invoices, showIntermediateAsInProcess: true);
+        var page = Math.Max(1, filter.Page);
+        var pageSize = Math.Clamp(filter.PageSize, 1, 50);
+        var items = allItems.Skip((page - 1) * pageSize).Take(pageSize).ToList();
+        return Ok(new
+        {
+            status = "success",
+            summary = BuildInvoiceListSummary(allItems),
+            items,
+            groups = BuildInvoiceMonthGroups(items),
+            pagination = new { page, page_size = pageSize, total = allItems.Count }
+        });
+    }
+
+    [Authorize]
+    [HttpGet("dealer/invoices/{id:long}")]
+    public async Task<IActionResult> DealerInvoice(ulong id, CancellationToken cancellationToken)
+    {
+        var dealer = await CurrentDealer(cancellationToken);
+        if (dealer.Result is not null) return dealer.Result;
+
+        var invoice = await _invoiceRepository.GetInvoiceAsync(id, null, cancellationToken);
+        if (invoice is null || !await DealerAssignedRetailers(dealer.Customer!.Id).AnyAsync(x => x.Id == invoice.SecondaryCustomerId, cancellationToken))
+            return NotFound(new { status = "error", message = "Invoice not found." });
+
+        return Ok(new { status = "success", data = BuildInvoiceListItems([invoice], showIntermediateAsInProcess: true).Single() });
+    }
+
+    [Authorize]
+    [HttpGet("dealer/invoice-schemes")]
+    public async Task<IActionResult> DealerInvoiceSchemes([FromQuery(Name = "retailer_id")] ulong retailerId, [FromQuery(Name = "invoice_date")] DateTime? invoiceDate, CancellationToken cancellationToken)
+    {
+        var dealer = await CurrentDealer(cancellationToken);
+        if (dealer.Result is not null) return dealer.Result;
+        if (!await DealerAssignedRetailers(dealer.Customer!.Id).AnyAsync(x => x.Id == retailerId, cancellationToken))
+            return NotFound(new { status = "error", message = "Assigned retailer not found." });
+        IReadOnlyCollection<InvoiceSchemeOptionDto> schemes = !invoiceDate.HasValue
+            ? Array.Empty<InvoiceSchemeOptionDto>()
+            : await _invoiceRepository.GetEligibleSchemeOptionsAsync(retailerId, invoiceDate.Value, cancellationToken);
+        return Ok(new { status = "success", data = schemes });
+    }
+
+    [Authorize]
+    [HttpPost("dealer/invoices")]
+    [RequestSizeLimit(15_000_000)]
+    public async Task<IActionResult> CreateDealerInvoice([FromForm] DealerInvoiceForm form, CancellationToken cancellationToken)
+    {
+        var dealer = await CurrentDealer(cancellationToken);
+        if (dealer.Result is not null) return dealer.Result;
+        var retailer = await DealerAssignedRetailers(dealer.Customer!.Id).FirstOrDefaultAsync(x => x.Id == form.RetailerId, cancellationToken);
+        if (retailer is null) return UnprocessableEntity(new { status = "error", message = "Only a retailer assigned to this dealer can be selected." });
+        if (form.Attachment is null || form.Attachment.Length == 0)
+            return UnprocessableEntity(new { status = "error", message = "Invoice attachment is required." });
+
+        var creatorUserId = await _dbContext.Users.AsNoTracking().IgnoreQueryFilters()
+            .Where(x => x.CustomerId == dealer.Customer.Id && x.DeletedAt == null)
+            .Select(x => (ulong?)x.Id).FirstOrDefaultAsync(cancellationToken);
+        if (!creatorUserId.HasValue)
+        {
+            var fields = ReadFields(retailer);
+            var employeeValue = FirstField(fields, "employee_id", "sales_executive_id")?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault();
+            if (ulong.TryParse(employeeValue, out var employeeId)) creatorUserId = employeeId;
+            creatorUserId ??= retailer.ExecutiveId;
+        }
+        if (!creatorUserId.HasValue || !await _dbContext.Users.AsNoTracking().IgnoreQueryFilters().AnyAsync(x => x.Id == creatorUserId.Value, cancellationToken))
+            return UnprocessableEntity(new { status = "error", message = "No valid sales employee is linked with this dealer/retailer. Please contact admin." });
+
+        var attachment = await SaveFileAsync(form.Attachment, "new-invoices", cancellationToken);
+        var response = await _newInvoiceService.CreateInvoiceAsync(new NewInvoiceRequestDto
+        {
+            SecondaryCustomerId = retailer.Id,
+            SchemeId = form.SchemeId,
+            InvoiceNumber = form.InvoiceNumber,
+            InvoiceDate = form.InvoiceDate,
+            Amount = form.Amount,
+            Points = 0,
+            Attachment = attachment
+        }, creatorUserId, cancellationToken);
+        return StatusCode(StatusCodes.Status201Created, response);
+    }
+
+    [Authorize]
+    [HttpPost("dealer/invoices/{id:long}")]
+    [HttpPut("dealer/invoices/{id:long}")]
+    [RequestSizeLimit(15_000_000)]
+    public async Task<IActionResult> UpdateDealerInvoice(ulong id, [FromForm] DealerInvoiceForm form, CancellationToken cancellationToken)
+    {
+        var dealer = await CurrentDealer(cancellationToken);
+        if (dealer.Result is not null) return dealer.Result;
+
+        var existing = await _invoiceRepository.GetInvoiceAsync(id, null, cancellationToken);
+        if (existing is null || !await DealerAssignedRetailers(dealer.Customer!.Id).AnyAsync(x => x.Id == existing.SecondaryCustomerId, cancellationToken))
+            return NotFound(new { status = "error", message = "Invoice not found." });
+        if (existing.ApprovalStatus != NewInvoice.StatusPending)
+            return StatusCode(StatusCodes.Status403Forbidden, new { status = "error", message = "Only pending invoices can be edited." });
+
+        var retailer = await DealerAssignedRetailers(dealer.Customer.Id).FirstOrDefaultAsync(x => x.Id == form.RetailerId, cancellationToken);
+        if (retailer is null) return UnprocessableEntity(new { status = "error", message = "Only a retailer assigned to this dealer can be selected." });
+
+        var attachment = form.Attachment is { Length: > 0 }
+            ? await SaveFileAsync(form.Attachment, "new-invoices", cancellationToken)
+            : existing.Attachment;
+        var response = await _newInvoiceService.UpdateInvoiceAsync(id, new NewInvoiceRequestDto
+        {
+            SecondaryCustomerId = retailer.Id,
+            SchemeId = form.SchemeId,
+            InvoiceNumber = form.InvoiceNumber,
+            InvoiceDate = form.InvoiceDate,
+            Amount = form.Amount,
+            Points = 0,
+            Attachment = attachment
+        }, existing.CreatedBy, cancellationToken);
+        return Ok(response);
+    }
+
+    [Authorize]
+    [HttpDelete("dealer/invoices/{id:long}")]
+    public async Task<IActionResult> DeleteDealerInvoice(ulong id, CancellationToken cancellationToken)
+    {
+        var dealer = await CurrentDealer(cancellationToken);
+        if (dealer.Result is not null) return dealer.Result;
+
+        var existing = await _invoiceRepository.GetInvoiceAsync(id, null, cancellationToken);
+        if (existing is null || !await DealerAssignedRetailers(dealer.Customer!.Id).AnyAsync(x => x.Id == existing.SecondaryCustomerId, cancellationToken))
+            return NotFound(new { status = "error", message = "Invoice not found." });
+        if (existing.ApprovalStatus != NewInvoice.StatusPending)
+            return StatusCode(StatusCodes.Status403Forbidden, new { status = "error", message = "Only pending invoices can be deleted." });
+
+        return Ok(await _newInvoiceService.DeleteInvoiceAsync(id, cancellationToken));
     }
 
     [Authorize]
@@ -437,7 +755,7 @@ public sealed class MobileAppController : ControllerBase
             status_key = InvoiceStatusKey(invoice.ApprovalStatus),
             is_pending = InvoiceStatusKey(invoice.ApprovalStatus) == "pending",
             is_approved = invoice.ApprovalStatus == NewInvoice.StatusApprovedHo,
-            is_rejected = invoice.ApprovalStatus == NewInvoice.StatusRejected
+            is_rejected = InvoiceStatusKey(invoice.ApprovalStatus) == "rejected"
         });
     }
 
@@ -597,6 +915,7 @@ public sealed class MobileAppController : ControllerBase
         var shopName = FirstNonEmpty(request.ShopName, request.FirmName, GetString(request.Extra, "shop_name"));
         SetIfPresent(fields, "owner_name", ownerName);
         SetIfPresent(fields, "shop_name", shopName);
+        SetIfPresent(fields, "gst_number", GetString(request.Extra, "gst_number"));
         await ApplyMobileCustomerAddressFields(fields, request, cancellationToken);
         var assignedUserIds = await MobileAssignedUserIds(request, cancellationToken);
         SetMobileAssignmentFields(fields, assignedUserIds);
@@ -706,6 +1025,29 @@ public sealed class MobileAppController : ControllerBase
         return ulong.TryParse(subject, out var id) ? await _dbContext.Customers.FirstOrDefaultAsync(x => x.Id == id, cancellationToken) : null;
     }
 
+    private async Task<(Customer? Customer, IActionResult? Result)> CurrentDealer(CancellationToken cancellationToken)
+    {
+        var customer = await CurrentCustomer(cancellationToken);
+        if (customer is null) return (null, Unauthorized(new { status = "error", message = "Unauthenticated." }));
+        if (customer.CustomerType != DealerType)
+            return (null, StatusCode(StatusCodes.Status403Forbidden, new { status = "error", message = "This feature is available only for dealer/distributor accounts." }));
+        return (customer, null);
+    }
+
+    private IQueryable<Customer> DealerAssignedRetailers(ulong dealerId)
+    {
+        var domestic = $"%\"distributor_name\":\"{dealerId}\"%";
+        var domesticSpaced = $"%\"distributor_name\": \"{dealerId}\"%";
+        var domesticNumber = $"%\"distributor_name\":{dealerId}%";
+        var agri = $"%\"agri_distributor\":\"{dealerId}\"%";
+        var agriSpaced = $"%\"agri_distributor\": \"{dealerId}\"%";
+        var agriNumber = $"%\"agri_distributor\":{dealerId}%";
+        return _dbContext.Customers.AsNoTracking().Where(x => x.Active == "Y" && x.CustomerType == RetailerType && x.CustomFields != null
+            && (EF.Functions.Like(x.CustomFields, domestic) || EF.Functions.Like(x.CustomFields, domesticSpaced)
+                || EF.Functions.Like(x.CustomFields, domesticNumber) || EF.Functions.Like(x.CustomFields, agri)
+                || EF.Functions.Like(x.CustomFields, agriSpaced) || EF.Functions.Like(x.CustomFields, agriNumber)));
+    }
+
     private async Task<IReadOnlyCollection<NewInvoiceDto>> CustomerInvoices(ulong customerId, CancellationToken cancellationToken)
     {
         var invoices = (await _invoiceRepository.GetInvoicesAsync(new NewInvoiceFilterDto { Unpaged = true }, null, cancellationToken)).Items;
@@ -728,7 +1070,9 @@ public sealed class MobileAppController : ControllerBase
         return null;
     }
 
-    private static IReadOnlyCollection<MobileInvoiceListItemDto> BuildInvoiceListItems(IReadOnlyCollection<NewInvoiceDto> invoices)
+    private static IReadOnlyCollection<MobileInvoiceListItemDto> BuildInvoiceListItems(
+        IReadOnlyCollection<NewInvoiceDto> invoices,
+        bool showIntermediateAsInProcess = false)
     {
         return invoices
             .GroupBy(x => x.Id)
@@ -738,12 +1082,21 @@ public sealed class MobileAppController : ControllerBase
                 var rewardAmount = invoice.ApprovalStatus == NewInvoice.StatusApprovedHo ? group.Sum(x => x.SchemePoints) : 0;
                 var expectedRewardAmount = invoice.ApprovalStatus == NewInvoice.StatusApprovedHo
                     ? rewardAmount
-                    : group.Sum(x => x.ExpectedSchemePoints);
+                    : invoice.ApprovalStatus == NewInvoice.StatusRejected
+                        ? 0
+                        : group.Sum(x => x.ExpectedSchemePoints);
                 var displayDate = invoice.InvoiceDate;
-                var statusKey = InvoiceStatusKey(invoice.ApprovalStatus);
+                var statusKey = showIntermediateAsInProcess
+                    ? DealerInvoiceStatusKey(invoice.ApprovalStatus)
+                    : InvoiceStatusKey(invoice.ApprovalStatus);
                 return new MobileInvoiceListItemDto
                 {
                     Id = invoice.Id,
+                    RetailerName = !string.IsNullOrWhiteSpace(invoice.ShopName) ? invoice.ShopName : invoice.CustomerName,
+                    OwnerName = invoice.CustomerName,
+                    ShopName = invoice.ShopName,
+                    RetailerCode = invoice.RetailerCode,
+                    MobileNumber = invoice.MobileNumber,
                     InvoiceNumber = invoice.InvoiceNumber,
                     InvoiceNumberDisplay = $"#{invoice.InvoiceNumber.TrimStart('#')}",
                     InvoiceDate = invoice.InvoiceDate,
@@ -758,15 +1111,26 @@ public sealed class MobileAppController : ControllerBase
                     ExpectedRewardDisplay = expectedRewardAmount > 0 ? $"+{FormatIndianCurrency(expectedRewardAmount)}" : null,
                     RewardLabel = rewardAmount > 0
                         ? "Reward credited"
-                        : statusKey == "pending"
-                            ? "Awaiting Approval"
-                            : statusKey == "approved"
-                                ? "No reward earned"
-                                : "Reward",
+                        : statusKey switch
+                        {
+                            "pending" => "Awaiting Approval",
+                            "in_process" => "Approval In Process",
+                            _ => "No reward earned"
+                        },
                     Status = statusKey,
-                    StatusLabel = invoice.ApprovalStatusLabel,
+                    StatusLabel = statusKey switch
+                    {
+                        "approved" => "Approved",
+                        "rejected" => "Rejected",
+                        "in_process" => "In Process",
+                        _ => "Pending"
+                    },
                     IsRewardCredited = rewardAmount > 0,
                     IsPending = statusKey == "pending",
+                    CanEdit = invoice.ApprovalStatus == NewInvoice.StatusPending,
+                    CanDelete = invoice.ApprovalStatus == NewInvoice.StatusPending,
+                    RetailerId = invoice.SecondaryCustomerId,
+                    SchemeId = invoice.SchemeId,
                     Attachment = invoice.Attachment,
                     SchemeName = invoice.SchemeName,
                     SchemeNames = group.Where(x => !string.IsNullOrWhiteSpace(x.SchemeName)).Select(x => x.SchemeName!).Distinct().ToArray()
@@ -1131,8 +1495,7 @@ public sealed class MobileAppController : ControllerBase
                 .Where(invoice => invoice.ApprovalStatus == NewInvoice.StatusApprovedHo)
                 .Sum(invoice => invoice.HoApprovedAmount ?? invoice.Amount);
             var pendingInvoices = schemeInvoices
-                .Where(invoice => invoice.ApprovalStatus != NewInvoice.StatusApprovedHo
-                    && invoice.ApprovalStatus != NewInvoice.StatusRejected)
+                .Where(invoice => invoice.ApprovalStatus != NewInvoice.StatusApprovedHo)
                 .ToList();
             var orderedSlabs = scheme.Slabs.OrderBy(slab => slab.ValueFrom).ThenBy(slab => slab.SortOrder).ToList();
             var currentSlab = orderedSlabs.LastOrDefault(slab => achievementValue >= slab.ValueFrom);
@@ -1304,13 +1667,21 @@ WHERE NOT EXISTS (
             custom_fields = new
             {
                 gst_number = FirstField(fields, "gst_number", "gstin_no") ?? string.Empty,
-                address_line = FirstField(fields, "address_line", "address") ?? string.Empty,
+                address_line = FirstField(fields, "address_line", "address", "address1", "shipping_address") ?? string.Empty,
                 city_id = cityId ?? string.Empty,
                 city_name = Field(fields, "city_name") ?? await CityName(cityId, cancellationToken) ?? string.Empty,
                 state_id = stateId ?? string.Empty,
                 state_name = Field(fields, "state_name") ?? await StateName(stateId, cancellationToken) ?? string.Empty,
                 pincode_id = pincodeId ?? string.Empty,
-                pincode = Field(fields, "pincode") ?? await Pincode(pincodeId, cancellationToken) ?? string.Empty
+                pincode = Field(fields, "pincode") ?? await Pincode(pincodeId, cancellationToken) ?? string.Empty,
+                zone = FirstField(fields, "zone", "zone_name") ?? string.Empty,
+                branch_name = FirstField(fields, "branch_name", "branch") ?? string.Empty,
+                distribution_area = FirstField(fields, "distribution_area")
+                    ?? string.Join(" · ", new[]
+                    {
+                        FirstField(fields, "zone", "zone_name"),
+                        FirstField(fields, "branch_name", "branch")
+                    }.Where(value => !string.IsNullOrWhiteSpace(value)))
             }
         };
     }
@@ -1677,12 +2048,27 @@ VALUES ('Y', {0}, {1}, {2}, {3}, {4}, {5}, {6}, SYSUTCDATETIME(), SYSUTCDATETIME
         _ => "pending"
     };
 
+    private static string DealerInvoiceStatusKey(int status) => status switch
+    {
+        NewInvoice.StatusApprovedHo => "approved",
+        NewInvoice.StatusRejected => "rejected",
+        NewInvoice.StatusApprovedSs or NewInvoice.StatusApprovedSales => "in_process",
+        _ => "pending"
+    };
+
     private static bool InvoiceStatusMatches(NewInvoiceDto invoice, string status)
     {
         var normalized = status.Trim();
         if (string.Equals(normalized, "all", StringComparison.OrdinalIgnoreCase)) return true;
-        if (string.Equals(normalized, InvoiceStatusKey(invoice.ApprovalStatus), StringComparison.OrdinalIgnoreCase)) return true;
-        return string.Equals(invoice.ApprovalStatusLabel, normalized, StringComparison.OrdinalIgnoreCase);
+        return string.Equals(normalized, InvoiceStatusKey(invoice.ApprovalStatus), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool DealerInvoiceStatusMatches(NewInvoiceDto invoice, string status)
+    {
+        var normalized = status.Trim().Replace('-', '_').Replace(' ', '_');
+        if (string.Equals(normalized, "all", StringComparison.OrdinalIgnoreCase)) return true;
+        if (string.Equals(normalized, "inprocess", StringComparison.OrdinalIgnoreCase)) normalized = "in_process";
+        return string.Equals(normalized, DealerInvoiceStatusKey(invoice.ApprovalStatus), StringComparison.OrdinalIgnoreCase);
     }
 
     private static string NormalizeWalletType(string? value) =>
@@ -1921,6 +2307,11 @@ VALUES ('Y', {0}, {1}, {2}, {3}, {4}, {5}, {6}, SYSUTCDATETIME(), SYSUTCDATETIME
     private sealed class MobileInvoiceListItemDto
     {
         public ulong Id { get; set; }
+        public string RetailerName { get; set; } = string.Empty;
+        public string OwnerName { get; set; } = string.Empty;
+        public string ShopName { get; set; } = string.Empty;
+        public string RetailerCode { get; set; } = string.Empty;
+        public string MobileNumber { get; set; } = string.Empty;
         public string InvoiceNumber { get; set; } = string.Empty;
         public string InvoiceNumberDisplay { get; set; } = string.Empty;
         public DateTime InvoiceDate { get; set; }
@@ -1938,6 +2329,10 @@ VALUES ('Y', {0}, {1}, {2}, {3}, {4}, {5}, {6}, SYSUTCDATETIME(), SYSUTCDATETIME
         public string StatusLabel { get; set; } = string.Empty;
         public bool IsRewardCredited { get; set; }
         public bool IsPending { get; set; }
+        public bool CanEdit { get; set; }
+        public bool CanDelete { get; set; }
+        public ulong RetailerId { get; set; }
+        public ulong? SchemeId { get; set; }
         public string? Attachment { get; set; }
         public string? SchemeName { get; set; }
         public IReadOnlyCollection<string> SchemeNames { get; set; } = [];
@@ -2075,5 +2470,14 @@ VALUES ('Y', {0}, {1}, {2}, {3}, {4}, {5}, {6}, SYSUTCDATETIME(), SYSUTCDATETIME
         public decimal RewardValue { get; set; }
         public string RewardLabel { get; set; } = string.Empty;
         public int SortOrder { get; set; }
+    }
+    public sealed class DealerInvoiceForm
+    {
+        [FromForm(Name = "retailer_id")] public ulong RetailerId { get; set; }
+        [FromForm(Name = "scheme_id")] public ulong? SchemeId { get; set; }
+        [FromForm(Name = "invoice_number")] public string? InvoiceNumber { get; set; }
+        [FromForm(Name = "invoice_date")] public DateTime? InvoiceDate { get; set; }
+        [FromForm(Name = "amount")] public decimal? Amount { get; set; }
+        [FromForm(Name = "attachment_file")] public IFormFile? Attachment { get; set; }
     }
 }

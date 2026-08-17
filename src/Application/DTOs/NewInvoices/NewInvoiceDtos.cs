@@ -83,6 +83,8 @@ public sealed class InvoiceSchemeOptionDto
 
 public sealed class NewInvoiceFilterDto
 {
+    public ulong? DistributorCustomerId { get; set; }
+    public IReadOnlyCollection<ulong>? SecondaryCustomerIds { get; set; }
     public ulong? SchemeId { get; set; }
     public string? RetailerSearch { get; set; }
     public string? InvoiceNumber { get; set; }

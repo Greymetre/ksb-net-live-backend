@@ -33,6 +33,7 @@ public sealed class CityAssignmentsController : ControllerBase
     {
         var response = await _service.GetAssignmentsAsync(new CityAssignmentFilterDto
         {
+            ActorUserId = CurrentUserId(),
             Search = search,
             UserId = userId,
             PageNumber = pageNumber > 0 ? pageNumber : page > 0 ? page : 1,
@@ -71,6 +72,7 @@ public sealed class CityAssignmentsController : ControllerBase
     {
         var file = await _service.ExportAssignmentsAsync(new CityAssignmentFilterDto
         {
+            ActorUserId = CurrentUserId(),
             Search = search,
             UserId = userId,
             PageNumber = pageNumber <= 0 ? 1 : pageNumber,

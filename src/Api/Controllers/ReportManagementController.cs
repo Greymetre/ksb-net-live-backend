@@ -26,7 +26,7 @@ public sealed class ReportManagementController : ControllerBase
     public async Task<IActionResult> AsrPerformanceOptions(CancellationToken cancellationToken)
     {
         var actor = CurrentUserId();
-        var visibleIds = (await _hr.GetVisibleUserIdsAsync(actor, cancellationToken)).Append(actor).Distinct().ToArray();
+        var visibleIds = (await _hr.GetVisibleUserIdsAsync(actor, cancellationToken)).Distinct().ToArray();
         var users = await _db.Users.AsNoTracking().Where(x => visibleIds.Contains(x.Id) && x.Active == "Y" && !x.IsDeleted && x.DeletedAt == null)
             .OrderBy(x => x.Name).Select(x => new { id = x.Id, name = x.Name }).ToListAsync(cancellationToken);
         var divisions = await _db.Divisions.AsNoTracking().Where(x => x.Active == "Y" && x.DeletedAt == null)
@@ -47,14 +47,29 @@ public sealed class ReportManagementController : ControllerBase
     [RequirePermission("asm_rating_report")]
     public async Task<IActionResult> ExportRatingReport([FromQuery] RatingReportFilter filter, CancellationToken ct)
     {
-        var isWeekly = string.Equals(filter.Period, "weekly", StringComparison.OrdinalIgnoreCase);
+        var validation = ValidateRatingReportFilter(filter);
+        if (validation is not null) return BadRequest(new { status = false, message = validation });
+        var report = await CalculateRatingReport(filter, ct);
+        var (rows, start, end, isWeekly, isYtd) = (report.Rows, report.Start, report.End, report.IsWeekly, report.IsYtd);
+
+        using var workbook = new XLWorkbook();
+        var sheet = workbook.Worksheets.Add(isWeekly ? "ASR(Weekly)" : "ASR(Monthly)");
+        BuildRatingSheet(sheet, rows, start, report.MarketWeight, report.VisitWeight, report.SalesWeight, report.PromoWeight, report.RetailerWeight, !isYtd);
+        if (isWeekly) { sheet.Cell("A1").Value = $"Weekly {start:dd-MMM-yyyy} to {end.AddDays(-1):dd-MMM-yyyy}"; sheet.Cell("A1").Style.DateFormat.Format = "General"; }
+        else if (isYtd) { sheet.Cell("A1").Value = $"YTD {filter.Year}"; sheet.Cell("A1").Style.DateFormat.Format = "General"; }
+        using var stream = new MemoryStream(); workbook.SaveAs(stream);
+        var period = isWeekly ? $"Weekly_{start:yyyy-MM-dd}_to_{end.AddDays(-1):yyyy-MM-dd}" : isYtd ? $"YTD_{filter.Year}" : start.ToString("MMM_yyyy", CultureInfo.InvariantCulture);
+        return File(stream.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", $"Rating_Report_{period}.xlsx");
+    }
+
+    [HttpGet("rating-report/dashboard")]
+    [RequirePermission("asm_rating_report")]
+    public async Task<IActionResult> RatingReportDashboard([FromQuery] RatingReportFilter filter, CancellationToken ct)
+    {
         if (!filter.DesignationId.HasValue) return BadRequest(new { status = false, message = "Designation is required." });
-        if (!string.IsNullOrWhiteSpace(filter.Period) && !isWeekly) return BadRequest(new { status = false, message = "A valid period is required." });
-        if (!isWeekly && filter.Year is < 2000 or > 2100) return BadRequest(new { status = false, message = "A valid year is required." });
-        if (filter.Month.HasValue && filter.Month is < 1 or > 12) return BadRequest(new { status = false, message = "A valid month is required." });
 
         var actor = CurrentUserId();
-        var visibleIds = (await _hr.GetVisibleUserIdsAsync(actor, ct)).Append(actor).Distinct().ToHashSet();
+        var visibleIds = (await _hr.GetVisibleUserIdsAsync(actor, ct)).Distinct().ToHashSet();
         var users = await _db.Users.AsNoTracking()
             .Where(x => visibleIds.Contains(x.Id) && x.Active == "Y" && !x.IsDeleted && x.DeletedAt == null && x.DesignationId == filter.DesignationId)
             .ToListAsync(ct);
@@ -69,84 +84,164 @@ public sealed class ReportManagementController : ControllerBase
             .ThenBy(x => BranchName(x, branches)).ThenBy(x => x.Name).ToList();
 
         var indiaToday = DateTime.UtcNow.AddHours(5).AddMinutes(30).Date;
-        var isYtd = !isWeekly && !filter.Month.HasValue;
-        var start = isWeekly ? indiaToday.AddDays(-7) : new DateTime(filter.Year!.Value, filter.Month ?? 1, 1);
-        var end = isWeekly ? indiaToday : filter.Month.HasValue ? start.AddMonths(1)
-            : filter.Year == indiaToday.Year ? indiaToday.AddDays(1) : new DateTime(filter.Year!.Value + 1, 1, 1);
+        var currentMonth = new DateTime(indiaToday.Year, indiaToday.Month, 1);
+        var monthStarts = Enumerable.Range(0, 6).Select(index => currentMonth.AddMonths(index - 5)).ToArray();
+        var rangeStart = monthStarts[0];
+        var rangeEnd = currentMonth.AddMonths(1);
+        var targetYears = monthStarts.Select(x => x.Year).Distinct().ToArray();
+        var targetMonths = monthStarts.SelectMany(x => new[] { x.ToString("MMM", CultureInfo.InvariantCulture), x.ToString("MMMM", CultureInfo.InvariantCulture) })
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+
+        var attendance = await _db.Attendances.AsNoTracking().Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value)
+            && x.PunchinDate >= rangeStart && x.PunchinDate < rangeEnd && x.DeletedAt == null)
+            .Select(x => new { UserId = x.UserId!.Value, x.PunchinDate, x.WorkingType }).ToListAsync(ct);
+        var targets = await _db.SalesTargetUsers.AsNoTracking().Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value)
+            && x.Year.HasValue && targetYears.Contains(x.Year.Value) && x.Month != null && targetMonths.Contains(x.Month))
+            .Select(x => new { UserId = x.UserId!.Value, x.Year, x.Month, x.Target }).ToListAsync(ct);
+        var orders = await _db.Orders.AsNoTracking().Where(x => x.CreatedBy.HasValue && userIds.Contains(x.CreatedBy.Value)
+            && x.OrderDate >= rangeStart && x.OrderDate < rangeEnd && x.DeletedAt == null)
+            .Select(x => new { UserId = x.CreatedBy!.Value, x.OrderDate, x.SubTotal }).ToListAsync(ct);
+
+        List<Dictionary<string, object?>> visitRows = userIds.Length == 0 ? [] : await Query($@"SELECT CAST(user_id AS bigint) user_id,
+YEAR(checkin_date) visit_year, MONTH(checkin_date) visit_month, COUNT_BIG(*) visit_count
+FROM check_in WHERE deleted_at IS NULL AND checkin_date >= '{rangeStart:yyyy-MM-dd}' AND checkin_date < '{rangeEnd:yyyy-MM-dd}'
+AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date), MONTH(checkin_date)", ct);
+        var visitCounts = visitRows.ToDictionary(
+            x => (ULong(x, "user_id"), Convert.ToInt32(Obj(x, "visit_year"), CultureInfo.InvariantCulture), Convert.ToInt32(Obj(x, "visit_month"), CultureInfo.InvariantCulture)),
+            x => Convert.ToInt32(Obj(x, "visit_count"), CultureInfo.InvariantCulture));
+
         var retailerAssignments = await RetailerAssignments(userIds, ct);
         var assignedRetailerIds = retailerAssignments.Values.SelectMany(x => x).Distinct().ToArray();
         var activeRetailerIds = assignedRetailerIds.Length == 0 ? new HashSet<ulong>() : (await _db.Orders.AsNoTracking()
             .Where(x => x.BuyerId.HasValue && assignedRetailerIds.Contains(x.BuyerId.Value) && x.DeletedAt == null)
             .Select(x => x.BuyerId!.Value).Distinct().ToListAsync(ct)).ToHashSet();
 
-        const decimal marketWeight = 5m, visitWeight = 30m, salesWeight = 40m, promoWeight = 10m, retailerWeight = 15m;
-
-        async Task<List<RatingReportRow>> CalculatePeriod(DateTime periodStart, DateTime periodEnd, bool weekly, bool ytd)
+        var rows = users.Select(user =>
         {
-            var monthCount = ((periodEnd.AddDays(-1).Year - periodStart.Year) * 12) + periodEnd.AddDays(-1).Month - periodStart.Month + 1;
-            var monthStarts = Enumerable.Range(0, monthCount).Select(periodStart.AddMonths).Select(x => new DateTime(x.Year, x.Month, 1)).ToArray();
-            var targetMonths = monthStarts.SelectMany(x => new[] { x.ToString("MMM", CultureInfo.InvariantCulture), x.ToString("MMMM", CultureInfo.InvariantCulture) }).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-            var targetYears = monthStarts.Select(x => x.Year).Distinct().ToArray();
-            var periodMonths = ytd ? monthCount : 1;
-            var attendance = await _db.Attendances.AsNoTracking().Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value)
-                && x.PunchinDate >= periodStart && x.PunchinDate < periodEnd && x.DeletedAt == null).Select(x => new { UserId = x.UserId!.Value, x.PunchinDate, x.WorkingType }).ToListAsync(ct);
-            var targets = await _db.SalesTargetUsers.AsNoTracking().Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value)
-                && x.Year.HasValue && targetYears.Contains(x.Year.Value) && x.Month != null && targetMonths.Contains(x.Month)).Select(x => new { UserId = x.UserId!.Value, x.Year, x.Month, x.Target }).ToListAsync(ct);
-            var orders = await _db.Orders.AsNoTracking().Where(x => x.CreatedBy.HasValue && userIds.Contains(x.CreatedBy.Value)
-                && x.OrderDate >= periodStart && x.OrderDate < periodEnd && x.DeletedAt == null).Select(x => new { UserId = x.CreatedBy!.Value, x.SubTotal }).ToListAsync(ct);
-            var visits = await RatingVisitCounts(userIds, DateOnly.FromDateTime(periodStart), DateOnly.FromDateTime(periodEnd.AddDays(-1)), ct);
-
-            return users.Select(user =>
+            var assigned = retailerAssignments.GetValueOrDefault(user.Id, []);
+            var active = assigned.Count(activeRetailerIds.Contains);
+            var monthlyRatings = new Dictionary<string, decimal>();
+            var monthlyDetails = new Dictionary<string, RatingTrendMonthDetail>();
+            foreach (var monthStart in monthStarts)
             {
-                var userAttendance = attendance.Where(x => x.UserId == user.Id).ToList();
+                var monthEnd = monthStart.AddMonths(1);
+                var userAttendance = attendance.Where(x => x.UserId == user.Id && x.PunchinDate >= monthStart && x.PunchinDate < monthEnd).ToList();
                 var marketDays = userAttendance.Where(x => !IsLeaveOrOffice(x.WorkingType)).Select(x => x.PunchinDate.Date).Distinct().Count();
                 var promotional = userAttendance.Sum(x => PromotionalActivityCount(x.WorkingType));
-                var customerVisits = visits.GetValueOrDefault(user.Id);
-                var userTargets = targets.Where(x => x.UserId == user.Id).ToList();
-                var target = weekly ? monthStarts.Sum(monthStart =>
-                {
-                    var segmentStart = periodStart > monthStart ? periodStart : monthStart;
-                    var monthEnd = monthStart.AddMonths(1);
-                    var segmentEnd = periodEnd < monthEnd ? periodEnd : monthEnd;
-                    var days = Math.Max(0, (segmentEnd - segmentStart).Days);
-                    var monthTarget = userTargets.Where(x => x.Year == monthStart.Year && (string.Equals(x.Month, monthStart.ToString("MMM", CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase) || string.Equals(x.Month, monthStart.ToString("MMMM", CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase))).Sum(x => x.Target ?? 0m);
-                    return monthTarget / DateTime.DaysInMonth(monthStart.Year, monthStart.Month) * days;
-                }) : userTargets.Sum(x => x.Target ?? 0m);
-                var orderValue = orders.Where(x => x.UserId == user.Id).Sum(x => x.SubTotal);
+                var visits = visitCounts.GetValueOrDefault((user.Id, monthStart.Year, monthStart.Month));
+                var target = targets.Where(x => x.UserId == user.Id && x.Year == monthStart.Year
+                    && (string.Equals(x.Month, monthStart.ToString("MMM", CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(x.Month, monthStart.ToString("MMMM", CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase)))
+                    .Sum(x => x.Target ?? 0m);
+                var orderValue = orders.Where(x => x.UserId == user.Id && x.OrderDate >= monthStart && x.OrderDate < monthEnd).Sum(x => x.SubTotal);
                 var achievement = orderValue > 1m ? Math.Round((orderValue - orderValue / 100m) / 100000m, 2) : 0m;
-                var assigned = retailerAssignments.GetValueOrDefault(user.Id, []);
-                var active = assigned.Count(activeRetailerIds.Contains);
-                var marketTarget = weekly ? 5 : 20 * periodMonths;
-                var visitTarget = weekly ? 50 : 200 * periodMonths;
-                var promotionalTarget = weekly ? 1 : 4 * periodMonths;
-                var marketRatio = CappedRatio(marketDays, marketTarget); var visitRatio = CappedRatio(customerVisits, visitTarget);
-                var salesRatio = CappedRatio(achievement, target); var promoRatio = CappedRatio(promotional, promotionalTarget);
-                var activeRatio = assigned.Count == 0 ? 0m : (decimal)active / assigned.Count; var activeRatingRatio = Math.Min(activeRatio, .30m) / .30m;
-                var final = marketWeight * marketRatio + visitWeight * visitRatio + salesWeight * salesRatio + promoWeight * promoRatio + retailerWeight * activeRatingRatio;
-                return new RatingReportRow(user.Id, BranchName(user, branches), user.EmployeeCodes ?? string.Empty, user.Name, Name(userNames, user.ReportingId), Name(divisions, user.DivisionId), null, Math.Round(final, 2),
-                    marketTarget, marketDays, marketRatio, marketWeight * marketRatio, visitTarget, customerVisits, visitRatio, visitWeight * visitRatio, Math.Round(target, 2), achievement, salesRatio, salesWeight * salesRatio,
-                    promotional, promoRatio, promoWeight * promoRatio, promotionalTarget, assigned.Count, active, activeRatio, Math.Min(activeRatio, .30m), retailerWeight * activeRatingRatio);
-            }).ToList();
-        }
+                var score = CalculateRatingScores(marketDays, visits, achievement, target, promotional, assigned.Count, active, 20, 200, 4);
+                var monthKey = monthStart.ToString("yyyy-MM", CultureInfo.InvariantCulture);
+                monthlyRatings[monthKey] = score.FinalRating;
+                monthlyDetails[monthKey] = new RatingTrendMonthDetail(score.FinalRating,
+                [
+                    new("market_days", "Market Days", Math.Round(score.MarketRatio * 100m, 2), marketDays, 20m, 5m,
+                        $"{marketDays} of 20 target market days completed"),
+                    new("customer_visits", "Customer Visits", Math.Round(score.VisitRatio * 100m, 2), visits, 200m, 30m,
+                        $"{visits} of 200 target customer visits completed"),
+                    new("sales_achievement", "Sales Achievement", Math.Round(score.SalesRatio * 100m, 2), achievement, Math.Round(target, 2), 40m,
+                        $"Achieved {achievement:0.00}L against {target:0.00}L target"),
+                    new("promotional_activity", "Promotional Activity", Math.Round(score.PromoRatio * 100m, 2), promotional, 4m, 10m,
+                        $"{promotional} of 4 target promotional activities completed"),
+                    new("active_retailer", "Active Retailer", Math.Round(score.ActiveRatingRatio * 100m, 2), active, assigned.Count, 15m,
+                        $"{active} of {assigned.Count} assigned retailers active (30% active gives full score)")
+                ]);
+            }
 
-        var rows = await CalculatePeriod(start, end, isWeekly, isYtd);
-        if (!isYtd)
+            return new RatingTrendRow(user.Id, BranchName(user, branches), user.EmployeeCodes ?? string.Empty, user.Name,
+                Name(userNames, user.ReportingId), Name(divisions, user.DivisionId),
+                Math.Round(monthlyRatings.Values.DefaultIfEmpty(0m).Average(), 2), monthlyRatings, monthlyDetails);
+        }).OrderByDescending(x => x.AverageRating).ThenBy(x => x.EmployeeName).ToList();
+
+        var search = filter.Search?.Trim();
+        var filteredRows = string.IsNullOrWhiteSpace(search) ? rows : rows.Where(x =>
+            x.EmployeeName.Contains(search, StringComparison.OrdinalIgnoreCase)
+            || x.EmployeeCode.Contains(search, StringComparison.OrdinalIgnoreCase)
+            || x.Branch.Contains(search, StringComparison.OrdinalIgnoreCase)
+            || x.Zone.Contains(search, StringComparison.OrdinalIgnoreCase)
+            || x.ReportingManager.Contains(search, StringComparison.OrdinalIgnoreCase)).ToList();
+        var pageSize = new[] { 10, 25, 50, 100 }.Contains(filter.PageSize) ? filter.PageSize : 10;
+        var total = filteredRows.Count;
+        var totalPages = Math.Max(1, (int)Math.Ceiling(total / (decimal)pageSize));
+        var page = Math.Clamp(filter.Page, 1, totalPages);
+        var pagedRows = filteredRows.Skip((page - 1) * pageSize).Take(pageSize).ToList();
+
+        var monthlyAverages = monthStarts.ToDictionary(x => x.ToString("yyyy-MM", CultureInfo.InvariantCulture), monthStart =>
+            filteredRows.Count == 0 ? 0m : Math.Round(filteredRows.Average(row => row.MonthlyRatings.GetValueOrDefault(monthStart.ToString("yyyy-MM", CultureInfo.InvariantCulture))), 2));
+        var average = filteredRows.Count == 0 ? 0m : Math.Round(filteredRows.Average(x => x.AverageRating), 2);
+        var oldestAverage = monthlyAverages.GetValueOrDefault(monthStarts[0].ToString("yyyy-MM", CultureInfo.InvariantCulture));
+        var top = filteredRows.FirstOrDefault();
+        var attention = filteredRows.LastOrDefault();
+        var periodLabel = $"{monthStarts[0]:MMM yyyy} to {monthStarts[^1]:MMM yyyy}";
+
+        return Ok(new
         {
-            var previousStart = isWeekly ? start.AddDays(-7) : start.AddMonths(-1);
-            var previousEnd = start;
-            var previous = (await CalculatePeriod(previousStart, previousEnd, isWeekly, false)).ToDictionary(x => x.UserId, x => x.FinalRating);
-            rows = rows.Select(x => x with { LastFinalRating = previous.GetValueOrDefault(x.UserId) }).ToList();
-        }
-        rows = rows.OrderByDescending(x => x.FinalRating).ThenBy(x => x.EmployeeName).ToList();
-
-        using var workbook = new XLWorkbook();
-        var sheet = workbook.Worksheets.Add(isWeekly ? "ASR(Weekly)" : "ASR(Monthly)");
-        BuildRatingSheet(sheet, rows, start, marketWeight, visitWeight, salesWeight, promoWeight, retailerWeight, !isYtd);
-        if (isWeekly) { sheet.Cell("A1").Value = $"Weekly {start:dd-MMM-yyyy} to {end.AddDays(-1):dd-MMM-yyyy}"; sheet.Cell("A1").Style.DateFormat.Format = "General"; }
-        else if (isYtd) { sheet.Cell("A1").Value = $"YTD {filter.Year}"; sheet.Cell("A1").Style.DateFormat.Format = "General"; }
-        using var stream = new MemoryStream(); workbook.SaveAs(stream);
-        var period = isWeekly ? $"Weekly_{start:yyyy-MM-dd}_to_{end.AddDays(-1):yyyy-MM-dd}" : isYtd ? $"YTD_{filter.Year}" : start.ToString("MMM_yyyy", CultureInfo.InvariantCulture);
-        return File(stream.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", $"Rating_Report_{period}.xlsx");
+            status = true,
+            period = new
+            {
+                label = periodLabel,
+                start_date = rangeStart.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                end_date = rangeEnd.AddDays(-1).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                months = monthStarts.Select(x => new
+                {
+                    key = x.ToString("yyyy-MM", CultureInfo.InvariantCulture),
+                    label = x.ToString("MMM", CultureInfo.InvariantCulture),
+                    full_label = x.ToString("MMMM yyyy", CultureInfo.InvariantCulture)
+                })
+            },
+            summary = new
+            {
+                total_employees = filteredRows.Count,
+                total_zones = filteredRows.Select(x => x.Zone).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase).Count(),
+                average_rating = average,
+                oldest_month_average = oldestAverage,
+                average_change = Math.Round(average - oldestAverage, 2),
+                comparison_month = monthStarts[0].ToString("MMM", CultureInfo.InvariantCulture),
+                monthly_averages = monthlyAverages,
+                top_rated = top is null ? null : new { name = top.EmployeeName, employee_code = top.EmployeeCode, branch = top.Branch, zone = top.Zone, rating = top.AverageRating },
+                needs_attention = attention is null ? null : new { name = attention.EmployeeName, employee_code = attention.EmployeeCode, branch = attention.Branch, zone = attention.Zone, rating = attention.AverageRating }
+            },
+            pagination = new
+            {
+                page,
+                page_size = pageSize,
+                total,
+                total_pages = totalPages,
+                from = total == 0 ? 0 : (page - 1) * pageSize + 1,
+                to = Math.Min(total, page * pageSize)
+            },
+            rows = pagedRows.Select(x => new
+            {
+                user_id = x.UserId,
+                branch = x.Branch,
+                employee_code = x.EmployeeCode,
+                employee_name = x.EmployeeName,
+                reporting_manager = x.ReportingManager,
+                zone = x.Zone,
+                average_rating = x.AverageRating,
+                monthly_ratings = x.MonthlyRatings,
+                monthly_details = x.MonthlyDetails.ToDictionary(item => item.Key, item => new
+                {
+                    final_rating = item.Value.FinalRating,
+                    components = item.Value.Components.Select(component => new
+                    {
+                        key = component.Key,
+                        label = component.Label,
+                        percentage = component.Percentage,
+                        actual = component.Actual,
+                        target = component.Target,
+                        weight = component.Weight,
+                        weighted_score = Math.Round(component.Weight * component.Percentage / 100m, 2),
+                        description = component.Description
+                    })
+                })
+            })
+        });
     }
 
     [HttpGet("productivity/options")]
@@ -154,7 +249,7 @@ public sealed class ReportManagementController : ControllerBase
     public async Task<IActionResult> ProductivityOptions(CancellationToken cancellationToken)
     {
         var actor = CurrentUserId();
-        var visibleIds = (await _hr.GetVisibleUserIdsAsync(actor, cancellationToken)).Append(actor).Distinct().ToArray();
+        var visibleIds = (await _hr.GetVisibleUserIdsAsync(actor, cancellationToken)).Distinct().ToArray();
         var users = await _db.Users.AsNoTracking().Where(x => visibleIds.Contains(x.Id) && x.Active == "Y" && !x.IsDeleted && x.DeletedAt == null)
             .OrderBy(x => x.Name).Select(x => new { id = x.Id, name = x.Name }).ToListAsync(cancellationToken);
         var divisions = await _db.Divisions.AsNoTracking().Where(x => x.Active == "Y" && x.DeletedAt == null).OrderBy(x => x.DivisionName).Select(x => new { id = x.Id, name = x.DivisionName }).ToListAsync(cancellationToken);
@@ -174,7 +269,7 @@ public sealed class ReportManagementController : ControllerBase
     {
         if (!filter.DivisionId.HasValue) return BadRequest(new { status = false, message = "Please select a zone before downloading the report." });
         var actor = CurrentUserId();
-        var visible = (await _hr.GetVisibleUserIdsAsync(actor, ct)).Append(actor).Distinct().ToHashSet();
+        var visible = (await _hr.GetVisibleUserIdsAsync(actor, ct)).Distinct().ToHashSet();
         var users = await _db.Users.AsNoTracking().Where(x => visible.Contains(x.Id) && x.Active == "Y" && !x.IsDeleted && x.DeletedAt == null).ToListAsync(ct);
         users = users.Where(x => (!filter.EmployeeId.HasValue || x.Id == filter.EmployeeId) && x.DivisionId == filter.DivisionId && (filter.DesignationIds.Length == 0 || (x.DesignationId.HasValue && filter.DesignationIds.Contains(x.DesignationId.Value)))).ToList();
         var userIds = users.Select(x => x.Id).ToArray();
@@ -216,7 +311,7 @@ public sealed class ReportManagementController : ControllerBase
     [RequirePermission("retailer_productivity_report")]
     public async Task<IActionResult> ExportDealerPerformance([FromQuery] ProductivityFilter filter, CancellationToken ct)
     {
-        var actor = CurrentUserId(); var visible = (await _hr.GetVisibleUserIdsAsync(actor, ct)).Append(actor).Distinct().ToHashSet();
+        var actor = CurrentUserId(); var visible = (await _hr.GetVisibleUserIdsAsync(actor, ct)).Distinct().ToHashSet();
         var users = await _db.Users.AsNoTracking().Where(x => visible.Contains(x.Id) && x.Active == "Y" && !x.IsDeleted && x.DeletedAt == null).ToListAsync(ct);
         users = users.Where(x => (!filter.EmployeeId.HasValue || x.Id == filter.EmployeeId) && (!filter.DivisionId.HasValue || x.DivisionId == filter.DivisionId) && (!filter.BranchId.HasValue || UserHasBranch(x, filter.BranchId.Value)) && (filter.DesignationIds.Length == 0 || (x.DesignationId.HasValue && filter.DesignationIds.Contains(x.DesignationId.Value)))).ToList();
         var userIds = users.Select(x => x.Id).ToArray(); var assignments = await DealerAssignments(userIds, ct);
@@ -263,7 +358,7 @@ public sealed class ReportManagementController : ControllerBase
             return BadRequest(new { status = false, message = "Designation is required." });
 
         var actor = CurrentUserId();
-        var visibleIds = (await _hr.GetVisibleUserIdsAsync(actor, cancellationToken)).Append(actor).Distinct().ToHashSet();
+        var visibleIds = (await _hr.GetVisibleUserIdsAsync(actor, cancellationToken)).Distinct().ToHashSet();
         var allUsers = await _db.Users.AsNoTracking().Where(x => visibleIds.Contains(x.Id) && x.Active == "Y" && !x.IsDeleted && x.DeletedAt == null)
             .ToListAsync(cancellationToken);
         var users = allUsers.Where(x => (!filter.EmployeeId.HasValue || x.Id == filter.EmployeeId)
@@ -357,7 +452,7 @@ public sealed class ReportManagementController : ControllerBase
     public async Task<IActionResult> MarketIntelligence([FromQuery] string? search, CancellationToken cancellationToken)
     {
         var actor = CurrentUserId();
-        var visibleIds = (await _hr.GetVisibleUserIdsAsync(actor, cancellationToken)).Append(actor).Distinct().ToArray();
+        var visibleIds = (await _hr.GetVisibleUserIdsAsync(actor, cancellationToken)).Distinct().ToArray();
         if (visibleIds.Length == 0) return Ok(new { status = true, data = Array.Empty<object>(), total = 0, summary = new { total_records = 0 } });
 
         var rows = await Query(@$"SELECT TOP 500 s.id, s.title, s.division_id, d.division_name, s.created_by,
@@ -465,6 +560,121 @@ WHERE ed.deleted_at IS NULL AND ed.active = 'Y' AND ed.user_id IN ({ids})
             || x.Equals("Nukkad Meet", StringComparison.OrdinalIgnoreCase) || x.Equals("Field Demo", StringComparison.OrdinalIgnoreCase));
 
     private static decimal CappedRatio(decimal achievement, decimal target) => target <= 0 ? 0m : Math.Min(achievement / target, 1m);
+
+    private static RatingScores CalculateRatingScores(int marketDays, int visits, decimal salesAchievement, decimal salesTarget,
+        int promotional, int registeredRetailers, int activeRetailers, int marketTarget, int visitTarget, int promotionalTarget)
+    {
+        const decimal marketWeight = 5m, visitWeight = 30m, salesWeight = 40m, promoWeight = 10m, retailerWeight = 15m;
+        var marketRatio = CappedRatio(marketDays, marketTarget);
+        var visitRatio = CappedRatio(visits, visitTarget);
+        var salesRatio = CappedRatio(salesAchievement, salesTarget);
+        var promoRatio = CappedRatio(promotional, promotionalTarget);
+        var activeRatio = registeredRetailers == 0 ? 0m : (decimal)activeRetailers / registeredRetailers;
+        var activeRatingRatio = Math.Min(activeRatio, .30m) / .30m;
+        var final = marketWeight * marketRatio + visitWeight * visitRatio + salesWeight * salesRatio
+            + promoWeight * promoRatio + retailerWeight * activeRatingRatio;
+        return new RatingScores(marketRatio, visitRatio, salesRatio, promoRatio, activeRatio, Math.Min(activeRatio, .30m),
+            marketWeight * marketRatio, visitWeight * visitRatio, salesWeight * salesRatio, promoWeight * promoRatio,
+            retailerWeight * activeRatingRatio, Math.Round(final, 2));
+    }
+
+    private static string? ValidateRatingReportFilter(RatingReportFilter filter)
+    {
+        var isWeekly = string.Equals(filter.Period, "weekly", StringComparison.OrdinalIgnoreCase);
+        if (!filter.DesignationId.HasValue) return "Designation is required.";
+        if (!string.IsNullOrWhiteSpace(filter.Period) && !isWeekly) return "A valid period is required.";
+        if (!isWeekly && (!filter.Year.HasValue || filter.Year is < 2000 or > 2100)) return "A valid year is required.";
+        if (filter.Month.HasValue && filter.Month is < 1 or > 12) return "A valid month is required.";
+        return null;
+    }
+
+    private async Task<RatingReportCalculation> CalculateRatingReport(RatingReportFilter filter, CancellationToken ct)
+    {
+        var isWeekly = string.Equals(filter.Period, "weekly", StringComparison.OrdinalIgnoreCase);
+        var actor = CurrentUserId();
+        var visibleIds = (await _hr.GetVisibleUserIdsAsync(actor, ct)).Distinct().ToHashSet();
+        var users = await _db.Users.AsNoTracking()
+            .Where(x => visibleIds.Contains(x.Id) && x.Active == "Y" && !x.IsDeleted && x.DeletedAt == null && x.DesignationId == filter.DesignationId)
+            .ToListAsync(ct);
+        users = users.Where(x => (!filter.DivisionId.HasValue || x.DivisionId == filter.DivisionId)
+            && (!filter.BranchId.HasValue || UserHasBranch(x, filter.BranchId.Value))).ToList();
+
+        var userIds = users.Select(x => x.Id).ToArray();
+        var divisions = await _db.Divisions.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.DivisionName, ct);
+        var branches = await _db.Branches.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.BranchName, ct);
+        var userNames = await _db.Users.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.Name, ct);
+        users = users.OrderBy(x => ZoneOrder(Name(divisions, x.DivisionId))).ThenBy(x => Name(divisions, x.DivisionId))
+            .ThenBy(x => BranchName(x, branches)).ThenBy(x => x.Name).ToList();
+
+        var indiaToday = DateTime.UtcNow.AddHours(5).AddMinutes(30).Date;
+        var isYtd = !isWeekly && !filter.Month.HasValue;
+        var start = isWeekly ? indiaToday.AddDays(-7) : new DateTime(filter.Year!.Value, filter.Month ?? 1, 1);
+        var end = isWeekly ? indiaToday : filter.Month.HasValue ? start.AddMonths(1)
+            : filter.Year == indiaToday.Year ? indiaToday.AddDays(1) : new DateTime(filter.Year!.Value + 1, 1, 1);
+        var retailerAssignments = await RetailerAssignments(userIds, ct);
+        var assignedRetailerIds = retailerAssignments.Values.SelectMany(x => x).Distinct().ToArray();
+        var activeRetailerIds = assignedRetailerIds.Length == 0 ? new HashSet<ulong>() : (await _db.Orders.AsNoTracking()
+            .Where(x => x.BuyerId.HasValue && assignedRetailerIds.Contains(x.BuyerId.Value) && x.DeletedAt == null)
+            .Select(x => x.BuyerId!.Value).Distinct().ToListAsync(ct)).ToHashSet();
+
+        const decimal marketWeight = 5m, visitWeight = 30m, salesWeight = 40m, promoWeight = 10m, retailerWeight = 15m;
+
+        async Task<List<RatingReportRow>> CalculatePeriod(DateTime periodStart, DateTime periodEnd, bool weekly, bool ytd)
+        {
+            var monthCount = ((periodEnd.AddDays(-1).Year - periodStart.Year) * 12) + periodEnd.AddDays(-1).Month - periodStart.Month + 1;
+            var monthStarts = Enumerable.Range(0, monthCount).Select(periodStart.AddMonths).Select(x => new DateTime(x.Year, x.Month, 1)).ToArray();
+            var targetMonths = monthStarts.SelectMany(x => new[] { x.ToString("MMM", CultureInfo.InvariantCulture), x.ToString("MMMM", CultureInfo.InvariantCulture) }).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            var targetYears = monthStarts.Select(x => x.Year).Distinct().ToArray();
+            var periodMonths = ytd ? monthCount : 1;
+            var attendance = await _db.Attendances.AsNoTracking().Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value)
+                && x.PunchinDate >= periodStart && x.PunchinDate < periodEnd && x.DeletedAt == null).Select(x => new { UserId = x.UserId!.Value, x.PunchinDate, x.WorkingType }).ToListAsync(ct);
+            var targets = await _db.SalesTargetUsers.AsNoTracking().Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value)
+                && x.Year.HasValue && targetYears.Contains(x.Year.Value) && x.Month != null && targetMonths.Contains(x.Month)).Select(x => new { UserId = x.UserId!.Value, x.Year, x.Month, x.Target }).ToListAsync(ct);
+            var orders = await _db.Orders.AsNoTracking().Where(x => x.CreatedBy.HasValue && userIds.Contains(x.CreatedBy.Value)
+                && x.OrderDate >= periodStart && x.OrderDate < periodEnd && x.DeletedAt == null).Select(x => new { UserId = x.CreatedBy!.Value, x.SubTotal }).ToListAsync(ct);
+            var visits = await RatingVisitCounts(userIds, DateOnly.FromDateTime(periodStart), DateOnly.FromDateTime(periodEnd.AddDays(-1)), ct);
+
+            return users.Select(user =>
+            {
+                var userAttendance = attendance.Where(x => x.UserId == user.Id).ToList();
+                var marketDays = userAttendance.Where(x => !IsLeaveOrOffice(x.WorkingType)).Select(x => x.PunchinDate.Date).Distinct().Count();
+                var promotional = userAttendance.Sum(x => PromotionalActivityCount(x.WorkingType));
+                var customerVisits = visits.GetValueOrDefault(user.Id);
+                var userTargets = targets.Where(x => x.UserId == user.Id).ToList();
+                var target = weekly ? monthStarts.Sum(monthStart =>
+                {
+                    var segmentStart = periodStart > monthStart ? periodStart : monthStart;
+                    var monthEnd = monthStart.AddMonths(1);
+                    var segmentEnd = periodEnd < monthEnd ? periodEnd : monthEnd;
+                    var days = Math.Max(0, (segmentEnd - segmentStart).Days);
+                    var monthTarget = userTargets.Where(x => x.Year == monthStart.Year && (string.Equals(x.Month, monthStart.ToString("MMM", CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase) || string.Equals(x.Month, monthStart.ToString("MMMM", CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase))).Sum(x => x.Target ?? 0m);
+                    return monthTarget / DateTime.DaysInMonth(monthStart.Year, monthStart.Month) * days;
+                }) : userTargets.Sum(x => x.Target ?? 0m);
+                var orderValue = orders.Where(x => x.UserId == user.Id).Sum(x => x.SubTotal);
+                var achievement = orderValue > 1m ? Math.Round((orderValue - orderValue / 100m) / 100000m, 2) : 0m;
+                var assigned = retailerAssignments.GetValueOrDefault(user.Id, []);
+                var active = assigned.Count(activeRetailerIds.Contains);
+                var marketTarget = weekly ? 5 : 20 * periodMonths;
+                var visitTarget = weekly ? 50 : 200 * periodMonths;
+                var promotionalTarget = weekly ? 1 : 4 * periodMonths;
+                var score = CalculateRatingScores(marketDays, customerVisits, achievement, target, promotional, assigned.Count, active,
+                    marketTarget, visitTarget, promotionalTarget);
+                return new RatingReportRow(user.Id, BranchName(user, branches), user.EmployeeCodes ?? string.Empty, user.Name, Name(userNames, user.ReportingId), Name(divisions, user.DivisionId), null, score.FinalRating,
+                    marketTarget, marketDays, score.MarketRatio, score.MarketRating, visitTarget, customerVisits, score.VisitRatio, score.VisitRating, Math.Round(target, 2), achievement, score.SalesRatio, score.SalesRating,
+                    promotional, score.PromoRatio, score.PromoRating, promotionalTarget, assigned.Count, active, score.ActiveRatio, score.ActiveRatingRatio, score.ActiveRating);
+            }).ToList();
+        }
+
+        var rows = await CalculatePeriod(start, end, isWeekly, isYtd);
+        if (!isYtd)
+        {
+            var previousStart = isWeekly ? start.AddDays(-7) : start.AddMonths(-1);
+            var previous = (await CalculatePeriod(previousStart, start, isWeekly, false)).ToDictionary(x => x.UserId, x => x.FinalRating);
+            rows = rows.Select(x => x with { LastFinalRating = previous.GetValueOrDefault(x.UserId) }).ToList();
+        }
+        rows = rows.OrderByDescending(x => x.FinalRating).ThenBy(x => x.EmployeeName).ToList();
+        return new RatingReportCalculation(rows, start, end, isWeekly, isYtd, marketWeight, visitWeight, salesWeight, promoWeight, retailerWeight);
+    }
 
     private static void BuildRatingSheet(IXLWorksheet sheet, IReadOnlyList<RatingReportRow> rows, DateTime month,
         decimal marketWeight, decimal visitWeight, decimal salesWeight, decimal promoWeight, decimal retailerWeight, bool includeLastRating)
@@ -616,6 +826,9 @@ public sealed class RatingReportFilter
     [FromQuery(Name = "division_id")] public ulong? DivisionId { get; set; }
     [FromQuery(Name = "zone_id")] public ulong? ZoneId { get => DivisionId; set => DivisionId = value; }
     [FromQuery(Name = "branch_id")] public ulong? BranchId { get; set; }
+    [FromQuery(Name = "search")] public string? Search { get; set; }
+    [FromQuery(Name = "page")] public int Page { get; set; } = 1;
+    [FromQuery(Name = "page_size")] public int PageSize { get; set; } = 10;
 }
 
 internal sealed record RatingReportRow(ulong UserId, string Branch, string EmployeeCode, string EmployeeName, string ReportingManager, string Zone,
@@ -633,6 +846,21 @@ internal sealed record RatingReportRow(ulong UserId, string Branch, string Emplo
         return values.ToArray();
     }
 }
+
+internal sealed record RatingReportCalculation(IReadOnlyList<RatingReportRow> Rows, DateTime Start, DateTime End, bool IsWeekly, bool IsYtd,
+    decimal MarketWeight, decimal VisitWeight, decimal SalesWeight, decimal PromoWeight, decimal RetailerWeight);
+
+internal sealed record RatingScores(decimal MarketRatio, decimal VisitRatio, decimal SalesRatio, decimal PromoRatio,
+    decimal ActiveRatio, decimal ActiveRatingRatio, decimal MarketRating, decimal VisitRating, decimal SalesRating,
+    decimal PromoRating, decimal ActiveRating, decimal FinalRating);
+
+internal sealed record RatingTrendRow(ulong UserId, string Branch, string EmployeeCode, string EmployeeName,
+    string ReportingManager, string Zone, decimal AverageRating, IReadOnlyDictionary<string, decimal> MonthlyRatings,
+    IReadOnlyDictionary<string, RatingTrendMonthDetail> MonthlyDetails);
+
+internal sealed record RatingTrendMonthDetail(decimal FinalRating, IReadOnlyList<RatingComponentDetail> Components);
+internal sealed record RatingComponentDetail(string Key, string Label, decimal Percentage, decimal Actual, decimal Target,
+    decimal Weight, string Description);
 
 public sealed record DealerPerformanceRow(Domain.Entities.Customer Dealer, Domain.Entities.User User, IReadOnlyDictionary<int, decimal> Monthly, string Zone, string Branch, string Reporting);
 public sealed record PerformanceOrder(ulong? BuyerId, ulong? SellerId, ulong? ExecutiveId, ulong? CreatedBy, DateTime? OrderDate, long TotalQty, decimal GrandTotal);

@@ -151,6 +151,10 @@ public sealed class NewInvoiceService : INewInvoiceService
     public async Task<LaravelApiResponse> DeleteInvoiceAsync(ulong id, CancellationToken cancellationToken)
     {
         var invoice = await FindOrThrowAsync(id, cancellationToken);
+        if (invoice.ApprovalStatus != NewInvoice.StatusPending)
+        {
+            throw Http(403, "Only pending invoices can be deleted.");
+        }
         await _repository.DeleteInvoiceAsync(invoice, cancellationToken);
         return LaravelApiResponse.MessageOnly("success", "Invoice deleted successfully");
     }

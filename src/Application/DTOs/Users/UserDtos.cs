@@ -6,6 +6,8 @@ namespace Application.DTOs.Users;
 
 public sealed class UserExportFiltersDto
 {
+    [JsonIgnore]
+    public ulong? ActorUserId { get; set; }
     public string? UserType { get; set; }
     public string? Active { get; set; }
     public ulong? DivisionId { get; set; }
@@ -15,6 +17,8 @@ public sealed class UserExportFiltersDto
 
 public sealed class UserListFiltersDto
 {
+    [JsonIgnore]
+    public ulong? ActorUserId { get; set; }
     public string? Search { get; set; }
     public string? UserType { get; set; }
     public string? Active { get; set; }

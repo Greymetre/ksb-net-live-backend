@@ -108,7 +108,7 @@ public sealed class MobileTeamReportsController : ControllerBase
 
     private async Task<List<TeamUser>> Team(TeamReportFilter filter, CancellationToken ct)
     {
-        var actor = CurrentUserId(); var ids = (await _hr.GetVisibleUserIdsAsync(actor, ct)).Append(actor).Distinct().ToArray();
+        var actor = CurrentUserId(); var ids = (await _hr.GetVisibleUserIdsAsync(actor, ct)).Distinct().ToArray();
         var designation = filter.Designation?.ToLowerInvariant() switch { "asr" => 3UL, "dsr" => 6UL, _ => 0UL };
         var raw = await (from user in _db.Users.AsNoTracking() join manager in _db.Users.AsNoTracking() on user.ReportingId equals manager.Id into managers from manager in managers.DefaultIfEmpty()
             join division in _db.Divisions.AsNoTracking() on user.DivisionId equals division.Id into divisions from division in divisions.DefaultIfEmpty()

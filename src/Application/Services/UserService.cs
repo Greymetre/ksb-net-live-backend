@@ -43,9 +43,9 @@ public sealed class UserService : IUserService
     public async Task<LaravelApiResponse> GetUsersAsync(UserListFiltersDto filters, CancellationToken cancellationToken) =>
         LaravelApiResponse.Success("users", await _repository.GetUsersAsync(filters, cancellationToken));
 
-    public async Task<LaravelApiResponse> GetUserAsync(ulong id, CancellationToken cancellationToken)
+    public async Task<LaravelApiResponse> GetUserAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken)
     {
-        var user = await _repository.GetUserDtoAsync(id, cancellationToken);
+        var user = await _repository.GetUserDtoAsync(id, actorUserId, cancellationToken);
         return LaravelApiResponse.Success("user", user ?? throw NotFound("User not found"));
     }
 
@@ -117,7 +117,7 @@ public sealed class UserService : IUserService
         }, cancellationToken);
 
         await _repository.SaveChangesAsync(cancellationToken);
-        return LaravelApiResponse.Success("user", await _repository.GetUserDtoAsync(user.Id, cancellationToken), "User created successfully");
+        return LaravelApiResponse.Success("user", await _repository.GetUserDtoAsync(user.Id, null, cancellationToken), "User created successfully");
     }
 
     public async Task<LaravelApiResponse> UpdateUserAsync(ulong id, UserRequestDto request, ulong? actorUserId, CancellationToken cancellationToken)
@@ -178,7 +178,7 @@ public sealed class UserService : IUserService
         details.UpdatedAt = DateTime.UtcNow;
 
         await _repository.SaveChangesAsync(cancellationToken);
-        return LaravelApiResponse.Success("user", await _repository.GetUserDtoAsync(user.Id, cancellationToken), "User updated successfully");
+        return LaravelApiResponse.Success("user", await _repository.GetUserDtoAsync(user.Id, null, cancellationToken), "User updated successfully");
     }
 
     public async Task<LaravelApiResponse> SetUserActiveAsync(ulong id, string? active, ulong? actorUserId, CancellationToken cancellationToken)
@@ -187,7 +187,7 @@ public sealed class UserService : IUserService
         user.Active = NormalizeActive(active);
         user.UpdatedAt = DateTime.UtcNow;
         await _repository.SaveChangesAsync(cancellationToken);
-        return LaravelApiResponse.Success("user", await _repository.GetUserDtoAsync(id, cancellationToken), "User status changed successfully");
+        return LaravelApiResponse.Success("user", await _repository.GetUserDtoAsync(id, null, cancellationToken), "User status changed successfully");
     }
 
     public async Task<LaravelApiResponse> DeleteUserAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken)

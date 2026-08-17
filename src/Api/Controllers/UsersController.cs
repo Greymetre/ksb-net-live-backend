@@ -32,6 +32,7 @@ public sealed class UsersController : ControllerBase
     {
         var response = await _userService.GetUsersAsync(new UserListFiltersDto
         {
+            ActorUserId = CurrentUserId(),
             Search = search,
             UserType = userType,
             Active = active,
@@ -47,7 +48,7 @@ public sealed class UsersController : ControllerBase
     [HttpGet("users/{id}")]
     public async Task<IActionResult> GetUser(ulong id, CancellationToken cancellationToken)
     {
-        var response = await _userService.GetUserAsync(id, cancellationToken);
+        var response = await _userService.GetUserAsync(id, CurrentUserId(), cancellationToken);
         return Ok(response);
     }
 
@@ -122,6 +123,7 @@ public sealed class UsersController : ControllerBase
     {
         var file = await _userService.ExportUsersAsync(new UserExportFiltersDto
         {
+            ActorUserId = CurrentUserId(),
             UserType = userType,
             Active = active,
             DivisionId = divisionId,

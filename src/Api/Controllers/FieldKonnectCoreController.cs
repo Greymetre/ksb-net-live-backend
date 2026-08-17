@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Security.Claims;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Application.Interfaces.Repositories;
 using Domain.Constants;
 using Domain.Entities;
 using Infrastructure.Data;
@@ -19,11 +20,13 @@ public sealed class FieldKonnectCoreController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
     private readonly IWebHostEnvironment _environment;
+    private readonly IHrRepository _hr;
 
-    public FieldKonnectCoreController(AppDbContext dbContext, IWebHostEnvironment environment)
+    public FieldKonnectCoreController(AppDbContext dbContext, IWebHostEnvironment environment, IHrRepository hr)
     {
         _dbContext = dbContext;
         _environment = environment;
+        _hr = hr;
     }
 
     [AcceptVerbs("GET", "POST")]
@@ -374,13 +377,16 @@ ORDER BY bs.id ASC", cancellationToken, ("@user_id", userId), ("@today", today))
             var page = Math.Max(1, (int)(ULongValue("page", body) ?? 1));
             var offset = (page - 1) * pageSize;
             var searchName = RequestValue("search_name", body);
-            var userIds = !string.IsNullOrWhiteSpace(searchName) && ulong.TryParse(searchName, out var selectedUserId)
-                ? new List<ulong> { selectedUserId }
-                : await VisibleUserIds(authUserId, cancellationToken);
+            var visibleUserIds = await VisibleUserIds(authUserId, cancellationToken);
+            var userIds = visibleUserIds;
+            if (!string.IsNullOrWhiteSpace(searchName) && ulong.TryParse(searchName, out var selectedUserId))
+            {
+                userIds = visibleUserIds.Contains(selectedUserId) ? [selectedUserId] : [];
+            }
 
             userIds = await FilterUserIds(userIds, body, cancellationToken);
             var users = await UserOptions(userIds, cancellationToken);
-            var branches = await BranchOptions(await VisibleUserIds(authUserId, cancellationToken), cancellationToken);
+            var branches = await BranchOptions(visibleUserIds, cancellationToken);
             var where = new List<string> { userIds.Count == 0 ? "1 = 0" : $"a.user_id IN ({string.Join(',', userIds.Distinct())})", "a.deleted_at IS NULL" };
             var parameters = new List<(string, object?)>();
 
@@ -831,23 +837,7 @@ VALUES ('Y', @user_id, @latitude, @longitude, @time, @now, @now)", cancellationT
     }
 
     private async Task<List<ulong>> VisibleUserIds(ulong userId, CancellationToken cancellationToken)
-    {
-        var rows = await QueryRows("SELECT id, reportingid FROM users WHERE deleted_at IS NULL", cancellationToken);
-        var visible = new HashSet<ulong> { userId };
-        var changed = true;
-        while (changed)
-        {
-            changed = false;
-            foreach (var row in rows)
-            {
-                var id = ToUInt64(Obj(row, "id"));
-                var reportingId = ToUInt64(Obj(row, "reportingid"));
-                if (reportingId > 0 && visible.Contains(reportingId) && visible.Add(id)) changed = true;
-            }
-        }
-
-        return visible.ToList();
-    }
+        => (await _hr.GetVisibleUserIdsAsync(userId, cancellationToken)).ToList();
 
     private async Task<List<ulong>> FilterUserIds(List<ulong> userIds, IReadOnlyDictionary<string, string> body, CancellationToken cancellationToken)
     {

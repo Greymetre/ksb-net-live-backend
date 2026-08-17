@@ -21,6 +21,8 @@ public sealed class CityAssignmentDto
 
 public sealed class CityAssignmentFilterDto
 {
+    [System.Text.Json.Serialization.JsonIgnore]
+    public ulong? ActorUserId { get; init; }
     public string? Search { get; init; }
     public ulong? UserId { get; init; }
     public int PageNumber { get; init; } = 1;

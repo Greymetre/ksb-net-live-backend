@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Security.Claims;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Application.Interfaces.Repositories;
 using Domain.Entities;
 using Infrastructure.Data;
 using Microsoft.AspNetCore.Authorization;
@@ -20,10 +21,12 @@ public sealed class MobileOrderFlowController : ControllerBase
     private const ulong RetailerCustomerType = 2;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly AppDbContext _db;
+    private readonly IHrRepository _hrRepository;
 
-    public MobileOrderFlowController(AppDbContext db)
+    public MobileOrderFlowController(AppDbContext db, IHrRepository hrRepository)
     {
         _db = db;
+        _hrRepository = hrRepository;
     }
 
     [HttpGet("getCategoryList")]
@@ -335,14 +338,20 @@ public sealed class MobileOrderFlowController : ControllerBase
         var currentUserId = CurrentUserId();
         var allAccess = await CanSeeAllCustomers(currentUserId, cancellationToken);
         var visibleUserIds = allAccess ? Array.Empty<ulong>() : await VisibleUserIds(currentUserId, cancellationToken);
-        var selectedUserId = userId.HasValue && visibleUserIds.Contains(userId.Value) ? userId.Value : (ulong?)null;
+        var selectedUserId = userId.HasValue && (allAccess || visibleUserIds.Contains(userId.Value))
+            ? userId.Value
+            : (ulong?)null;
         var pageNumber = Math.Max(page ?? 1, 1);
         var size = Math.Clamp(pageSize ?? pageSqueryize ?? perPage ?? 10, 1, 100);
 
-        var userScope = allAccess && !userId.HasValue
-            ? "1 = 1"
+        var userScope = allAccess
+            ? selectedUserId.HasValue
+                ? $"(o.created_by = {selectedUserId.Value} OR o.executive_id = {selectedUserId.Value})"
+                : "1 = 1"
             : selectedUserId.HasValue
             ? $"(o.created_by = {selectedUserId.Value} OR o.executive_id = {selectedUserId.Value})"
+            : visibleUserIds.Count == 0
+            ? "1 = 0"
             : $@"(
     o.created_by IN ({string.Join(',', visibleUserIds)})
     OR o.executive_id IN ({string.Join(',', visibleUserIds)})
@@ -429,7 +438,7 @@ LIMIT {size} OFFSET {offset}", cancellationToken);
         var currentUserId = CurrentUserId();
         var allAccess = await CanSeeAllCustomers(currentUserId, cancellationToken);
         var visibleUserIds = allAccess ? Array.Empty<ulong>() : await VisibleUserIds(currentUserId, cancellationToken);
-        var scope = allAccess ? "1 = 1" : $@"(
+        var scope = allAccess ? "1 = 1" : visibleUserIds.Count == 0 ? "1 = 0" : $@"(
     o.created_by IN ({string.Join(',', visibleUserIds)})
     OR o.executive_id IN ({string.Join(',', visibleUserIds)})
 )";
@@ -540,24 +549,7 @@ ORDER BY od.id ASC", cancellationToken);
     }
 
     private async Task<IReadOnlyCollection<ulong>> VisibleUserIds(ulong userId, CancellationToken cancellationToken)
-    {
-        var users = await _db.Users.AsNoTracking()
-            .Where(x => !x.IsDeleted && x.DeletedAt == null)
-            .Select(x => new { x.Id, x.ReportingId })
-            .ToListAsync(cancellationToken);
-        var visible = new HashSet<ulong> { userId };
-        var changed = true;
-        while (changed)
-        {
-            changed = false;
-            foreach (var user in users)
-            {
-                if (user.ReportingId.HasValue && visible.Contains(user.ReportingId.Value) && visible.Add(user.Id)) changed = true;
-            }
-        }
-
-        return visible;
-    }
+        => await _hrRepository.GetVisibleUserIdsAsync(userId, cancellationToken);
 
     private async Task<Dictionary<ulong, Customer>> CustomerMap(IReadOnlyCollection<ulong> ids, CancellationToken cancellationToken)
     {
@@ -612,8 +604,15 @@ ORDER BY c.name ASC", cancellationToken);
 FROM model_has_roles m
 INNER JOIN roles r ON r.id = m.role_id
 WHERE m.model_id = {userId}
-AND r.name IN ('superadmin', 'subAdmin', 'Sub_Admin', 'Admin', 'HO')", cancellationToken);
-        return rows.Count > 0;
+", cancellationToken);
+        var roles = rows.Select(row => Str(row, "name")).ToArray();
+        if (roles.Any(role => role.Equals("Distributor", StringComparison.OrdinalIgnoreCase))) return false;
+
+        return roles.Any(role => role.Equals("superadmin", StringComparison.OrdinalIgnoreCase)
+            || role.Equals("subAdmin", StringComparison.OrdinalIgnoreCase)
+            || role.Equals("Sub_Admin", StringComparison.OrdinalIgnoreCase)
+            || role.Equals("Admin", StringComparison.OrdinalIgnoreCase)
+            || role.Equals("HO", StringComparison.OrdinalIgnoreCase));
     }
 
     private async Task<Dictionary<ulong, string>> AddressMap(IReadOnlyCollection<ulong> customerIds, CancellationToken cancellationToken)

@@ -1,5 +1,6 @@
 using Api.Filters;
 using Application.DTOs.Hr;
+using Application.Interfaces.Repositories;
 using Application.Interfaces.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -13,10 +14,12 @@ namespace Api.Controllers;
 public sealed class HrController : ControllerBase
 {
     private readonly IHrService _hrService;
+    private readonly IHrRepository _hrRepository;
 
-    public HrController(IHrService hrService)
+    public HrController(IHrService hrService, IHrRepository hrRepository)
     {
         _hrService = hrService;
+        _hrRepository = hrRepository;
     }
 
     [HttpGet("hr/options")]
@@ -24,12 +27,18 @@ public sealed class HrController : ControllerBase
         Ok(await _hrService.GetOptionsAsync(CurrentUserId(), cancellationToken));
 
     [HttpGet("tours/ajax-user-districts")]
-    public async Task<IActionResult> UserDistricts([FromQuery(Name = "user_id")] ulong userId, CancellationToken cancellationToken) =>
-        Ok(await _hrService.GetUserDistrictsAsync(userId, cancellationToken));
+    public async Task<IActionResult> UserDistricts([FromQuery(Name = "user_id")] ulong userId, CancellationToken cancellationToken)
+    {
+        if (!await CanAccessUserAsync(userId, cancellationToken)) return Forbid();
+        return Ok(await _hrService.GetUserDistrictsAsync(userId, cancellationToken));
+    }
 
     [HttpGet("tours/ajax-user-cities-by-district")]
-    public async Task<IActionResult> UserCities([FromQuery(Name = "user_id")] ulong userId, [FromQuery(Name = "district_id")] ulong districtId, CancellationToken cancellationToken) =>
-        Ok(await _hrService.GetUserCitiesAsync(userId, districtId, cancellationToken));
+    public async Task<IActionResult> UserCities([FromQuery(Name = "user_id")] ulong userId, [FromQuery(Name = "district_id")] ulong districtId, CancellationToken cancellationToken)
+    {
+        if (!await CanAccessUserAsync(userId, cancellationToken)) return Forbid();
+        return Ok(await _hrService.GetUserCitiesAsync(userId, districtId, cancellationToken));
+    }
 
     [RequirePermission("holiday_access")]
     [HttpGet("holidays")]
@@ -74,7 +83,7 @@ public sealed class HrController : ControllerBase
     [RequirePermission("leave_access")]
     [HttpGet("leaves")]
     public async Task<IActionResult> Leaves([FromQuery(Name = "executive_id")] ulong? executiveId, [FromQuery(Name = "start_date")] DateTime? startDate, [FromQuery(Name = "end_date")] DateTime? endDate, [FromQuery] string? status, [FromQuery] string? search, CancellationToken cancellationToken) =>
-        Ok(await _hrService.GetLeavesAsync(new LeaveListFilterDto { ExecutiveId = executiveId, StartDate = startDate, EndDate = endDate, Status = status, Search = search }, cancellationToken));
+        Ok(await _hrService.GetLeavesAsync(new LeaveListFilterDto { ActorUserId = CurrentUserId(), ExecutiveId = executiveId, StartDate = startDate, EndDate = endDate, Status = status, Search = search }, cancellationToken));
 
     [RequirePermission("leave_access")]
     [HttpPost("leaves")]
@@ -108,7 +117,7 @@ public sealed class HrController : ControllerBase
     [HttpGet("leaves/export")]
     public async Task<IActionResult> ExportLeaves([FromQuery(Name = "executive_id")] ulong? executiveId, [FromQuery(Name = "start_date")] DateTime? startDate, [FromQuery(Name = "end_date")] DateTime? endDate, [FromQuery] string? status, [FromQuery] string? search, CancellationToken cancellationToken)
     {
-        var file = await _hrService.ExportLeavesAsync(new LeaveListFilterDto { ExecutiveId = executiveId, StartDate = startDate, EndDate = endDate, Status = status, Search = search }, cancellationToken);
+        var file = await _hrService.ExportLeavesAsync(new LeaveListFilterDto { ActorUserId = CurrentUserId(), ExecutiveId = executiveId, StartDate = startDate, EndDate = endDate, Status = status, Search = search }, cancellationToken);
         return File(file.Content, file.ContentType, file.FileName);
     }
 
@@ -119,30 +128,50 @@ public sealed class HrController : ControllerBase
 
     [RequirePermission("tours")]
     [HttpGet("tours/{id}")]
-    public async Task<IActionResult> Tour(ulong id, CancellationToken cancellationToken) =>
-        Ok(await _hrService.GetTourAsync(id, cancellationToken));
+    public async Task<IActionResult> Tour(ulong id, CancellationToken cancellationToken)
+    {
+        if (!await CanAccessTourAsync(id, cancellationToken)) return Forbid();
+        return Ok(await _hrService.GetTourAsync(id, cancellationToken));
+    }
 
     [RequirePermission("tours")]
     [HttpPost("tours")]
-    public async Task<IActionResult> CreateTour([FromBody] TourRequestDto request, CancellationToken cancellationToken) =>
-        StatusCode(StatusCodes.Status201Created, await _hrService.CreateTourAsync(request, CurrentUserId(), cancellationToken));
+    public async Task<IActionResult> CreateTour([FromBody] TourRequestDto request, CancellationToken cancellationToken)
+    {
+        if (request.UserId.HasValue && !await CanAccessUserAsync(request.UserId.Value, cancellationToken)) return Forbid();
+        return StatusCode(StatusCodes.Status201Created, await _hrService.CreateTourAsync(request, CurrentUserId(), cancellationToken));
+    }
 
     [RequirePermission("tours")]
     [HttpPut("tours/{id}")]
     [HttpPatch("tours/{id}")]
-    public async Task<IActionResult> UpdateTour(ulong id, [FromBody] TourRequestDto request, CancellationToken cancellationToken) =>
-        Ok(await _hrService.UpdateTourAsync(id, request, CurrentUserId(), cancellationToken));
+    public async Task<IActionResult> UpdateTour(ulong id, [FromBody] TourRequestDto request, CancellationToken cancellationToken)
+    {
+        if (!await CanAccessTourAsync(id, cancellationToken)) return Forbid();
+        if (request.UserId.HasValue && !await CanAccessUserAsync(request.UserId.Value, cancellationToken)) return Forbid();
+        return Ok(await _hrService.UpdateTourAsync(id, request, CurrentUserId(), cancellationToken));
+    }
 
     [RequirePermission("tours")]
     [HttpDelete("tours/{id}")]
-    public async Task<IActionResult> DeleteTour(ulong id, CancellationToken cancellationToken) =>
-        Ok(await _hrService.DeleteTourAsync(id, cancellationToken));
+    public async Task<IActionResult> DeleteTour(ulong id, CancellationToken cancellationToken)
+    {
+        if (!await CanAccessTourAsync(id, cancellationToken)) return Forbid();
+        return Ok(await _hrService.DeleteTourAsync(id, cancellationToken));
+    }
 
     [RequirePermission("tours")]
     [HttpPost("tours-changeStatus")]
     [HttpPost("tours/change-status")]
-    public async Task<IActionResult> ChangeTourStatus([FromBody] TourStatusRequestDto request, CancellationToken cancellationToken) =>
-        Ok(await _hrService.ChangeTourStatusAsync(request, CurrentUserId(), cancellationToken));
+    public async Task<IActionResult> ChangeTourStatus([FromBody] TourStatusRequestDto request, CancellationToken cancellationToken)
+    {
+        foreach (var id in request.Id ?? [])
+        {
+            if (!await CanAccessTourAsync(id, cancellationToken)) return Forbid();
+        }
+
+        return Ok(await _hrService.ChangeTourStatusAsync(request, CurrentUserId(), cancellationToken));
+    }
 
     [RequirePermission("tours")]
     [HttpGet("tours-download")]
@@ -180,8 +209,11 @@ public sealed class HrController : ControllerBase
 
     [RequirePermission("attendance_report")]
     [HttpGet("attendance-plan")]
-    public async Task<IActionResult> AttendancePlan([FromQuery(Name = "user_id")] ulong? userId, [FromQuery] DateTime? date, CancellationToken cancellationToken) =>
-        Ok(await _hrService.GetAttendancePlanAsync(new AttendancePlanLookupDto { UserId = userId, Date = date }, cancellationToken));
+    public async Task<IActionResult> AttendancePlan([FromQuery(Name = "user_id")] ulong? userId, [FromQuery] DateTime? date, CancellationToken cancellationToken)
+    {
+        if (userId.HasValue && !await CanAccessUserAsync(userId.Value, cancellationToken)) return Forbid();
+        return Ok(await _hrService.GetAttendancePlanAsync(new AttendancePlanLookupDto { UserId = userId, Date = date }, cancellationToken));
+    }
 
     [RequirePermission("attendance_delete")]
     [HttpDelete("attendances/{id}")]
@@ -190,8 +222,11 @@ public sealed class HrController : ControllerBase
 
     [RequirePermission("attendance_report")]
     [HttpPost("get-tour-and-beat-plan")]
-    public async Task<IActionResult> AttendancePlanPost([FromBody] AttendancePlanLookupDto request, CancellationToken cancellationToken) =>
-        Ok(await _hrService.GetAttendancePlanAsync(request, cancellationToken));
+    public async Task<IActionResult> AttendancePlanPost([FromBody] AttendancePlanLookupDto request, CancellationToken cancellationToken)
+    {
+        if (request.UserId.HasValue && !await CanAccessUserAsync(request.UserId.Value, cancellationToken)) return Forbid();
+        return Ok(await _hrService.GetAttendancePlanAsync(request, cancellationToken));
+    }
 
     [RequirePermission("attendance_report")]
     [HttpPost("attendances")]
@@ -250,6 +285,18 @@ public sealed class HrController : ControllerBase
     {
         var subject = User.FindFirstValue(ClaimTypes.NameIdentifier);
         return ulong.TryParse(subject, out var userId) ? userId : null;
+    }
+
+    private async Task<bool> CanAccessUserAsync(ulong userId, CancellationToken cancellationToken)
+    {
+        var visibleUserIds = await _hrRepository.GetVisibleUserIdsAsync(CurrentUserId(), cancellationToken);
+        return visibleUserIds.Contains(userId);
+    }
+
+    private async Task<bool> CanAccessTourAsync(ulong tourId, CancellationToken cancellationToken)
+    {
+        var tour = await _hrRepository.GetTourEntityAsync(tourId, cancellationToken);
+        return tour?.UserId is { } userId && await CanAccessUserAsync(userId, cancellationToken);
     }
 
     public sealed class IdRequest

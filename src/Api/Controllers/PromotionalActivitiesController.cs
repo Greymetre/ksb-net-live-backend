@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using Application.Interfaces.Repositories;
 using Domain.Entities;
 using Infrastructure.Data;
 using Microsoft.AspNetCore.Authorization;
@@ -15,7 +16,8 @@ public sealed class PromotionalActivitiesController : ControllerBase
     private readonly AppDbContext _db;
     private readonly IWebHostEnvironment _environment;
     private readonly IConfiguration _configuration;
-    public PromotionalActivitiesController(AppDbContext db, IWebHostEnvironment environment,IConfiguration configuration) { _db = db; _environment = environment; _configuration = configuration; }
+    private readonly IHrRepository _hr;
+    public PromotionalActivitiesController(AppDbContext db, IWebHostEnvironment environment,IConfiguration configuration, IHrRepository hr) { _db = db; _environment = environment; _configuration = configuration; _hr = hr; }
 
     [HttpGet("config/{type}")]
     public async Task<IActionResult> Config(string type, CancellationToken ct)
@@ -206,27 +208,7 @@ public sealed class PromotionalActivitiesController : ControllerBase
     private ulong CurrentUserId()=>ulong.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier),out var id)?id:throw new InvalidOperationException("Unauthenticated.");
 
     private async Task<HashSet<ulong>> VisibleActivityUserIds(ulong currentUserId,CancellationToken ct)
-    {
-        if(await HasAdminRole(currentUserId,ct))
-            return (await _db.Users.AsNoTracking().Where(x=>x.Active=="Y"&&!x.IsDeleted).Select(x=>x.Id).ToListAsync(ct)).ToHashSet();
-
-        var users=await _db.Users.AsNoTracking().Where(x=>x.Active=="Y"&&!x.IsDeleted)
-            .Select(x=>new{x.Id,x.ReportingId}).ToListAsync(ct);
-        var visible=new HashSet<ulong>{currentUserId};
-        var frontier=new HashSet<ulong>{currentUserId};
-        while(frontier.Count>0)
-        {
-            var children=users.Where(x=>x.ReportingId.HasValue&&frontier.Contains(x.ReportingId.Value)&&visible.Add(x.Id))
-                .Select(x=>x.Id).ToHashSet();
-            frontier=children;
-        }
-        return visible;
-    }
-
-    private Task<bool> HasAdminRole(ulong userId,CancellationToken ct)=>_db.ModelHasRoles.AsNoTracking()
-        .Where(modelRole=>modelRole.ModelId==userId&&modelRole.ModelType==Domain.Constants.LaravelModelTypes.User)
-        .Join(_db.Roles.AsNoTracking(),modelRole=>modelRole.RoleId,role=>role.Id,(_,role)=>role.Name)
-        .AnyAsync(roleName=>roleName.ToLower().Contains("admin"),ct);
+        => (await _hr.GetVisibleUserIdsAsync(currentUserId,ct)).ToHashSet();
 }
 
 public sealed record ActivityRequest(string ActivityType,string ActivityName,DateTime ActivityDate,ulong? UserId,ulong? BranchId,string? Zone,ulong? ReportingManagerId,ulong? DistributorId,string? DistributorName,string? DealerName,string? HotelName,decimal? LocationLat,decimal? LocationLng,string? LocationText,int GiftCount,string? Feedback,List<ActivityParticipantRequest> Participants,List<ActivityExpenseRequest> Expenses,List<ActivityPhotoRequest> Photos);
@@ -311,7 +293,9 @@ ORDER BY shop_name";
 [ApiController, Authorize, Route("api/reports")]
 public sealed class PromotionalActivityReportsController : ControllerBase
 {
-    private readonly AppDbContext _db; public PromotionalActivityReportsController(AppDbContext db)=>_db=db;
+    private readonly AppDbContext _db;
+    private readonly IHrRepository _hr;
+    public PromotionalActivityReportsController(AppDbContext db, IHrRepository hr) { _db=db; _hr=hr; }
     [HttpGet("all-meeting-summary")]
     public async Task<IActionResult> MeetingSummary([FromQuery]string? date_range,[FromQuery]string? role,[FromQuery]string? zone,[FromQuery]ulong? branch,[FromQuery]ulong? distributor,[FromQuery]DateTime? start_date,[FromQuery]DateTime? end_date,CancellationToken ct)
     {
@@ -327,7 +311,8 @@ public sealed class PromotionalActivityReportsController : ControllerBase
         return Ok(new{status="success",data=new{rows,filters=new{zones,branches,distributors},grand_total=new{meets=raw.Count,participants=raw.Sum(x=>x.Participants),gifts=raw.Sum(x=>x.GiftCount),expense=raw.Sum(x=>x.TotalExpense)}}});
     }
 
-    private async Task<HashSet<ulong>> VisibleIds(ulong current,CancellationToken ct){var all=await _db.Users.AsNoTracking().Where(x=>x.Active=="Y"&&!x.IsDeleted).Select(x=>new{x.Id,x.ReportingId}).ToListAsync(ct);var admin=await _db.ModelHasRoles.AsNoTracking().Where(x=>x.ModelId==current&&x.ModelType=="App\\Models\\User").Join(_db.Roles.AsNoTracking(),x=>x.RoleId,x=>x.Id,(x,r)=>r.Name).AnyAsync(x=>x.ToLower().Contains("admin"),ct);if(admin)return all.Select(x=>x.Id).ToHashSet();var result=new HashSet<ulong>{current};var frontier=new HashSet<ulong>{current};while(frontier.Count>0){frontier=all.Where(x=>x.ReportingId.HasValue&&frontier.Contains(x.ReportingId.Value)&&result.Add(x.Id)).Select(x=>x.Id).ToHashSet();}return result;}
+    private async Task<HashSet<ulong>> VisibleIds(ulong current,CancellationToken ct) =>
+        (await _hr.GetVisibleUserIdsAsync(current,ct)).ToHashSet();
     [HttpGet("kyc-summary")]
     public async Task<IActionResult> KycSummary(CancellationToken ct)
     {

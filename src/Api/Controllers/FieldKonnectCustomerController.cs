@@ -1,6 +1,7 @@
 using System.Data;
 using System.Globalization;
 using System.Security.Claims;
+using Application.Interfaces.Repositories;
 using Infrastructure.Data;
 using Domain.Constants;
 using Microsoft.AspNetCore.Authorization;
@@ -15,10 +16,12 @@ namespace Api.Controllers;
 public sealed class FieldKonnectCustomerController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
+    private readonly IHrRepository _hr;
 
-    public FieldKonnectCustomerController(AppDbContext dbContext)
+    public FieldKonnectCustomerController(AppDbContext dbContext, IHrRepository hr)
     {
         _dbContext = dbContext;
+        _hr = hr;
     }
 
     [AcceptVerbs("GET", "POST")]
@@ -418,31 +421,7 @@ ORDER BY {(filter.Latest ? "c.id DESC" : filter.OrderByName ? "c.name ASC" : "c.
     }
 
     private async Task<IReadOnlyList<ulong>> VisibleUserIds(ulong userId, CancellationToken cancellationToken)
-    {
-        var users = await _dbContext.Users.IgnoreQueryFilters().Where(x => x.DeletedAt == null).Select(x => new { x.Id, x.ReportingId, x.BranchId }).ToListAsync(cancellationToken);
-        var isBranchManager = await _dbContext.ModelHasRoles.AsNoTracking()
-            .AnyAsync(x => x.ModelId == userId && x.ModelType == LaravelModelTypes.User && x.RoleId == RoleIds.BranchManager, cancellationToken);
-        if (isBranchManager)
-        {
-            var actorBranches = users.FirstOrDefault(x => x.Id == userId)?.BranchId?
-                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase) ?? [];
-            if (actorBranches.Count == 0) return [userId];
-            return users.Where(x => x.BranchId?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Any(actorBranches.Contains) == true)
-                .Select(x => x.Id).Distinct().ToArray();
-        }
-        var visible = new HashSet<ulong> { userId };
-        var changed = true;
-        while (changed)
-        {
-            changed = false;
-            foreach (var user in users.Where(x => x.ReportingId.HasValue && visible.Contains(x.ReportingId.Value)))
-            {
-                if (visible.Add(user.Id)) changed = true;
-            }
-        }
-        return visible.ToArray();
-    }
+        => (await _hr.GetVisibleUserIdsAsync(userId, cancellationToken)).ToArray();
 
     private async Task<bool> IsAdminUser(ulong userId, CancellationToken cancellationToken, bool includeHrAndHo)
     {
@@ -450,6 +429,11 @@ ORDER BY {(filter.Latest ? "c.id DESC" : filter.OrderByName ? "c.name ASC" : "c.
             .Where(x => x.ModelId == userId)
             .Join(_dbContext.Roles, model => model.RoleId, role => role.Id, (_, role) => role.Name)
             .ToListAsync(cancellationToken);
+        if (roles.Any(role => role.Equals("Distributor", StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
         return roles.Any(role =>
             role.Contains("admin", StringComparison.OrdinalIgnoreCase)
             || includeHrAndHo && (role == "HR_Admin" || role == "HO_Account"));

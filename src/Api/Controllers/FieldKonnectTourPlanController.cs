@@ -2,6 +2,7 @@ using System.Data;
 using System.Globalization;
 using System.Security.Claims;
 using System.Text.Json;
+using Application.Interfaces.Repositories;
 using Infrastructure.Data;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -15,10 +16,12 @@ namespace Api.Controllers;
 public sealed class FieldKonnectTourPlanController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
+    private readonly IHrRepository _hr;
 
-    public FieldKonnectTourPlanController(AppDbContext dbContext)
+    public FieldKonnectTourPlanController(AppDbContext dbContext, IHrRepository hr)
     {
         _dbContext = dbContext;
+        _hr = hr;
     }
 
     [AcceptVerbs("GET", "POST")]
@@ -27,7 +30,12 @@ public sealed class FieldKonnectTourPlanController : ControllerBase
     {
         try
         {
-            var userId = ULongValue("user_id") ?? CurrentUserId();
+            var authUserId = CurrentUserId();
+            var userId = ULongValue("user_id") ?? authUserId;
+            if (!(await VisibleUserIds(authUserId, cancellationToken)).Contains(userId))
+            {
+                return StatusCode(403, new { status = "error", message = "The selected user is outside your assigned user scope." });
+            }
             var cityName = RequestValue("cityname");
             var parameters = new List<(string, object?)> { ("@user_id", userId) };
             var where = "uca.userid = @user_id AND c.deleted_at IS NULL";
@@ -218,9 +226,19 @@ LIMIT {perPage} OFFSET {offset}", cancellationToken, parameters.ToArray());
         {
             var authUserId = CurrentUserId();
             var targetUserId = ULongValue("user_id") ?? authUserId;
+            var visibleUserIds = await VisibleUserIds(authUserId, cancellationToken);
+            var requestedUserId = ULongValue("user_id");
+            if (requestedUserId.HasValue && !visibleUserIds.Contains(requestedUserId.Value))
+            {
+                return StatusCode(403, new { status = "error", message = "The selected user is outside your assigned user scope." });
+            }
+
             var page = Math.Max(1, (int)(ULongValue("page") ?? 1));
             var perPage = Math.Clamp((int)(ULongValue("per_page") ?? 30), 1, 200);
-            var where = new List<string>();
+            var where = new List<string>
+            {
+                visibleUserIds.Count == 0 ? "1 = 0" : $"tp.userid IN ({string.Join(',', visibleUserIds.Distinct())})"
+            };
             var parameters = new List<(string, object?)>();
             var startDate = DateValue("start_date");
             var endDate = DateValue("end_date");
@@ -231,7 +249,6 @@ LIMIT {perPage} OFFSET {offset}", cancellationToken, parameters.ToArray());
                 parameters.Add(("@end_date", endDate.Value.Date));
             }
 
-            var requestedUserId = ULongValue("user_id");
             if (requestedUserId.HasValue)
             {
                 where.Add("tp.userid = @user_id");
@@ -316,7 +333,12 @@ LIMIT {perPage} OFFSET {(page - 1) * perPage}", cancellationToken, parameters.To
     {
         try
         {
-            var userId = ULongValue("user_id") ?? CurrentUserId();
+            var authUserId = CurrentUserId();
+            var userId = ULongValue("user_id") ?? authUserId;
+            if (!(await VisibleUserIds(authUserId, cancellationToken)).Contains(userId))
+            {
+                return StatusCode(403, new { status = "error", message = "The selected user is outside your assigned user scope." });
+            }
             var districtName = RequestValue("districtname");
             var parameters = new List<(string, object?)> { ("@user_id", userId) };
             var where = "uca.userid = @user_id AND d.deleted_at IS NULL";
@@ -349,7 +371,12 @@ ORDER BY d.district_name ASC", cancellationToken, parameters.ToArray());
         {
             var districtId = ULongValue("district_id");
             if (!districtId.HasValue) return BadRequest(new { status = "error", message = "district_id is required" });
-            var userId = ULongValue("user_id") ?? CurrentUserId();
+            var authUserId = CurrentUserId();
+            var userId = ULongValue("user_id") ?? authUserId;
+            if (!(await VisibleUserIds(authUserId, cancellationToken)).Contains(userId))
+            {
+                return StatusCode(403, new { status = "error", message = "The selected user is outside your assigned user scope." });
+            }
             var cityName = RequestValue("cityname");
             var parameters = new List<(string, object?)> { ("@user_id", userId), ("@district_id", districtId.Value) };
             var where = "uca.userid = @user_id AND c.district_id = @district_id AND c.deleted_at IS NULL";
@@ -380,7 +407,6 @@ ORDER BY c.city_name ASC", cancellationToken, parameters.ToArray());
         {
             var authUserId = CurrentUserId();
             var userIds = await VisibleUserIds(authUserId, cancellationToken);
-            if (!userIds.Contains(authUserId)) userIds.Insert(0, authUserId);
             var (where, parameters) = await UserFilterWhere(userIds, cancellationToken, includeSearchName: false);
             var rows = await QueryRows($@"SELECT u.id, u.name, u.division_id, u.branch_id, d.id AS zone_id, d.division_name
 FROM users u
@@ -785,23 +811,7 @@ ORDER BY td.visited_date DESC LIMIT 1", cancellationToken, ("@user_id", userId),
         ulong.TryParse(RequestValue(key, body), NumberStyles.Integer, CultureInfo.InvariantCulture, out var value) ? value : null;
 
     private async Task<List<ulong>> VisibleUserIds(ulong userId, CancellationToken cancellationToken)
-    {
-        var rows = await QueryRows("SELECT id, reportingid FROM users WHERE deleted_at IS NULL", cancellationToken);
-        var visible = new HashSet<ulong> { userId };
-        var changed = true;
-        while (changed)
-        {
-            changed = false;
-            foreach (var row in rows)
-            {
-                var id = ULong(row, "id");
-                var reportingId = ULong(row, "reportingid");
-                if (reportingId > 0 && visible.Contains(reportingId) && visible.Add(id)) changed = true;
-            }
-        }
-
-        return visible.ToList();
-    }
+        => (await _hr.GetVisibleUserIdsAsync(userId, cancellationToken)).ToList();
 
     private async Task<(string Where, List<(string, object?)> Parameters)> UserFilterWhere(IReadOnlyList<ulong> userIds, CancellationToken cancellationToken, bool includeSearchName = true)
     {

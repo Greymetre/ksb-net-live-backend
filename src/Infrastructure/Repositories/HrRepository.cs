@@ -131,6 +131,9 @@ public sealed class HrRepository : IHrRepository
 
     public async Task<IReadOnlyList<LeaveDto>> GetLeavesAsync(LeaveListFilterDto filter, CancellationToken cancellationToken)
     {
+        var visibleUserIds = filter.ActorUserId.HasValue
+            ? await ReportingVisibility.GetVisibleUserIdsAsync(_db, filter.ActorUserId, cancellationToken)
+            : null;
         var query = from leave in _db.Leaves.AsNoTracking()
                     join user in _db.Users.AsNoTracking() on leave.UserId equals user.Id into users
                     from user in users.DefaultIfEmpty()
@@ -140,6 +143,7 @@ public sealed class HrRepository : IHrRepository
                     from approver in approvers.DefaultIfEmpty()
                     select new { leave, user, creator, approver };
 
+        if (visibleUserIds is not null) query = query.Where(x => x.leave.UserId.HasValue && visibleUserIds.Contains(x.leave.UserId.Value));
         if (filter.ExecutiveId.HasValue) query = query.Where(x => x.leave.UserId == filter.ExecutiveId);
         if (filter.StartDate.HasValue) query = query.Where(x => x.leave.ToDate >= filter.StartDate.Value.Date);
         if (filter.EndDate.HasValue) query = query.Where(x => x.leave.FromDate <= filter.EndDate.Value.Date);
