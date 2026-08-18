@@ -150,8 +150,9 @@ public sealed class PromotionalActivitiesController : ControllerBase
     {
         var error=ValidateDraft(request); if(error!=null) return UnprocessableEntity(new {status="error",message=error});
         var entity=Map(request,new PromotionalActivity{CreatedById=checked((long)CurrentUserId()),CreatedAt=DateTime.UtcNow});
+        entity.ActivityCode=await NextActivityCodeAsync(entity.ActivityType,entity.ActivityDate,ct);
         _db.PromotionalActivities.Add(entity); await _db.SaveChangesAsync(ct);
-        return Ok(new {status="success",message="Activity draft saved.",data=new {entity.Id,entity.Status}});
+        return Ok(new {status="success",message="Activity draft saved.",data=new {entity.Id,entity.ActivityCode,entity.Status}});
     }
 
     [HttpPut("{id:long}")]
@@ -162,7 +163,7 @@ public sealed class PromotionalActivitiesController : ControllerBase
         if(entity==null)return NotFound(new{status="error",message="Activity not found."}); if(entity.Status=="submitted")return Conflict(new{status="error",message="Submitted activity cannot be edited."});
         var error=ValidateDraft(request); if(error!=null)return UnprocessableEntity(new{status="error",message=error});
         _db.RemoveRange(entity.Participants);_db.RemoveRange(entity.Expenses);_db.RemoveRange(entity.Photos); Map(request,entity);entity.UpdatedAt=DateTime.UtcNow;await _db.SaveChangesAsync(ct);
-        return Ok(new{status="success",message="Activity draft updated.",data=new{entity.Id,entity.Status}});
+        return Ok(new{status="success",message="Activity draft updated.",data=new{entity.Id,entity.ActivityCode,entity.Status}});
     }
 
     [HttpPost("{id:long}/submit")]
@@ -188,10 +189,32 @@ public sealed class PromotionalActivitiesController : ControllerBase
         return Ok(new{status="success",data=new{url=$"/uploads/promotional-activities/{name}"}});
     }
 
+    private static readonly IReadOnlyDictionary<string,string> ActivityCodePrefixes=new Dictionary<string,string>
+    { ["retailer"]="RTL", ["nukkad"]="NKD", ["farmer"]="FRM", ["influencer"]="INF" };
+
+    /// <summary>
+    /// Builds the readable activity id, for example ACT-RTL-2608-0042. The serial runs
+    /// per activity type and month, and existing codes are read back so a gap or a
+    /// deleted row never causes a duplicate.
+    /// </summary>
+    private async Task<string> NextActivityCodeAsync(string activityType,DateTime activityDate,CancellationToken ct)
+    {
+        var prefix=$"ACT-{ActivityCodePrefixes.GetValueOrDefault(activityType,"GEN")}-{activityDate:yyMM}-";
+        var used=await _db.PromotionalActivities.IgnoreQueryFilters().AsNoTracking()
+            .Where(x=>x.ActivityCode!=null&&x.ActivityCode.StartsWith(prefix))
+            .Select(x=>x.ActivityCode!)
+            .ToListAsync(ct);
+        var highest=used
+            .Select(x=>int.TryParse(x[prefix.Length..],out var serial)?serial:0)
+            .DefaultIfEmpty(0)
+            .Max();
+        return $"{prefix}{highest+1:0000}";
+    }
+
     private PromotionalActivity Map(ActivityRequest r,PromotionalActivity e)
     {
         e.ActivityType=(r.ActivityType??"").ToLower();e.ActivityName=(r.ActivityName??"").Trim();e.ActivityDate=r.ActivityDate.Date;e.UserId=checked((long)(e.ActivityType=="nukkad"?CurrentUserId():(r.UserId??CurrentUserId())));e.BranchId=r.BranchId.HasValue?checked((long)r.BranchId.Value):null;e.Zone=r.Zone;e.ReportingManagerId=r.ReportingManagerId.HasValue?checked((long)r.ReportingManagerId.Value):null;e.DistributorId=r.DistributorId.HasValue?checked((long)r.DistributorId.Value):null;e.DistributorName=r.DistributorName;e.DealerName=r.DealerName;e.HotelName=r.HotelName;e.LocationLat=r.LocationLat;e.LocationLng=r.LocationLng;e.LocationText=r.LocationText;e.GiftCount=Math.Max(0,r.GiftCount);e.Feedback=r.Feedback;e.Status="draft";
-        e.Participants=r.Participants.Select(x=>new PromotionalActivityParticipant{Name=x.Name,ShopName=x.ShopName,ProprietorName=x.ProprietorName,Profession=x.Profession,Mobile=x.Mobile,GiftName=x.GiftName,Remarks=x.Remarks,IsInfluencer=x.IsInfluencer,SocialType=x.SocialType,SocialLink=x.SocialLink,CreatedAt=DateTime.UtcNow}).ToList();
+        e.Participants=r.Participants.Select(x=>new PromotionalActivityParticipant{Name=x.Name,ShopName=x.ShopName,ProprietorName=x.ProprietorName,ParticipantType=x.ParticipantType,Profession=x.Profession,Mobile=x.Mobile,GiftName=x.GiftName,Remarks=x.Remarks,IsInfluencer=x.IsInfluencer,SocialType=x.SocialType,SocialLink=x.SocialLink,CreatedAt=DateTime.UtcNow}).ToList();
         e.Expenses=r.Expenses.Select(x=>new PromotionalActivityExpense{ExpenseType=x.ExpenseType,TotalAmount=Math.Max(0,x.TotalAmount),DealerShareAmount=Math.Max(0,x.DealerShareAmount),DealerSharePct=x.TotalAmount<=0?0:Math.Round(x.DealerShareAmount/x.TotalAmount*100,2),Remarks=x.Remarks,InvoiceUrl=x.InvoiceUrl,CreatedAt=DateTime.UtcNow}).ToList();
         e.Photos=r.Photos.Select(x=>new PromotionalActivityPhoto{PhotoUrl=x.PhotoUrl,Latitude=x.Latitude,Longitude=x.Longitude,TakenAt=x.TakenAt,CreatedAt=DateTime.UtcNow}).ToList();e.TotalExpense=e.Expenses.Sum(x=>x.TotalAmount);e.DealerShareAmount=e.Expenses.Sum(x=>x.DealerShareAmount);return e;
     }
@@ -212,7 +235,7 @@ public sealed class PromotionalActivitiesController : ControllerBase
 }
 
 public sealed record ActivityRequest(string ActivityType,string ActivityName,DateTime ActivityDate,ulong? UserId,ulong? BranchId,string? Zone,ulong? ReportingManagerId,ulong? DistributorId,string? DistributorName,string? DealerName,string? HotelName,decimal? LocationLat,decimal? LocationLng,string? LocationText,int GiftCount,string? Feedback,List<ActivityParticipantRequest> Participants,List<ActivityExpenseRequest> Expenses,List<ActivityPhotoRequest> Photos);
-public sealed record ActivityParticipantRequest(string? Name,string? ShopName,string? ProprietorName,string? Profession,string? Mobile,string? GiftName,string? Remarks,bool IsInfluencer,string? SocialType,string? SocialLink);
+public sealed record ActivityParticipantRequest(string? Name,string? ShopName,string? ProprietorName,string? ParticipantType,string? Profession,string? Mobile,string? GiftName,string? Remarks,bool IsInfluencer,string? SocialType,string? SocialLink);
 public sealed record ActivityExpenseRequest(string ExpenseType,decimal TotalAmount,decimal DealerShareAmount,string? Remarks,string? InvoiceUrl);
 public sealed record ActivityPhotoRequest(string PhotoUrl,decimal Latitude,decimal Longitude,DateTime? TakenAt);
 
@@ -233,9 +256,10 @@ internal static class ActivityConfig
             F("locationText","Activity Location","manual","text",true,true,null),
             F("participantName",retailer?"Retailer Shop Name":"Participant Name","manual","text",true,true,null),
             F("proprietorName","Proprietor Name","manual","text",false,retailer,null),
+            F("participantType","Participant Type","manual","dropdown",false,true,null,["Retailer","Plumber","Mechanic","Other"]),
             F("profession","Profession","manual","dropdown",false,!retailer,farmer?"Farmer":null,["Mechanic","Plumber","Electrician","Borer","Farmer","Other"]),
             F("mobile","Mobile","manual","tel",false,true,null),F("giftName","Gift Name","manual","dropdown",false,true,null),F("remarks","Remarks","manual","text",false,true,null),
-            F("isInfluencer","Social Media Influencer?","manual","toggle",true,true,"false",["No","Yes"]),F("socialType","Social Media Type","manual","dropdown",true,true,null,["Instagram","YouTube","Facebook","X"],new(){["visible_when"]="isInfluencer=true"}),F("socialLink","Profile Link","manual","url",false,true,null,metadata:new(){["visible_when"]="isInfluencer=true"}),
+            F("isInfluencer","Social Media Influencer?","manual","toggle",true,true,"false",["No","Yes"]),F("socialType","Social Media Type","manual","dropdown",true,true,null,["Instagram","Facebook","LinkedIn","YouTube"],new(){["visible_when"]="isInfluencer=true"}),F("socialLink","Profile Link","manual","url",false,true,null,metadata:new(){["visible_when"]="isInfluencer=true"}),
             F("giftCount","Gift Count (Total)","manual","stepper",true,true,"0"),F("totalParticipants","Total Participants","derived","readonly",false,true,"0"),F("giftQty","Gift Qty (Nos)","derived","readonly",false,true,"0"),
             F("totalExpense","Total Expense","derived","readonly",false,true,"0"),F("photos","Activity Photos","manual","camera_upload",false,true,null,metadata:new(){["minimum"]=0,["maximum"]=(retailer?10:5)}),F("feedback","Feedback from Participants","manual","textarea",false,true,null)
         };
@@ -262,20 +286,25 @@ public sealed class ActivityDistributorsController : ControllerBase
     [HttpGet("{distributorId:long}/retailers")]
     public async Task<IActionResult> Retailers(ulong distributorId, CancellationToken ct)
     {
-        var legacyDistributorId = distributorId >= 1_000_000 ? distributorId - 1_000_000 : distributorId;
         var connection = _db.Database.GetDbConnection();
         if (connection.State != System.Data.ConnectionState.Open) await connection.OpenAsync(ct);
         await using var command = connection.CreateCommand();
-        command.CommandText = @"SELECT id, shop_name, owner_name
-FROM secondary_customers
-WHERE UPPER(COALESCE(type, '')) = 'RETAILER'
-  AND COALESCE(active, 'Y') = 'Y'
-  AND (TRY_CONVERT(decimal(20,0), distributor_name) = @distributor_id
-       OR TRY_CONVERT(decimal(20,0), agri_distributor) = @distributor_id)
+        // Retailers live in the unified customers table as customertype 2, and their
+        // parent dealer is held in custom_fields as the same unified customers.id that
+        // the distributor search above returns. There is no id offset to undo.
+        command.CommandText = @"SELECT c.id,
+COALESCE(NULLIF(JSON_VALUE(c.custom_fields, '$.shop_name'), ''), c.name) AS shop_name,
+COALESCE(NULLIF(JSON_VALUE(c.custom_fields, '$.owner_name'), ''), c.first_name) AS owner_name
+FROM customers c
+WHERE c.customertype = 2
+  AND c.deleted_at IS NULL
+  AND COALESCE(c.active, 'Y') = 'Y'
+  AND (TRY_CONVERT(decimal(20,0), JSON_VALUE(c.custom_fields, '$.distributor_name')) = @distributor_id
+       OR TRY_CONVERT(decimal(20,0), JSON_VALUE(c.custom_fields, '$.agri_distributor')) = @distributor_id)
 ORDER BY shop_name";
         var parameter = command.CreateParameter();
         parameter.ParameterName = "@distributor_id";
-        parameter.Value = Convert.ToDecimal(legacyDistributorId);
+        parameter.Value = Convert.ToDecimal(distributorId);
         command.Parameters.Add(parameter);
         var rows = new List<object>();
         await using var reader = await command.ExecuteReaderAsync(ct);

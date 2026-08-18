@@ -6,6 +6,8 @@ public sealed class PromotionalActivity
     public DateTime? CreatedAt { get; set; }
     public DateTime? UpdatedAt { get; set; }
     public DateTime? DeletedAt { get; set; }
+    /// <summary>Human readable activity id, generated once when the draft is created.</summary>
+    public string? ActivityCode { get; set; }
     public string ActivityType { get; set; } = "";
     public string ActivityName { get; set; } = "";
     public DateTime ActivityDate { get; set; }
@@ -41,6 +43,7 @@ public sealed class PromotionalActivityParticipant
     public string? Name { get; set; }
     public string? ShopName { get; set; }
     public string? ProprietorName { get; set; }
+    public string? ParticipantType { get; set; }
     public string? Profession { get; set; }
     public string? Mobile { get; set; }
     public string? GiftName { get; set; }

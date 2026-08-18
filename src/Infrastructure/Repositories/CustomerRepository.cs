@@ -6,6 +6,7 @@ using Application.Common;
 using Application.Interfaces.Repositories;
 using Domain.Constants;
 using Domain.Entities;
+using Domain.Services;
 using Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 
@@ -424,7 +425,13 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
             .FirstOrDefaultAsync(x => x.Mobile == mobile && (user == null || x.Id != user.Id), cancellationToken);
         if (mobileOwner is not null) return;
 
-        var passwordHash = BCrypt.Net.BCrypt.HashPassword(mobile);
+        // The dealer code is the login password. A dealer cannot be given a login
+        // without one, and existing users keep the password they already have so
+        // dealers created under the old mobile-number rule are not locked out.
+        var dealerCode = NormalizeText(customer.CustomerCode)
+            ?? NormalizeText(ReadCustomerField(customer, "distributor_code"));
+        if (user is null && string.IsNullOrWhiteSpace(dealerCode)) return;
+
         var now = DateTime.UtcNow;
 
         if (user is null)
@@ -437,8 +444,8 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
                 LastName = lastName,
                 Mobile = mobile,
                 Email = email,
-                Password = passwordHash,
-                PasswordString = mobile,
+                Password = BCrypt.Net.BCrypt.HashPassword(dealerCode),
+                PasswordString = dealerCode,
                 ReportingId = actorUserId,
                 CustomerId = customer.Id,
                 CreatedBy = actorUserId,
@@ -456,8 +463,6 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
             user.LastName = lastName;
             user.Mobile = mobile;
             user.Email = email;
-            user.Password = passwordHash;
-            user.PasswordString = mobile;
             user.CustomerId = customer.Id;
             user.UpdatedAt = now;
             if (!user.ReportingId.HasValue) user.ReportingId = actorUserId;
@@ -998,13 +1003,14 @@ WHERE customer_id IN ({customerIdCsv})
                 .ToListAsync(cancellationToken);
 
             var zoneName = await LoadAssignedZoneNameAsync(customer, cancellationToken);
+            var stateName = await LoadCustomerStateNameAsync(customer, cancellationToken);
 
             foreach (var row in rows)
             {
                 var invoiceDate = DateOnly.FromDateTime(row.Invoice.InvoiceDate.Date);
                 var matchingSchemes = schemes.Where(scheme =>
                     row.Invoice.LoyaltySchemeId == scheme.Id
-                    && SchemeMatchesCustomer(scheme, invoiceDate, customer, row.Branch, zoneName));
+                    && SchemeMatchesCustomer(scheme, invoiceDate, customer, row.Branch, zoneName, stateName));
                 foreach (var scheme in matchingSchemes)
                 {
                     var periodAmount = PeriodAmount(customer.Id, scheme, rows.Select(x => x.Invoice), hoApprovedAmounts);
@@ -1034,6 +1040,34 @@ WHERE customer_id IN ({customerIdCsv})
         customerDto.TotalBalancePoints = Math.Max(0, customerDto.TotalPoints - customerDto.TotalRedeemPoints);
     }
 
+    /// <summary>
+    /// State name used by State-scoped schemes. Comes from the customer's own address:
+    /// the legacy custom_fields JSON first, then the addresses table.
+    /// </summary>
+    private async Task<string?> LoadCustomerStateNameAsync(Customer customer, CancellationToken cancellationToken)
+    {
+        var stateId = SchemeEligibility.ReadStateId(customer);
+        if (!stateId.HasValue)
+        {
+            var connection = _dbContext.Database.GetDbConnection();
+            if (connection.State != ConnectionState.Open) await connection.OpenAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT TOP 1 state_id FROM addresses WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id = @customer_id";
+            var parameter = command.CreateParameter();
+            parameter.ParameterName = "@customer_id";
+            parameter.Value = Convert.ToDecimal(customer.Id);
+            command.Parameters.Add(parameter);
+            var value = await command.ExecuteScalarAsync(cancellationToken);
+            if (value is null or DBNull) return null;
+            stateId = Convert.ToUInt64(value, CultureInfo.InvariantCulture);
+        }
+
+        return await _dbContext.States.AsNoTracking()
+            .Where(x => x.Id == stateId.Value)
+            .Select(x => x.StateName)
+            .FirstOrDefaultAsync(cancellationToken);
+    }
+
     private async Task<string?> LoadAssignedZoneNameAsync(Customer customer, CancellationToken cancellationToken)
     {
         var employeeId = FirstULong(ReadCustomerField(customer, "employee_id"))
@@ -1050,31 +1084,11 @@ WHERE customer_id IN ({customerIdCsv})
             .FirstOrDefaultAsync(cancellationToken);
     }
 
-    private static bool SchemeMatchesCustomer(LoyaltyScheme scheme, DateOnly invoiceDate, Customer customer, Branch? branch, string? zoneName)
-    {
-        if (invoiceDate < scheme.StartDate || invoiceDate > scheme.EndDate) return false;
-        if (!CustomerTypeMatches(scheme.CustomerType)) return false;
-
-        if (string.Equals(scheme.AreaScope, "All", StringComparison.OrdinalIgnoreCase)) return true;
-        var values = ReadSchemeAreaValues(scheme.AreaValues);
-        if (values.Count == 0) return true;
-
-        return scheme.AreaScope switch
-        {
-            "Customer" => values.Any(value => string.Equals(value, customer.Name, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(value, customer.CustomerCode, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(value, $"{customer.CustomerCode} - {customer.Name}", StringComparison.OrdinalIgnoreCase)),
-            "Branch" => branch is not null && values.Any(value => string.Equals(value, branch.BranchName, StringComparison.OrdinalIgnoreCase)),
-            "Zone" => !string.IsNullOrWhiteSpace(zoneName) && values.Any(value => string.Equals(value, zoneName, StringComparison.OrdinalIgnoreCase)),
-            _ => true
-        };
-    }
-
-    private static bool CustomerTypeMatches(string customerType) =>
-        string.Equals(customerType, "Retailer", StringComparison.OrdinalIgnoreCase)
-        || string.Equals(customerType, "Influencers", StringComparison.OrdinalIgnoreCase)
-        || string.Equals(customerType, "Influencer", StringComparison.OrdinalIgnoreCase)
-        || string.Equals(customerType, "Retailer + Plumber", StringComparison.OrdinalIgnoreCase);
+    // Delegates to the shared matcher so customer point totals cannot drift from
+    // what the invoice screen and the mobile apps consider eligible.
+    private static bool SchemeMatchesCustomer(LoyaltyScheme scheme, DateOnly invoiceDate, Customer customer, Branch? branch, string? zoneName, string? stateName) =>
+        SchemeEligibility.Matches(scheme, invoiceDate, new SchemeAudience(
+            customer.CustomerType, customer.Name, customer.CustomerCode, branch?.BranchName, zoneName, stateName));
 
     private static decimal PeriodAmount(
         ulong customerId,
@@ -1105,19 +1119,6 @@ WHERE customer_id IN ({customerIdCsv})
         return string.Equals(scheme.BasedOn, "Percentage", StringComparison.OrdinalIgnoreCase)
             ? Math.Round(invoiceAmount * achieved.RewardValue / 100, 2)
             : achieved.RewardValue;
-    }
-
-    private static IReadOnlyCollection<string> ReadSchemeAreaValues(string? json)
-    {
-        if (string.IsNullOrWhiteSpace(json)) return [];
-        try
-        {
-            return JsonSerializer.Deserialize<string[]>(json, JsonOptions) ?? [];
-        }
-        catch
-        {
-            return [];
-        }
     }
 
     private static CustomerDto ToCustomerDto(Customer customer, string? createdByName, string? parentName)

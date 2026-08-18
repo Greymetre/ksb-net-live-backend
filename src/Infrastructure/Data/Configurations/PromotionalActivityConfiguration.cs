@@ -11,6 +11,7 @@ public sealed class PromotionalActivityConfiguration : IEntityTypeConfiguration<
         b.ToTable("promotional_activities");
         b.HasKey(x => x.Id);
         ActivityEntityMapping.MapBase(b);
+        b.Property(x => x.ActivityCode).HasColumnName("activity_code").HasMaxLength(40);
         b.Property(x => x.ActivityType).HasColumnName("activity_type").HasMaxLength(20);
         b.Property(x => x.ActivityName).HasColumnName("activity_name").HasMaxLength(150);
         b.Property(x => x.ActivityDate).HasColumnName("activity_date").HasColumnType("date");
@@ -44,7 +45,8 @@ public sealed class PromotionalActivityParticipantConfiguration : IEntityTypeCon
         b.ToTable("promotional_activity_participants"); b.HasKey(x => x.Id); ActivityEntityMapping.MapBase(b);
         b.Property(x => x.ActivityId).HasColumnName("activity_id").HasColumnType("bigint");
         b.Property(x => x.Name).HasColumnName("name").HasMaxLength(255); b.Property(x => x.ShopName).HasColumnName("shop_name").HasMaxLength(255);
-        b.Property(x => x.ProprietorName).HasColumnName("proprietor_name").HasMaxLength(255); b.Property(x => x.Profession).HasColumnName("profession").HasMaxLength(100);
+        b.Property(x => x.ProprietorName).HasColumnName("proprietor_name").HasMaxLength(255); b.Property(x => x.ParticipantType).HasColumnName("participant_type").HasMaxLength(100);
+        b.Property(x => x.Profession).HasColumnName("profession").HasMaxLength(100);
         b.Property(x => x.Mobile).HasColumnName("mobile").HasMaxLength(20); b.Property(x => x.GiftName).HasColumnName("gift_name").HasMaxLength(255);
         b.Property(x => x.Remarks).HasColumnName("remarks"); b.Property(x => x.IsInfluencer).HasColumnName("is_influencer");
         b.Property(x => x.SocialType).HasColumnName("social_type").HasMaxLength(50); b.Property(x => x.SocialLink).HasColumnName("social_link").HasMaxLength(500);

@@ -249,7 +249,9 @@ public sealed class CustomerService : ICustomerService
                 Name = FirstNonBlank(row.Value("name"), row.Value("legal_name"), row.Value("trade_name"), row.Value("shop_name"), row.Value("owner_name")),
                 Mobile = FirstNonBlank(row.Value("mobile"), row.Value("mobile_number"), row.Value("mobile_number_1"), row.Value("mobile_1")),
                 Email = row.Value("email"),
-                CustomerCode = FirstNonBlank(row.Value("customer_code"), row.Value("distributor_code")),
+                // On retailer sheets distributor_code is the parent dealer's code,
+                // not the retailer's own, so only dealers may fall back to it.
+                CustomerCode = FirstNonBlank(row.Value("customer_code"), customerType == 1 ? row.Value("distributor_code") : null),
                 ContactNumber = FirstNonBlank(row.Value("contact_number"), row.Value("whatsapp_number"), row.Value("mobile_number_2"), row.Value("mobile_2")),
                 Active = FirstNonBlank(row.Value("active"), row.Value("business_status")),
                 CustomFields = customFields
@@ -277,6 +279,9 @@ public sealed class CustomerService : ICustomerService
         RequireId(request.CustomerType, "Customer type is required.");
         RequireValue(request.Name, "Customer name is required.");
 
+        // A dealer code doubles as the dealer login password, so it cannot be blank.
+        if (request.CustomerType == 1) RequireValue(request.CustomerCode, "Dealer code is required.");
+
         if (!string.IsNullOrWhiteSpace(request.Mobile) && await _repository.MobileExistsAsync(request.Mobile.Trim(), id, cancellationToken))
         {
             throw new LaravelHttpException(LaravelStatusCodes.BadRequest, "Mobile already exists.");
@@ -302,6 +307,10 @@ public sealed class CustomerService : ICustomerService
         request.CustomFields ??= [];
         if (request.CustomerType == 1)
         {
+            // The web form and the mobile app both post the dealer code as
+            // distributor_code. Keep the column and the custom field in step.
+            request.CustomerCode = FirstNonBlank(request.CustomerCode, ReadField(request.CustomFields, "distributor_code"));
+
             // Dealer/distributor records do not have parent domestic/agri
             // distributor assignments. Those fields belong only to retailers.
             request.CustomFields.Remove("distributor_name");

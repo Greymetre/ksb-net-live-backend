@@ -1,9 +1,12 @@
+using System.Globalization;
+using System.Data;
 using System.Text.Json;
 using Application.DTOs.NewInvoices;
 using Application.Common;
 using Application.Interfaces.Repositories;
 using Domain.Constants;
 using Domain.Entities;
+using Domain.Services;
 using Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 
@@ -160,9 +163,18 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         }
         var zones = await LoadAssignedZoneNamesAsync([customer], cancellationToken);
         var zoneName = AssignedZoneName(customer, zones);
+        var stateNames = await LoadStateNamesAsync([customer], cancellationToken);
+
+        var audience = new SchemeAudience(
+            customer.CustomerType,
+            customer.Name,
+            customer.CustomerCode,
+            branch?.BranchName,
+            zoneName,
+            stateNames.GetValueOrDefault(customer.Id));
 
         return schemes
-            .Where(x => SchemeMatches(x, date, customer, branch, zoneName))
+            .Where(x => SchemeMatches(x, date, audience))
             .Select(x => new InvoiceSchemeOptionDto { Id = x.Id, Name = x.SchemeName, Code = x.SchemeCode, StartDate = x.StartDate, EndDate = x.EndDate })
             .ToList();
     }
@@ -398,6 +410,48 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         return await _dbContext.Cities.AsNoTracking().Where(x => ids.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.CityName, cancellationToken);
     }
 
+    /// <summary>
+    /// Resolves each customer's state name for State-scoped schemes. The id lives in
+    /// the legacy custom_fields JSON; customers migrated before that field existed
+    /// only carry it on the addresses row, so both are consulted.
+    /// </summary>
+    private async Task<Dictionary<ulong, string>> LoadStateNamesAsync(IEnumerable<Customer> customers, CancellationToken cancellationToken)
+    {
+        var list = customers.GroupBy(x => x.Id).Select(x => x.First()).ToList();
+        if (list.Count == 0) return [];
+
+        var stateIds = list.ToDictionary(x => x.Id, SchemeEligibility.ReadStateId);
+        var missing = stateIds.Where(x => !x.Value.HasValue).Select(x => x.Key).ToArray();
+        if (missing.Length > 0)
+        {
+            // There is no Address entity in the model, so the legacy addresses table
+            // is read directly. Ids come from the database, never from user input.
+            var connection = _dbContext.Database.GetDbConnection();
+            if (connection.State != ConnectionState.Open) await connection.OpenAsync(cancellationToken);
+            await using var command = connection.CreateCommand();
+            command.CommandText = $@"SELECT customer_id, state_id FROM addresses
+WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Join(',', missing)})";
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                if (reader.IsDBNull(0) || reader.IsDBNull(1)) continue;
+                var customerId = Convert.ToUInt64(reader.GetValue(0), CultureInfo.InvariantCulture);
+                if (stateIds.ContainsKey(customerId)) stateIds[customerId] = Convert.ToUInt64(reader.GetValue(1), CultureInfo.InvariantCulture);
+            }
+        }
+
+        var ids = stateIds.Values.Where(x => x.HasValue).Select(x => x!.Value).Distinct().ToArray();
+        if (ids.Length == 0) return [];
+
+        var names = await _dbContext.States.AsNoTracking()
+            .Where(x => ids.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, x => x.StateName, cancellationToken);
+
+        return stateIds
+            .Where(x => x.Value.HasValue && names.ContainsKey(x.Value!.Value))
+            .ToDictionary(x => x.Key, x => names[x.Value!.Value]);
+    }
+
     private async Task<Dictionary<ulong, string>> LoadAssignedZoneNamesAsync(IEnumerable<Customer> customers, CancellationToken cancellationToken)
     {
         var customerEmployeeIds = customers
@@ -593,16 +647,20 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         var minDate = schemes.Min(x => x.StartDate).ToDateTime(TimeOnly.MinValue);
         var maxDate = schemes.Max(x => x.EndDate).ToDateTime(TimeOnly.MaxValue);
 
-        // Slab eligibility is based only on finalized HO-approved turnover.
+        // Everything that is not rejected is loaded. Earned points still count only
+        // HO-approved turnover, but the expected preview has to see the other invoices
+        // still in approval, otherwise each one lands on its own low slab and the
+        // preview disagrees with what is actually paid once HO approves them together.
         var invoices = await _dbContext.NewInvoices.AsNoTracking()
             .Where(x => ids.Contains(x.SecondaryCustomerId)
-                && x.ApprovalStatus == NewInvoice.StatusApprovedHo
+                && x.ApprovalStatus != NewInvoice.StatusRejected
                 && x.InvoiceDate >= minDate
                 && x.InvoiceDate <= maxDate)
-            .Select(x => new SchemeInvoiceAmount(x.Id, x.SecondaryCustomerId, x.LoyaltySchemeId, x.InvoiceDate, x.Amount))
+            .Select(x => new SchemeInvoiceAmount(x.Id, x.SecondaryCustomerId, x.LoyaltySchemeId, x.InvoiceDate, x.Amount,
+                x.ApprovalStatus == NewInvoice.StatusApprovedHo))
             .ToListAsync(cancellationToken);
 
-        var invoiceIds = invoices.Select(x => x.InvoiceId).ToArray();
+        var invoiceIds = invoices.Where(x => x.IsHoApproved).Select(x => x.InvoiceId).ToArray();
         var hoApprovalAmounts = await _dbContext.NewInvoiceApprovalLogs.AsNoTracking()
             .Where(x => x.NewInvoiceId.HasValue
                 && invoiceIds.Contains(x.NewInvoiceId.Value)
@@ -635,15 +693,12 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         if (selectedScheme is null)
             return [ToDto(invoice, customer, cityName, zoneName, branchName, assignedDistributorName, assignedEmployeeName, creator, branch, null, null, approvalSummary)];
 
-        var periodAmount = PeriodAmount(invoice, selectedScheme, schemeInvoices);
-        // Pending invoices are not part of finalized turnover yet, but their
-        // expected reward must be previewed using the turnover that would
-        // result if this invoice receives final HO approval.
-        if (invoice.ApprovalStatus != NewInvoice.StatusApprovedHo
-            && invoice.ApprovalStatus != NewInvoice.StatusRejected)
-        {
-            periodAmount += invoice.Amount;
-        }
+        // An HO-approved invoice is paid on finalized turnover only. An invoice still in
+        // approval is previewed against every non-rejected invoice of the period, so the
+        // preview shows the same slab the whole batch will settle on after HO approval.
+        var awaitingApproval = invoice.ApprovalStatus != NewInvoice.StatusApprovedHo
+            && invoice.ApprovalStatus != NewInvoice.StatusRejected;
+        var periodAmount = PeriodAmount(invoice, selectedScheme, schemeInvoices, awaitingApproval);
         var rewardBaseAmount = invoice.ApprovalStatus == NewInvoice.StatusApprovedHo
             ? approvalSummary.HoApprovedAmount ?? invoice.Amount
             : invoice.Amount;
@@ -701,39 +756,21 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         };
     }
 
-    private static bool SchemeMatches(LoyaltyScheme scheme, DateOnly invoiceDate, Customer customer, Branch? branch, string? zoneName)
-    {
-        if (invoiceDate < scheme.StartDate || invoiceDate > scheme.EndDate) return false;
-        if (!CustomerTypeMatches(scheme.CustomerType)) return false;
+    // Scheme targeting lives in Domain.Services.SchemeEligibility so that the web
+    // invoice screen, the mobile apps and the customer point totals all decide
+    // eligibility with exactly the same rules.
+    private static bool SchemeMatches(LoyaltyScheme scheme, DateOnly invoiceDate, SchemeAudience audience) =>
+        SchemeEligibility.Matches(scheme, invoiceDate, audience);
 
-        if (string.Equals(scheme.AreaScope, "All", StringComparison.OrdinalIgnoreCase)) return true;
-        var values = ReadSchemeAreaValues(scheme.AreaValues);
-        if (values.Count == 0) return true;
-
-        return scheme.AreaScope switch
-        {
-            "Customer" => values.Any(value => string.Equals(value, customer.Name, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(value, customer.CustomerCode, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(value, $"{customer.CustomerCode} - {customer.Name}", StringComparison.OrdinalIgnoreCase)),
-            "Branch" => branch is not null && values.Any(value => string.Equals(value, branch.BranchName, StringComparison.OrdinalIgnoreCase)),
-            "Zone" => !string.IsNullOrWhiteSpace(zoneName) && values.Any(value => string.Equals(value, zoneName, StringComparison.OrdinalIgnoreCase)),
-            _ => true
-        };
-    }
-
-    private static bool CustomerTypeMatches(string customerType) =>
-        string.Equals(customerType, "Retailer", StringComparison.OrdinalIgnoreCase)
-        || string.Equals(customerType, "Influencers", StringComparison.OrdinalIgnoreCase)
-        || string.Equals(customerType, "Influencer", StringComparison.OrdinalIgnoreCase)
-        || string.Equals(customerType, "Retailer + Plumber", StringComparison.OrdinalIgnoreCase);
-
-    private static decimal PeriodAmount(NewInvoice invoice, LoyaltyScheme scheme, IReadOnlyCollection<SchemeInvoiceAmount> schemeInvoices)
+    private static decimal PeriodAmount(NewInvoice invoice, LoyaltyScheme scheme,
+        IReadOnlyCollection<SchemeInvoiceAmount> schemeInvoices, bool includeAwaitingApproval)
     {
         var startDate = scheme.StartDate.ToDateTime(TimeOnly.MinValue);
         var endDate = scheme.EndDate.ToDateTime(TimeOnly.MaxValue);
         return schemeInvoices
             .Where(x => x.CustomerId == invoice.SecondaryCustomerId
                 && x.SchemeId == scheme.Id
+                && (includeAwaitingApproval || x.IsHoApproved)
                 && x.InvoiceDate >= startDate
                 && x.InvoiceDate <= endDate)
             .Sum(x => x.Amount);
@@ -767,18 +804,8 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         return new SchemeResult(0, null, null, $"Add Rs. {remaining:0.##} more to get {rewardText}");
     }
 
-    private static IReadOnlyCollection<string> ReadSchemeAreaValues(string? json)
-    {
-        if (string.IsNullOrWhiteSpace(json)) return [];
-        try
-        {
-            return JsonSerializer.Deserialize<string[]>(json, JsonOptions) ?? [];
-        }
-        catch
-        {
-            return [];
-        }
-    }
+    private static IReadOnlyCollection<string> ReadSchemeAreaValues(string? json) => SchemeEligibility.ReadAreaValues(json);
+
 
     private static string OwnerName(Customer customer)
     {
@@ -883,7 +910,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         public Branch? Branch { get; init; }
     }
 
-    private sealed record SchemeInvoiceAmount(ulong InvoiceId, ulong CustomerId, ulong? SchemeId, DateTime InvoiceDate, decimal Amount);
+    private sealed record SchemeInvoiceAmount(ulong InvoiceId, ulong CustomerId, ulong? SchemeId, DateTime InvoiceDate, decimal Amount, bool IsHoApproved);
 
     private sealed record SchemeResult(decimal Points, decimal? RewardValue, string? TierName, string? HintMessage);
 

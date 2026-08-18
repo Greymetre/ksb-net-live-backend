@@ -22,17 +22,20 @@ public sealed class FieldKonnectCustomerRestController : ControllerBase
     private readonly AppDbContext _dbContext;
     private readonly IWebHostEnvironment _environment;
     private readonly ICustomerService _customerService;
+    private readonly ICustomerRepository _customerRepository;
     private readonly IHrRepository _hrRepository;
 
     public FieldKonnectCustomerRestController(
         AppDbContext dbContext,
         IWebHostEnvironment environment,
         ICustomerService customerService,
+        ICustomerRepository customerRepository,
         IHrRepository hrRepository)
     {
         _dbContext = dbContext;
         _environment = environment;
         _customerService = customerService;
+        _customerRepository = customerRepository;
         _hrRepository = hrRepository;
     }
 
@@ -651,6 +654,9 @@ ORDER BY city.city_name ASC", cancellationToken);
         {
             var body = await RequestValues(cancellationToken);
             var customerId = await UpsertUnifiedCustomer(id, body, CustomerEndpointKind.MasterDistributor, cancellationToken);
+            // This endpoint writes raw SQL rather than going through CustomerService,
+            // so the dealer login user has to be created explicitly here.
+            await _customerRepository.EnsureDistributorLoginUserAsync(customerId, CurrentUserId(), cancellationToken);
             return Ok(new
             {
                 status = "success",
@@ -695,6 +701,10 @@ ORDER BY city.city_name ASC", cancellationToken);
         var typeName = (Value(body, "type") ?? "RETAILER").ToUpperInvariant();
         var mobile = NormalizeMobile(isDistributor ? Value(body, "mobile") : FirstNonEmpty(Value(body, "mobile_number"), Value(body, "mobile")));
         if (string.IsNullOrWhiteSpace(mobile)) throw new ArgumentException(isDistributor ? "The mobile field is required." : "The mobile_number field is required.");
+
+        // A dealer code doubles as the dealer login password, so it cannot be blank.
+        var dealerCode = NullIfEmpty(FirstNonEmpty(Value(body, "distributor_code"), Value(body, "customer_code")));
+        if (isDistributor && string.IsNullOrWhiteSpace(dealerCode)) throw new ArgumentException("The distributor_code field is required.");
 
         var duplicateSql = id.HasValue
             ? "SELECT COUNT(*) FROM customers WHERE mobile = @mobile AND id <> @id AND deleted_at IS NULL"
@@ -767,7 +777,7 @@ ORDER BY city.city_name ASC", cancellationToken);
             ("@longitude", longitude),
             ("@profile_image", profileImage),
             ("@shop_image", shopImage),
-            ("@customer_code", FirstNonEmpty(Value(body, "distributor_code"), Value(body, "customer_code")) ?? string.Empty),
+            ("@customer_code", dealerCode ?? string.Empty),
             ("@status_id", ULongValue(body, "status_id") ?? 2),
             ("@customertype", customerType),
             ("@firmtype", ULongValue(body, "firmtype")),

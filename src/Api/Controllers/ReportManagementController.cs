@@ -77,6 +77,12 @@ public sealed class ReportManagementController : ControllerBase
             && (!filter.BranchId.HasValue || UserHasBranch(x, filter.BranchId.Value))).ToList();
 
         var userIds = users.Select(x => x.Id).ToArray();
+        var userDetailJoiningDates = (await _db.UserDetails.AsNoTracking()
+            .Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value) && x.DeletedAt == null && x.DateOfJoining.HasValue)
+            .Select(x => new { UserId = x.UserId!.Value, x.DateOfJoining, x.Id })
+            .ToListAsync(ct))
+            .GroupBy(x => x.UserId)
+            .ToDictionary(x => x.Key, x => x.OrderByDescending(item => item.Id).Select(item => item.DateOfJoining).FirstOrDefault());
         var divisions = await _db.Divisions.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.DivisionName, ct);
         var branches = await _db.Branches.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.BranchName, ct);
         var userNames = await _db.Users.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.Name, ct);
@@ -110,37 +116,61 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
             x => (ULong(x, "user_id"), Convert.ToInt32(Obj(x, "visit_year"), CultureInfo.InvariantCulture), Convert.ToInt32(Obj(x, "visit_month"), CultureInfo.InvariantCulture)),
             x => Convert.ToInt32(Obj(x, "visit_count"), CultureInfo.InvariantCulture));
 
-        var retailerAssignments = await RetailerAssignments(userIds, ct);
-        var assignedRetailerIds = retailerAssignments.Values.SelectMany(x => x).Distinct().ToArray();
-        var activeRetailerIds = assignedRetailerIds.Length == 0 ? new HashSet<ulong>() : (await _db.Orders.AsNoTracking()
-            .Where(x => x.BuyerId.HasValue && assignedRetailerIds.Contains(x.BuyerId.Value) && x.DeletedAt == null)
-            .Select(x => x.BuyerId!.Value).Distinct().ToListAsync(ct)).ToHashSet();
+        var retailerAssignmentPeriods = await RetailerAssignmentPeriods(userIds, rangeEnd, ct);
+        var assignedRetailerIds = retailerAssignmentPeriods.Select(x => x.CustomerId).Distinct().ToArray();
+        var retailerOrders = assignedRetailerIds.Length == 0 ? [] : await _db.Orders.AsNoTracking()
+            .Where(x => x.BuyerId.HasValue && assignedRetailerIds.Contains(x.BuyerId.Value)
+                && x.OrderDate >= rangeStart && x.OrderDate < rangeEnd && x.DeletedAt == null)
+            .Select(x => new RetailerOrderActivity(x.BuyerId!.Value, x.OrderDate!.Value)).ToListAsync(ct);
 
-        var rows = users.Select(user =>
-        {
-            var assigned = retailerAssignments.GetValueOrDefault(user.Id, []);
-            var active = assigned.Count(activeRetailerIds.Contains);
-            var monthlyRatings = new Dictionary<string, decimal>();
-            var monthlyDetails = new Dictionary<string, RatingTrendMonthDetail>();
-            foreach (var monthStart in monthStarts)
+            var rows = users.Select(user =>
             {
-                var monthEnd = monthStart.AddMonths(1);
-                var userAttendance = attendance.Where(x => x.UserId == user.Id && x.PunchinDate >= monthStart && x.PunchinDate < monthEnd).ToList();
-                var marketDays = userAttendance.Where(x => !IsLeaveOrOffice(x.WorkingType)).Select(x => x.PunchinDate.Date).Distinct().Count();
-                var promotional = userAttendance.Sum(x => PromotionalActivityCount(x.WorkingType));
-                var visits = visitCounts.GetValueOrDefault((user.Id, monthStart.Year, monthStart.Month));
-                var target = targets.Where(x => x.UserId == user.Id && x.Year == monthStart.Year
+                var joiningDate = user.DateOfJoining ?? userDetailJoiningDates.GetValueOrDefault(user.Id);
+                var ratingStartMonth = RatingAverageStartMonth(joiningDate, rangeStart);
+                var monthlyRatings = new Dictionary<string, decimal>();
+                var monthlyDetails = new Dictionary<string, RatingTrendMonthDetail>();
+                var cumulativeAssignedRetailers = new HashSet<ulong>();
+                var cumulativeActiveRetailers = new HashSet<ulong>();
+                var carriedActive = 0;
+                var carriedAssigned = 0;
+                foreach (var monthStart in monthStarts)
+                {
+                    var monthEnd = monthStart.AddMonths(1);
+                    var activeRetailerIds = retailerOrders
+                        .Where(x => x.OrderDate >= monthStart && x.OrderDate < monthEnd)
+                        .Select(x => x.CustomerId).ToHashSet();
+                    var registeredRetailers = 0;
+                    var active = 0;
+                    if (monthStart >= ratingStartMonth)
+                    {
+                        var assigned = RetailerAssignmentsForPeriod(retailerAssignmentPeriods, user.Id, monthStart, monthEnd);
+                        cumulativeAssignedRetailers.UnionWith(assigned);
+                        // A retailer becomes active from the first month it was both assigned to this
+                        // user and placed an order, and stays active for the remaining months. Only
+                        // this user's own retailers count: retailerOrders spans every employee in the
+                        // result set, so unfiltered order ids would push active above assigned.
+                        cumulativeActiveRetailers.UnionWith(assigned.Where(activeRetailerIds.Contains));
+                        registeredRetailers = Math.Max(carriedAssigned, cumulativeAssignedRetailers.Count);
+                        active = Math.Max(carriedActive, cumulativeActiveRetailers.Count);
+                        carriedAssigned = registeredRetailers;
+                        carriedActive = active;
+                    }
+                    var userAttendance = attendance.Where(x => x.UserId == user.Id && x.PunchinDate >= monthStart && x.PunchinDate < monthEnd).ToList();
+                    var marketDays = userAttendance.Where(x => !IsLeaveOrOffice(x.WorkingType)).Select(x => x.PunchinDate.Date).Distinct().Count();
+                    var promotional = userAttendance.Sum(x => PromotionalActivityCount(x.WorkingType));
+                    var visits = visitCounts.GetValueOrDefault((user.Id, monthStart.Year, monthStart.Month));
+                    var target = targets.Where(x => x.UserId == user.Id && x.Year == monthStart.Year
                     && (string.Equals(x.Month, monthStart.ToString("MMM", CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase)
                         || string.Equals(x.Month, monthStart.ToString("MMMM", CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase)))
                     .Sum(x => x.Target ?? 0m);
                 var orderValue = orders.Where(x => x.UserId == user.Id && x.OrderDate >= monthStart && x.OrderDate < monthEnd).Sum(x => x.SubTotal);
                 var achievement = orderValue > 1m ? Math.Round((orderValue - orderValue / 100m) / 100000m, 2) : 0m;
-                var score = CalculateRatingScores(marketDays, visits, achievement, target, promotional, assigned.Count, active, 20, 200, 4);
-                var monthKey = monthStart.ToString("yyyy-MM", CultureInfo.InvariantCulture);
-                monthlyRatings[monthKey] = score.FinalRating;
-                monthlyDetails[monthKey] = new RatingTrendMonthDetail(score.FinalRating,
-                [
-                    new("market_days", "Market Days", Math.Round(score.MarketRatio * 100m, 2), marketDays, 20m, 5m,
+                    var score = CalculateRatingScores(marketDays, visits, achievement, target, promotional, registeredRetailers, active, 20, 200, 4);
+                    var monthKey = monthStart.ToString("yyyy-MM", CultureInfo.InvariantCulture);
+                    monthlyRatings[monthKey] = score.FinalRating;
+                    monthlyDetails[monthKey] = new RatingTrendMonthDetail(score.FinalRating,
+                    [
+                        new("market_days", "Market Days", Math.Round(score.MarketRatio * 100m, 2), marketDays, 20m, 5m,
                         $"{marketDays} of 20 target market days completed"),
                     new("customer_visits", "Customer Visits", Math.Round(score.VisitRatio * 100m, 2), visits, 200m, 30m,
                         $"{visits} of 200 target customer visits completed"),
@@ -148,14 +178,20 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
                         $"Achieved {achievement:0.00}L against {target:0.00}L target"),
                     new("promotional_activity", "Promotional Activity", Math.Round(score.PromoRatio * 100m, 2), promotional, 4m, 10m,
                         $"{promotional} of 4 target promotional activities completed"),
-                    new("active_retailer", "Active Retailer", Math.Round(score.ActiveRatingRatio * 100m, 2), active, assigned.Count, 15m,
-                        $"{active} of {assigned.Count} assigned retailers active (30% active gives full score)")
+                    new("active_retailer", "Active Retailer", Math.Round(score.ActiveRatingRatio * 100m, 2), active, registeredRetailers, 15m,
+                        $"{active} of {registeredRetailers} assigned retailers active (30% active gives full score)")
                 ]);
-            }
+                }
+
+            var eligibleMonthKeys = monthStarts.Where(monthStart => monthStart >= ratingStartMonth)
+                .Select(monthStart => monthStart.ToString("yyyy-MM", CultureInfo.InvariantCulture))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var eligibleRatings = monthlyRatings.Where(item => eligibleMonthKeys.Contains(item.Key)).Select(item => item.Value).ToArray();
 
             return new RatingTrendRow(user.Id, BranchName(user, branches), user.EmployeeCodes ?? string.Empty, user.Name,
                 Name(userNames, user.ReportingId), Name(divisions, user.DivisionId),
-                Math.Round(monthlyRatings.Values.DefaultIfEmpty(0m).Average(), 2), monthlyRatings, monthlyDetails);
+                Math.Round(eligibleRatings.DefaultIfEmpty(0m).Average(), 2), joiningDate, ratingStartMonth,
+                eligibleRatings.Length, monthlyRatings, monthlyDetails);
         }).OrderByDescending(x => x.AverageRating).ThenBy(x => x.EmployeeName).ToList();
 
         var search = filter.Search?.Trim();
@@ -172,7 +208,11 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
         var pagedRows = filteredRows.Skip((page - 1) * pageSize).Take(pageSize).ToList();
 
         var monthlyAverages = monthStarts.ToDictionary(x => x.ToString("yyyy-MM", CultureInfo.InvariantCulture), monthStart =>
-            filteredRows.Count == 0 ? 0m : Math.Round(filteredRows.Average(row => row.MonthlyRatings.GetValueOrDefault(monthStart.ToString("yyyy-MM", CultureInfo.InvariantCulture))), 2));
+        {
+            var eligibleRows = filteredRows.Where(row => row.RatingStartMonth <= monthStart).ToList();
+            return eligibleRows.Count == 0 ? 0m : Math.Round(eligibleRows.Average(row =>
+                row.MonthlyRatings.GetValueOrDefault(monthStart.ToString("yyyy-MM", CultureInfo.InvariantCulture))), 2);
+        });
         var average = filteredRows.Count == 0 ? 0m : Math.Round(filteredRows.Average(x => x.AverageRating), 2);
         var oldestAverage = monthlyAverages.GetValueOrDefault(monthStarts[0].ToString("yyyy-MM", CultureInfo.InvariantCulture));
         var top = filteredRows.FirstOrDefault();
@@ -224,6 +264,9 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
                 reporting_manager = x.ReportingManager,
                 zone = x.Zone,
                 average_rating = x.AverageRating,
+                date_of_joining = x.DateOfJoining?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                rating_start_month = x.RatingStartMonth.ToString("yyyy-MM", CultureInfo.InvariantCulture),
+                average_month_count = x.AverageMonthCount,
                 monthly_ratings = x.MonthlyRatings,
                 monthly_details = x.MonthlyDetails.ToDictionary(item => item.Key, item => new
                 {
@@ -530,20 +573,65 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id", ct);
         return rows.ToDictionary(x => ULong(x, "user_id"), x => Convert.ToInt32(Obj(x, "visit_count"), CultureInfo.InvariantCulture));
     }
 
-    private async Task<Dictionary<ulong, List<ulong>>> RetailerAssignments(ulong[] userIds, CancellationToken ct)
+    private async Task<List<RetailerAssignmentPeriod>> RetailerAssignmentPeriods(ulong[] userIds, DateTime rangeEnd, CancellationToken ct)
     {
         if (userIds.Length == 0) return [];
         var ids = string.Join(',', userIds);
-        var rows = await Query($@"SELECT CAST(user_id AS bigint) user_id, CAST(customer_id AS bigint) customer_id FROM (
-SELECT executive_id user_id, id customer_id FROM customers
-WHERE deleted_at IS NULL AND customertype = 2 AND executive_id IN ({ids})
-UNION
-SELECT ed.user_id, ed.customer_id FROM employee_details ed
-INNER JOIN customers c ON c.id = ed.customer_id AND c.deleted_at IS NULL AND c.customertype = 2
-WHERE ed.deleted_at IS NULL AND ed.active = 'Y' AND ed.user_id IN ({ids})
+        var rows = await Query($@"SELECT CAST(user_id AS bigint) user_id, CAST(customer_id AS bigint) customer_id,
+assigned_at, unassigned_at FROM (
+    SELECT c.executive_id user_id, c.id customer_id, c.created_at assigned_at, c.deleted_at unassigned_at
+    FROM customers c
+    WHERE c.customertype = 2 AND c.executive_id IN ({ids})
+        AND NOT EXISTS (SELECT 1 FROM employee_details ed WHERE ed.customer_id = c.id)
+        AND (c.created_at IS NULL OR c.created_at < '{rangeEnd:yyyy-MM-dd HH:mm:ss}')
+    UNION ALL
+    SELECT ed.user_id, ed.customer_id,
+        CASE
+            WHEN ed.created_at IS NULL THEN c.created_at
+            WHEN c.created_at IS NULL THEN ed.created_at
+            WHEN ed.created_at >= c.created_at THEN ed.created_at ELSE c.created_at
+        END assigned_at,
+        CASE
+            WHEN ed.deleted_at IS NULL THEN c.deleted_at
+            WHEN c.deleted_at IS NULL THEN ed.deleted_at
+            WHEN ed.deleted_at <= c.deleted_at THEN ed.deleted_at ELSE c.deleted_at
+        END unassigned_at
+    FROM employee_details ed
+    INNER JOIN customers c ON c.id = ed.customer_id AND c.customertype = 2
+    WHERE ed.user_id IN ({ids}) AND (ed.active = 'Y' OR ed.active IS NULL)
+        AND ((CASE
+            WHEN ed.created_at IS NULL THEN c.created_at
+            WHEN c.created_at IS NULL THEN ed.created_at
+            WHEN ed.created_at >= c.created_at THEN ed.created_at ELSE c.created_at
+        END) IS NULL OR (CASE
+            WHEN ed.created_at IS NULL THEN c.created_at
+            WHEN c.created_at IS NULL THEN ed.created_at
+            WHEN ed.created_at >= c.created_at THEN ed.created_at ELSE c.created_at
+        END) < '{rangeEnd:yyyy-MM-dd HH:mm:ss}')
 ) assigned", ct);
-        return rows.GroupBy(x => ULong(x, "user_id")).ToDictionary(x => x.Key,
-            x => x.Select(y => ULong(y, "customer_id")).Where(id => id > 0).Distinct().ToList());
+
+        return rows.Select(x => new RetailerAssignmentPeriod(
+                ULong(x, "user_id"),
+                ULong(x, "customer_id"),
+                NullableDateTime(x, "assigned_at"),
+                NullableDateTime(x, "unassigned_at")))
+            .Where(x => x.UserId > 0 && x.CustomerId > 0)
+            .ToList();
+    }
+
+    private static List<ulong> RetailerAssignmentsForPeriod(IReadOnlyCollection<RetailerAssignmentPeriod> assignments,
+        ulong userId, DateTime periodStart, DateTime periodEnd) => assignments
+        .Where(x => x.UserId == userId
+            && (!x.AssignedAt.HasValue || x.AssignedAt.Value < periodEnd)
+            && (!x.UnassignedAt.HasValue || x.UnassignedAt.Value > periodStart))
+        .Select(x => x.CustomerId)
+        .Distinct()
+        .ToList();
+
+    private static DateTime? NullableDateTime(IReadOnlyDictionary<string, object?> row, string key)
+    {
+        var value = Obj(row, key);
+        return value is null ? null : Convert.ToDateTime(value, CultureInfo.InvariantCulture);
     }
 
     private static bool IsLeaveOrOffice(string? workingType)
@@ -559,6 +647,13 @@ WHERE ed.deleted_at IS NULL AND ed.active = 'Y' AND ed.user_id IN ({ids})
         .Count(x => x.Equals("Retailer Meet", StringComparison.OrdinalIgnoreCase)
             || x.Equals("Nukkad Meet", StringComparison.OrdinalIgnoreCase) || x.Equals("Field Demo", StringComparison.OrdinalIgnoreCase));
 
+    private static DateTime RatingAverageStartMonth(DateTime? joiningDate, DateTime defaultStart)
+    {
+        if (!joiningDate.HasValue) return new DateTime(defaultStart.Year, defaultStart.Month, 1);
+        var joiningMonth = new DateTime(joiningDate.Value.Year, joiningDate.Value.Month, 1);
+        return joiningDate.Value.Day <= 15 ? joiningMonth : joiningMonth.AddMonths(1);
+    }
+
     private static decimal CappedRatio(decimal achievement, decimal target) => target <= 0 ? 0m : Math.Min(achievement / target, 1m);
 
     private static RatingScores CalculateRatingScores(int marketDays, int visits, decimal salesAchievement, decimal salesTarget,
@@ -573,7 +668,7 @@ WHERE ed.deleted_at IS NULL AND ed.active = 'Y' AND ed.user_id IN ({ids})
         var activeRatingRatio = Math.Min(activeRatio, .30m) / .30m;
         var final = marketWeight * marketRatio + visitWeight * visitRatio + salesWeight * salesRatio
             + promoWeight * promoRatio + retailerWeight * activeRatingRatio;
-        return new RatingScores(marketRatio, visitRatio, salesRatio, promoRatio, activeRatio, Math.Min(activeRatio, .30m),
+        return new RatingScores(marketRatio, visitRatio, salesRatio, promoRatio, activeRatio, activeRatingRatio,
             marketWeight * marketRatio, visitWeight * visitRatio, salesWeight * salesRatio, promoWeight * promoRatio,
             retailerWeight * activeRatingRatio, Math.Round(final, 2));
     }
@@ -611,11 +706,7 @@ WHERE ed.deleted_at IS NULL AND ed.active = 'Y' AND ed.user_id IN ({ids})
         var start = isWeekly ? indiaToday.AddDays(-7) : new DateTime(filter.Year!.Value, filter.Month ?? 1, 1);
         var end = isWeekly ? indiaToday : filter.Month.HasValue ? start.AddMonths(1)
             : filter.Year == indiaToday.Year ? indiaToday.AddDays(1) : new DateTime(filter.Year!.Value + 1, 1, 1);
-        var retailerAssignments = await RetailerAssignments(userIds, ct);
-        var assignedRetailerIds = retailerAssignments.Values.SelectMany(x => x).Distinct().ToArray();
-        var activeRetailerIds = assignedRetailerIds.Length == 0 ? new HashSet<ulong>() : (await _db.Orders.AsNoTracking()
-            .Where(x => x.BuyerId.HasValue && assignedRetailerIds.Contains(x.BuyerId.Value) && x.DeletedAt == null)
-            .Select(x => x.BuyerId!.Value).Distinct().ToListAsync(ct)).ToHashSet();
+        var retailerAssignmentPeriods = await RetailerAssignmentPeriods(userIds, end, ct);
 
         const decimal marketWeight = 5m, visitWeight = 30m, salesWeight = 40m, promoWeight = 10m, retailerWeight = 15m;
 
@@ -633,6 +724,13 @@ WHERE ed.deleted_at IS NULL AND ed.active = 'Y' AND ed.user_id IN ({ids})
             var orders = await _db.Orders.AsNoTracking().Where(x => x.CreatedBy.HasValue && userIds.Contains(x.CreatedBy.Value)
                 && x.OrderDate >= periodStart && x.OrderDate < periodEnd && x.DeletedAt == null).Select(x => new { UserId = x.CreatedBy!.Value, x.SubTotal }).ToListAsync(ct);
             var visits = await RatingVisitCounts(userIds, DateOnly.FromDateTime(periodStart), DateOnly.FromDateTime(periodEnd.AddDays(-1)), ct);
+            var assignmentsByUser = users.ToDictionary(x => x.Id,
+                x => RetailerAssignmentsForPeriod(retailerAssignmentPeriods, x.Id, periodStart, periodEnd));
+            var periodRetailerIds = assignmentsByUser.Values.SelectMany(x => x).Distinct().ToArray();
+            var activeRetailerIds = periodRetailerIds.Length == 0 ? new HashSet<ulong>() : (await _db.Orders.AsNoTracking()
+                .Where(x => x.BuyerId.HasValue && periodRetailerIds.Contains(x.BuyerId.Value)
+                    && x.OrderDate >= periodStart && x.OrderDate < periodEnd && x.DeletedAt == null)
+                .Select(x => x.BuyerId!.Value).Distinct().ToListAsync(ct)).ToHashSet();
 
             return users.Select(user =>
             {
@@ -652,7 +750,7 @@ WHERE ed.deleted_at IS NULL AND ed.active = 'Y' AND ed.user_id IN ({ids})
                 }) : userTargets.Sum(x => x.Target ?? 0m);
                 var orderValue = orders.Where(x => x.UserId == user.Id).Sum(x => x.SubTotal);
                 var achievement = orderValue > 1m ? Math.Round((orderValue - orderValue / 100m) / 100000m, 2) : 0m;
-                var assigned = retailerAssignments.GetValueOrDefault(user.Id, []);
+                var assigned = assignmentsByUser.GetValueOrDefault(user.Id, []);
                 var active = assigned.Count(activeRetailerIds.Contains);
                 var marketTarget = weekly ? 5 : 20 * periodMonths;
                 var visitTarget = weekly ? 50 : 200 * periodMonths;
@@ -855,12 +953,15 @@ internal sealed record RatingScores(decimal MarketRatio, decimal VisitRatio, dec
     decimal PromoRating, decimal ActiveRating, decimal FinalRating);
 
 internal sealed record RatingTrendRow(ulong UserId, string Branch, string EmployeeCode, string EmployeeName,
-    string ReportingManager, string Zone, decimal AverageRating, IReadOnlyDictionary<string, decimal> MonthlyRatings,
+    string ReportingManager, string Zone, decimal AverageRating, DateTime? DateOfJoining, DateTime RatingStartMonth,
+    int AverageMonthCount, IReadOnlyDictionary<string, decimal> MonthlyRatings,
     IReadOnlyDictionary<string, RatingTrendMonthDetail> MonthlyDetails);
 
 internal sealed record RatingTrendMonthDetail(decimal FinalRating, IReadOnlyList<RatingComponentDetail> Components);
 internal sealed record RatingComponentDetail(string Key, string Label, decimal Percentage, decimal Actual, decimal Target,
     decimal Weight, string Description);
+internal sealed record RetailerAssignmentPeriod(ulong UserId, ulong CustomerId, DateTime? AssignedAt, DateTime? UnassignedAt);
+internal sealed record RetailerOrderActivity(ulong CustomerId, DateTime OrderDate);
 
 public sealed record DealerPerformanceRow(Domain.Entities.Customer Dealer, Domain.Entities.User User, IReadOnlyDictionary<int, decimal> Monthly, string Zone, string Branch, string Reporting);
 public sealed record PerformanceOrder(ulong? BuyerId, ulong? SellerId, ulong? ExecutiveId, ulong? CreatedBy, DateTime? OrderDate, long TotalQty, decimal GrandTotal);

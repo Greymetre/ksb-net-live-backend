@@ -9,6 +9,7 @@ using Application.Interfaces.Repositories;
 using Application.Interfaces.Services;
 using Api.Services;
 using Domain.Entities;
+using Domain.Services;
 using Infrastructure.Data;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -346,7 +347,7 @@ public sealed class MobileAppController : ControllerBase
         var invoices = await CustomerInvoices(customer.Id, cancellationToken);
         var wallet = await BuildWallet(customer.Id, invoices, cancellationToken);
         var walletCards = await BuildDashboardWalletCards(customer, wallet, invoices, cancellationToken);
-        var currentSchemes = await CurrentRunningSchemes(null, cancellationToken, invoices);
+        var currentSchemes = await CurrentRunningSchemes(null, cancellationToken, invoices, customer);
         // Customer-facing status intentionally exposes only three states:
         // HO approval is Approved, an explicit rejection is Rejected, and all
         // intermediate workflow states (Pending/SS/Sales) remain Pending.
@@ -434,6 +435,226 @@ public sealed class MobileAppController : ControllerBase
     }
 
     [Authorize]
+    [HttpGet("dealer/schemes")]
+    public async Task<IActionResult> DealerSchemes(CancellationToken cancellationToken)
+    {
+        var dealer = await CurrentDealer(cancellationToken);
+        if (dealer.Result is not null) return dealer.Result;
+
+        var today = CurrentBusinessDate();
+        // Published schemes only, expired ones included so the dealer can still see
+        // what has just ended. Date filtering happens per scheme below, not here.
+        var schemes = await _dbContext.LoyaltySchemes.AsNoTracking().Include(x => x.Slabs)
+            .Where(x => x.DeletedAt == null
+                && x.Active == "Y"
+                && (x.Status == "Published" || x.Status == "Live")
+                && x.SchemeType == "Invoice")
+            .ToListAsync(cancellationToken);
+        if (schemes.Count == 0) return Ok(new { status = "success", data = Array.Empty<object>() });
+
+        // A dealer should see anything relevant to its own account plus anything
+        // relevant to the retailers assigned to it, so the scheme is matched against
+        // every one of those audiences and kept if any of them qualifies.
+        var audiences = await DealerSchemeAudiencesAsync(dealer.Customer!, cancellationToken);
+
+        var data = schemes
+            .Where(scheme => audiences.Any(audience => SchemeEligibility.Matches(scheme, EffectiveMatchDate(scheme, today), audience)))
+            .Select(scheme =>
+            {
+                var expired = scheme.EndDate < today;
+                var upcoming = scheme.StartDate > today;
+                return new
+                {
+                    id = scheme.Id,
+                    scheme_name = scheme.SchemeName,
+                    scheme_code = scheme.SchemeCode,
+                    scheme_tag = scheme.SchemeTag,
+                    wallet_type = IsBooster(scheme.SchemeTag) ? "Booster" : "Regular",
+                    based_on = scheme.BasedOn,
+                    start_date = scheme.StartDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                    end_date = scheme.EndDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                    status = expired ? "expired" : upcoming ? "upcoming" : "live",
+                    status_label = expired ? "Expired" : upcoming ? "Upcoming" : "Live",
+                    is_live = !expired && !upcoming,
+                    days_remaining = expired || upcoming ? 0 : scheme.EndDate.DayNumber - today.DayNumber,
+                    area_scope = scheme.AreaScope,
+                    customer_type = scheme.CustomerType
+                };
+            })
+            .OrderByDescending(x => x.is_live)
+            .ThenByDescending(x => x.end_date)
+            .ToList();
+
+        return Ok(new { status = "success", data });
+    }
+
+    /// <summary>
+    /// A scheme's own period is used when checking area/type targeting, so an expired
+    /// scheme is still matched against the audience instead of being dropped on date.
+    /// </summary>
+    private static DateOnly EffectiveMatchDate(LoyaltyScheme scheme, DateOnly today) =>
+        today < scheme.StartDate ? scheme.StartDate : today > scheme.EndDate ? scheme.EndDate : today;
+
+    /// <summary>
+    /// The dealer's own audience plus one per assigned retailer. Branch, zone and
+    /// state lookups are batched because a dealer can have hundreds of retailers.
+    /// </summary>
+    private async Task<IReadOnlyList<SchemeAudience>> DealerSchemeAudiencesAsync(Customer dealer, CancellationToken cancellationToken)
+    {
+        var retailers = await DealerAssignedRetailers(dealer.Id).ToListAsync(cancellationToken);
+        var customers = new List<Customer> { dealer };
+        customers.AddRange(retailers);
+
+        var employeeIds = customers
+            .Select(customer =>
+            {
+                var fields = ReadFields(customer);
+                return FirstAssignedId(Field(fields, "employee_id"))
+                    ?? FirstAssignedId(Field(fields, "sales_executive_id"))
+                    ?? customer.ExecutiveId;
+            })
+            .Where(id => id.HasValue).Select(id => id!.Value).Distinct().ToArray();
+
+        var employees = employeeIds.Length == 0
+            ? []
+            : await _dbContext.Users.AsNoTracking().Where(x => employeeIds.Contains(x.Id))
+                .Select(x => new { x.Id, x.PrimaryBranchId, x.BranchId, x.DivisionId })
+                .ToListAsync(cancellationToken);
+
+        var branchIds = employees.Select(x => x.PrimaryBranchId ?? FirstAssignedId(x.BranchId)).Where(x => x.HasValue).Select(x => x!.Value).Distinct().ToArray();
+        var divisionIds = employees.Where(x => x.DivisionId.HasValue).Select(x => x.DivisionId!.Value).Distinct().ToArray();
+        var stateIds = customers.Select(SchemeEligibility.ReadStateId).Where(x => x.HasValue).Select(x => x!.Value).Distinct().ToArray();
+
+        var branches = branchIds.Length == 0 ? [] : await _dbContext.Branches.AsNoTracking()
+            .Where(x => branchIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.BranchName, cancellationToken);
+        var divisions = divisionIds.Length == 0 ? [] : await _dbContext.Divisions.AsNoTracking()
+            .Where(x => divisionIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.DivisionName, cancellationToken);
+        var states = stateIds.Length == 0 ? [] : await _dbContext.States.AsNoTracking()
+            .Where(x => stateIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.StateName, cancellationToken);
+        var employeeById = employees.ToDictionary(x => x.Id);
+
+        return customers.Select(customer =>
+        {
+            var fields = ReadFields(customer);
+            var employeeId = FirstAssignedId(Field(fields, "employee_id"))
+                ?? FirstAssignedId(Field(fields, "sales_executive_id"))
+                ?? customer.ExecutiveId;
+
+            string? branchName = null;
+            string? zoneName = null;
+            if (employeeId.HasValue && employeeById.TryGetValue(employeeId.Value, out var employee))
+            {
+                var branchId = employee.PrimaryBranchId ?? FirstAssignedId(employee.BranchId);
+                if (branchId.HasValue) branchName = branches.GetValueOrDefault(branchId.Value);
+                if (employee.DivisionId.HasValue) zoneName = divisions.GetValueOrDefault(employee.DivisionId.Value);
+            }
+
+            var stateId = SchemeEligibility.ReadStateId(customer);
+            var stateName = stateId.HasValue ? states.GetValueOrDefault(stateId.Value) : null;
+            return new SchemeAudience(customer.CustomerType, customer.Name, customer.CustomerCode, branchName, zoneName, stateName);
+        }).ToList();
+    }
+
+    [Authorize]
+    [HttpGet("dealer/schemes/{id}")]
+    public async Task<IActionResult> DealerSchemeDetail(ulong id, CancellationToken cancellationToken)
+    {
+        var dealer = await CurrentDealer(cancellationToken);
+        if (dealer.Result is not null) return dealer.Result;
+
+        var scheme = await _dbContext.LoyaltySchemes.AsNoTracking().Include(x => x.Slabs)
+            .FirstOrDefaultAsync(x => x.Id == id && x.DeletedAt == null && x.Active == "Y"
+                && (x.Status == "Published" || x.Status == "Live") && x.SchemeType == "Invoice", cancellationToken);
+        if (scheme is null) return NotFound(new { status = "error", message = "Scheme not found." });
+
+        var today = CurrentBusinessDate();
+        var audiences = await DealerSchemeAudiencesAsync(dealer.Customer!, cancellationToken);
+        if (!audiences.Any(audience => SchemeEligibility.Matches(scheme, EffectiveMatchDate(scheme, today), audience)))
+        {
+            return NotFound(new { status = "error", message = "Scheme not found." });
+        }
+
+        // Only this dealer's invoices under this scheme. Reward figures follow the same
+        // rules as the dealer dashboard: points are real only once HO has approved,
+        // anything still moving through approval counts as expected.
+        var invoices = (await _invoiceRepository.GetInvoicesAsync(new NewInvoiceFilterDto
+        {
+            DistributorCustomerId = dealer.Customer!.Id,
+            SchemeId = scheme.Id,
+            Unpaged = true
+        }, null, cancellationToken)).Items;
+
+        var items = BuildInvoiceListItems(invoices, showIntermediateAsInProcess: true);
+        var distinctInvoices = invoices.GroupBy(x => x.Id).Select(x => x.First()).ToList();
+
+        var pointsEarned = items.Where(x => x.Status == "approved").Sum(x => x.RewardAmount);
+        var pointsExpected = items.Where(x => x.Status is "pending" or "in_process").Sum(x => x.ExpectedRewardAmount);
+        var approvedAmount = distinctInvoices.Where(x => x.ApprovalStatus == NewInvoice.StatusApprovedHo)
+            .Sum(x => x.HoApprovedAmount ?? x.Amount);
+        var pendingAmount = distinctInvoices
+            .Where(x => x.ApprovalStatus is not NewInvoice.StatusApprovedHo and not NewInvoice.StatusRejected)
+            .Sum(x => x.SalesApprovedAmount ?? x.SsApprovedAmount ?? x.Amount);
+
+        // "Scheme retailers" = the dealer's retailers that actually pushed an invoice
+        // under this scheme, not every retailer assigned to the dealer.
+        var retailerGroups = items.GroupBy(x => x.RetailerId).ToList();
+        var expired = scheme.EndDate < today;
+        var upcoming = scheme.StartDate > today;
+
+        return Ok(new
+        {
+            status = "success",
+            data = new
+            {
+                id = scheme.Id,
+                scheme_name = scheme.SchemeName,
+                scheme_code = scheme.SchemeCode,
+                scheme_description = scheme.SchemeDescription,
+                scheme_tag = scheme.SchemeTag,
+                wallet_type = IsBooster(scheme.SchemeTag) ? "Booster" : "Regular",
+                based_on = scheme.BasedOn,
+                area_scope = scheme.AreaScope,
+                customer_type = scheme.CustomerType,
+                start_date = scheme.StartDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                end_date = scheme.EndDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                status = expired ? "expired" : upcoming ? "upcoming" : "live",
+                status_label = expired ? "Expired" : upcoming ? "Upcoming" : "Live",
+                is_live = !expired && !upcoming,
+                days_remaining = expired || upcoming ? 0 : scheme.EndDate.DayNumber - today.DayNumber,
+                summary = new
+                {
+                    scheme_retailers = retailerGroups.Count,
+                    total_invoices = distinctInvoices.Count,
+                    approved_invoices = items.Count(x => x.Status == "approved"),
+                    pending_invoices = items.Count(x => x.Status is "pending" or "in_process"),
+                    rejected_invoices = items.Count(x => x.Status == "rejected"),
+                    total_invoice_amount = distinctInvoices.Sum(x => x.Amount),
+                    approved_invoice_amount = approvedAmount,
+                    expected_invoice_amount = pendingAmount,
+                    points_earned = pointsEarned,
+                    points_expected = pointsExpected
+                },
+                slabs = scheme.Slabs.Where(x => x.DeletedAt == null).OrderBy(x => x.ValueFrom).ThenBy(x => x.SortOrder)
+                    .Select(x => new { tier_name = x.TierName, value_from = x.ValueFrom, value_to = x.ValueTo, reward_value = x.RewardValue }),
+                retailers = retailerGroups
+                    .Select(group => new
+                    {
+                        retailer_id = group.Key,
+                        retailer_name = group.First().RetailerName,
+                        shop_name = group.First().ShopName,
+                        invoice_count = group.Count(),
+                        invoice_amount = group.Sum(x => x.Amount),
+                        points_earned = group.Where(x => x.Status == "approved").Sum(x => x.RewardAmount),
+                        points_expected = group.Where(x => x.Status is "pending" or "in_process").Sum(x => x.ExpectedRewardAmount)
+                    })
+                    .OrderByDescending(x => x.invoice_amount)
+                    .ToList(),
+                recent_invoices = items.Take(10)
+            }
+        });
+    }
+
+    [Authorize]
     [HttpGet("dealer/retailers")]
     public async Task<IActionResult> DealerRetailers(
         [FromQuery] string? search,
@@ -445,48 +666,45 @@ public sealed class MobileAppController : ControllerBase
         var dealer = await CurrentDealer(cancellationToken);
         if (dealer.Result is not null) return dealer.Result;
 
-        var assignedQuery = DealerAssignedRetailers(dealer.Customer!.Id);
+        // Customer-to-distributor assignments are stored in the legacy JSON
+        // column. Materialize that expensive scope once, then perform search,
+        // sorting and pagination in memory. Previously this endpoint executed
+        // the same JSON LIKE scan four or five times per request.
+        var assignedRetailers = await DealerAssignedRetailers(dealer.Customer!.Id)
+            .ToListAsync(cancellationToken);
         var shouldIncludeMetrics = includeMetrics ?? (page.HasValue || pageSize.HasValue);
-        var assignedRetailersForSummary = shouldIncludeMetrics
-            ? await assignedQuery.ToListAsync(cancellationToken)
-            : [];
-        var totalRetailers = shouldIncludeMetrics
-            ? assignedRetailersForSummary.Count
-            : await assignedQuery.CountAsync(cancellationToken);
+        var totalRetailers = assignedRetailers.Count;
         // The Retailers screen shows KYC coverage for every assigned retailer,
         // including retailers who have not uploaded an invoice yet.
         var pendingKycRetailers = shouldIncludeMetrics
-            ? assignedRetailersForSummary.Count(retailer =>
+            ? assignedRetailers.Count(retailer =>
                 !string.Equals(KycStatusValue(ReadFields(retailer)), "approved", StringComparison.OrdinalIgnoreCase))
             : 0;
         var activeRetailers = shouldIncludeMetrics
-            ? await assignedQuery.CountAsync(retailer => _dbContext.NewInvoices
-                .AsNoTracking()
-                .Any(invoice => invoice.SecondaryCustomerId == retailer.Id), cancellationToken)
+            ? await CountActiveRetailers(assignedRetailers.Select(x => x.Id), cancellationToken)
             : 0;
 
-        var query = assignedQuery;
+        IEnumerable<Customer> filteredRetailers = assignedRetailers;
         if (!string.IsNullOrWhiteSpace(search))
         {
             var term = search.Trim();
-            query = query.Where(x => x.Name.Contains(term)
-                || x.CustomerCode.Contains(term)
-                || (x.Mobile != null && x.Mobile.Contains(term))
-                || (x.CustomFields != null && x.CustomFields.Contains(term)));
+            filteredRetailers = filteredRetailers.Where(x => RetailerMatchesSearch(x, term));
         }
 
-        var filteredTotal = await query.CountAsync(cancellationToken);
+        var orderedRetailers = filteredRetailers
+            .OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.Id)
+            .ToList();
+        var filteredTotal = orderedRetailers.Count;
         var requestedPage = Math.Max(1, page ?? 1);
         var requestedPageSize = Math.Clamp(pageSize ?? 200, 1, 200);
-        var orderedQuery = query.OrderBy(x => x.Name).ThenBy(x => x.Id);
         var retailers = page.HasValue || pageSize.HasValue
-            ? await orderedQuery.Skip((requestedPage - 1) * requestedPageSize).Take(requestedPageSize).ToListAsync(cancellationToken)
-            : await orderedQuery.Take(requestedPageSize).ToListAsync(cancellationToken);
+            ? orderedRetailers.Skip((requestedPage - 1) * requestedPageSize).Take(requestedPageSize).ToList()
+            : orderedRetailers.Take(requestedPageSize).ToList();
         var retailerIds = retailers.Select(x => x.Id).ToArray();
         var pageInvoices = shouldIncludeMetrics && retailerIds.Length > 0
             ? (await _invoiceRepository.GetInvoicesAsync(new NewInvoiceFilterDto
             {
-                DistributorCustomerId = dealer.Customer.Id,
                 SecondaryCustomerIds = retailerIds,
                 Unpaged = true
             }, null, cancellationToken)).Items
@@ -1036,17 +1254,55 @@ public sealed class MobileAppController : ControllerBase
 
     private IQueryable<Customer> DealerAssignedRetailers(ulong dealerId)
     {
-        var domestic = $"%\"distributor_name\":\"{dealerId}\"%";
-        var domesticSpaced = $"%\"distributor_name\": \"{dealerId}\"%";
-        var domesticNumber = $"%\"distributor_name\":{dealerId}%";
-        var agri = $"%\"agri_distributor\":\"{dealerId}\"%";
-        var agriSpaced = $"%\"agri_distributor\": \"{dealerId}\"%";
-        var agriNumber = $"%\"agri_distributor\":{dealerId}%";
-        return _dbContext.Customers.AsNoTracking().Where(x => x.Active == "Y" && x.CustomerType == RetailerType && x.CustomFields != null
-            && (EF.Functions.Like(x.CustomFields, domestic) || EF.Functions.Like(x.CustomFields, domesticSpaced)
-                || EF.Functions.Like(x.CustomFields, domesticNumber) || EF.Functions.Like(x.CustomFields, agri)
-                || EF.Functions.Like(x.CustomFields, agriSpaced) || EF.Functions.Like(x.CustomFields, agriNumber)));
+        // The legacy implementation used six leading-wildcard LIKE predicates
+        // against the JSON document. Besides scanning the entire customer table,
+        // it parsed the same assignment in several textual formats. JSON_VALUE
+        // handles both JSON strings and numbers and reduces the predicate to the
+        // two actual assignment fields. FromSqlInterpolated keeps dealerId safely
+        // parameterized; EF still applies the Customer soft-delete query filter.
+        var dealerValue = dealerId.ToString(CultureInfo.InvariantCulture);
+        return _dbContext.Customers
+            .FromSqlInterpolated($@"
+                SELECT *
+                FROM customers
+                WHERE active = 'Y'
+                  AND customertype = {RetailerType}
+                  AND ISJSON(custom_fields) = 1
+                  AND (
+                       JSON_VALUE(custom_fields, '$.distributor_name') = {dealerValue}
+                    OR JSON_VALUE(custom_fields, '$.agri_distributor') = {dealerValue}
+                  )")
+            .AsNoTracking();
     }
+
+    private async Task<int> CountActiveRetailers(IEnumerable<ulong> retailerIds, CancellationToken cancellationToken)
+    {
+        // SQL Server has a 2,100 parameter limit. Chunking keeps this safe even
+        // for distributors with unusually large retailer networks, while the
+        // secondary_customer_id index makes every lookup inexpensive.
+        var activeRetailerIds = new HashSet<ulong>();
+        foreach (var idChunk in retailerIds.Distinct().Chunk(1000))
+        {
+            var ids = idChunk.ToArray();
+            var activeIds = await _dbContext.NewInvoices.AsNoTracking()
+                .Where(invoice => ids.Contains(invoice.SecondaryCustomerId))
+                .Select(invoice => invoice.SecondaryCustomerId)
+                .Distinct()
+                .ToListAsync(cancellationToken);
+            activeRetailerIds.UnionWith(activeIds);
+        }
+
+        return activeRetailerIds.Count;
+    }
+
+    private static bool RetailerMatchesSearch(Customer retailer, string term) =>
+        ContainsIgnoreCase(retailer.Name, term)
+        || ContainsIgnoreCase(retailer.CustomerCode, term)
+        || ContainsIgnoreCase(retailer.Mobile, term)
+        || ContainsIgnoreCase(retailer.CustomFields, term);
+
+    private static bool ContainsIgnoreCase(string? value, string term) =>
+        !string.IsNullOrEmpty(value) && value.Contains(term, StringComparison.OrdinalIgnoreCase);
 
     private async Task<IReadOnlyCollection<NewInvoiceDto>> CustomerInvoices(ulong customerId, CancellationToken cancellationToken)
     {
@@ -1260,8 +1516,13 @@ public sealed class MobileAppController : ControllerBase
             .Where(x => x.CustomerId == customerId && x.DeletedAt == null && (x.Status == LoyaltyRedemption.StatusPending || x.Status == LoyaltyRedemption.StatusApproved))
             .ToListAsync(cancellationToken);
         var schemeIds = invoices.Where(x => x.SchemeId.HasValue).Select(x => x.SchemeId!.Value).Distinct().ToArray();
+        // A scheme that was deleted, deactivated or pulled back from Published must not
+        // keep redemption switched on for points already earned under it.
         var redemptionSettings = await _dbContext.LoyaltySchemes.AsNoTracking()
-            .Where(x => schemeIds.Contains(x.Id))
+            .Where(x => schemeIds.Contains(x.Id)
+                && x.DeletedAt == null
+                && x.Active == "Y"
+                && (x.Status == "Published" || x.Status == "Live"))
             .ToDictionaryAsync(x => x.Id, x => x.RedemptionEnabled, cancellationToken);
 
         return new WalletPair(
@@ -1304,15 +1565,16 @@ public sealed class MobileAppController : ControllerBase
                 && x.StartDate <= today
                 && x.EndDate >= today)
             .ToListAsync(cancellationToken);
+        var dashboardAudience = await BuildSchemeAudienceAsync(customer, cancellationToken);
 
         var regularScheme = schemes
-            .Where(x => !IsBooster(x.SchemeTag) && SchemeCustomerTypeMatches(x.CustomerType, customer.CustomerType))
+            .Where(x => !IsBooster(x.SchemeTag) && SchemeEligibility.Matches(x, today, dashboardAudience))
             .OrderBy(x => x.EndDate)
             .ThenBy(x => x.SchemeName)
             .FirstOrDefault();
 
         var boosterScheme = schemes
-            .Where(x => IsBooster(x.SchemeTag) && SchemeCustomerTypeMatches(x.CustomerType, customer.CustomerType))
+            .Where(x => IsBooster(x.SchemeTag) && SchemeEligibility.Matches(x, today, dashboardAudience))
             .OrderBy(x => x.EndDate)
             .ThenBy(x => x.SchemeName)
             .FirstOrDefault();
@@ -1464,13 +1726,17 @@ public sealed class MobileAppController : ControllerBase
         };
     }
 
+    // These endpoints allow anonymous access, but the app calls them after login.
+    // When the caller can be identified, the same targeting the invoice screen uses
+    // is applied so a retailer never sees a scheme aimed at another audience.
     private async Task<IReadOnlyCollection<CurrentSchemeDto>> LiveSchemes(string? walletType, CancellationToken cancellationToken) =>
-        await CurrentRunningSchemes(walletType, cancellationToken);
+        await CurrentRunningSchemes(walletType, cancellationToken, audienceCustomer: await CurrentCustomer(cancellationToken));
 
     private async Task<IReadOnlyCollection<CurrentSchemeDto>> CurrentRunningSchemes(
         string? walletType,
         CancellationToken cancellationToken,
-        IReadOnlyCollection<NewInvoiceDto>? customerInvoices = null)
+        IReadOnlyCollection<NewInvoiceDto>? customerInvoices = null,
+        Customer? audienceCustomer = null)
     {
         var today = CurrentBusinessDate();
         var query = _dbContext.LoyaltySchemes.AsNoTracking().Include(x => x.Slabs)
@@ -1484,6 +1750,12 @@ public sealed class MobileAppController : ControllerBase
         if (walletType == "Regular") query = query.Where(x => x.SchemeTag != "Booster");
 
         var schemes = await query.OrderBy(x => x.SchemeTag).ThenBy(x => x.SchemeName).ToListAsync(cancellationToken);
+        if (audienceCustomer is not null)
+        {
+            var audience = await BuildSchemeAudienceAsync(audienceCustomer, cancellationToken);
+            schemes = schemes.Where(scheme => SchemeEligibility.Matches(scheme, today, audience)).ToList();
+        }
+
         return schemes.Select(scheme =>
         {
             var schemeInvoices = customerInvoices?
@@ -2115,45 +2387,63 @@ VALUES ('Y', {0}, {1}, {2}, {3}, {4}, {5}, {6}, SYSUTCDATETIME(), SYSUTCDATETIME
         return status >= LoyaltyRedemption.StatusPending;
     }
 
-    private static bool SchemeCustomerTypeMatches(string customerType, ulong? actualCustomerType)
+    /// <summary>
+    /// Builds the targeting context for a customer: branch and zone come from the
+    /// assigned employee, state from the customer's own address.
+    /// </summary>
+    private async Task<SchemeAudience> BuildSchemeAudienceAsync(Customer customer, CancellationToken cancellationToken)
     {
-        if (actualCustomerType == DealerType)
+        var fields = ReadFields(customer);
+        var employeeId = FirstAssignedId(Field(fields, "employee_id"))
+            ?? FirstAssignedId(Field(fields, "sales_executive_id"))
+            ?? customer.ExecutiveId;
+
+        string? branchName = null;
+        string? zoneName = null;
+        if (employeeId.HasValue)
         {
-            return customerType.Contains("Dealer", StringComparison.OrdinalIgnoreCase)
-                || customerType.Contains("Distributor", StringComparison.OrdinalIgnoreCase);
+            var employee = await _dbContext.Users.AsNoTracking()
+                .Where(x => x.Id == employeeId.Value)
+                .Select(x => new { x.PrimaryBranchId, x.BranchId, x.DivisionId })
+                .FirstOrDefaultAsync(cancellationToken);
+            if (employee is not null)
+            {
+                var branchId = employee.PrimaryBranchId ?? FirstAssignedId(employee.BranchId);
+                if (branchId.HasValue)
+                {
+                    branchName = await _dbContext.Branches.AsNoTracking()
+                        .Where(x => x.Id == branchId.Value).Select(x => x.BranchName).FirstOrDefaultAsync(cancellationToken);
+                }
+                if (employee.DivisionId.HasValue)
+                {
+                    zoneName = await _dbContext.Divisions.AsNoTracking()
+                        .Where(x => x.Id == employee.DivisionId.Value).Select(x => x.DivisionName).FirstOrDefaultAsync(cancellationToken);
+                }
+            }
         }
 
-        if (actualCustomerType == RetailerType)
-        {
-            return customerType.Contains("Retailer", StringComparison.OrdinalIgnoreCase);
-        }
+        var stateId = SchemeEligibility.ReadStateId(customer);
+        var stateName = stateId.HasValue
+            ? await _dbContext.States.AsNoTracking().Where(x => x.Id == stateId.Value).Select(x => x.StateName).FirstOrDefaultAsync(cancellationToken)
+            : null;
 
-        if (actualCustomerType == InfluencerType)
-        {
-            return customerType.Contains("Influencer", StringComparison.OrdinalIgnoreCase)
-                || customerType.Contains("Plumber", StringComparison.OrdinalIgnoreCase)
-                || customerType.Contains("Sub-Dealer", StringComparison.OrdinalIgnoreCase)
-                || customerType.Contains("Sub Dealer", StringComparison.OrdinalIgnoreCase);
-        }
+        return new SchemeAudience(customer.CustomerType, customer.Name, customer.CustomerCode, branchName, zoneName, stateName);
+    }
 
-        return false;
+    private static ulong? FirstAssignedId(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var first = value.Trim().Trim('[', ']')
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault();
+        return ulong.TryParse(first?.Trim('"'), out var parsed) && parsed > 0 ? parsed : null;
     }
 
     private static string FormatReward(decimal value, string? basedOn) =>
         string.Equals(basedOn, "Percentage", StringComparison.OrdinalIgnoreCase) ? $"{value:0.##}%" : $"Rs. {value:0.##}";
 
-    private static IReadOnlyCollection<string> ReadSchemeAreaValues(string? json)
-    {
-        if (string.IsNullOrWhiteSpace(json)) return [];
-        try
-        {
-            return JsonSerializer.Deserialize<string[]>(json, JsonOptions) ?? [];
-        }
-        catch
-        {
-            return [];
-        }
-    }
+    private static IReadOnlyCollection<string> ReadSchemeAreaValues(string? json) => SchemeEligibility.ReadAreaValues(json);
+
 
     private static string FormatIndianCurrency(decimal value) => $"₹{value.ToString("N0", CultureInfo.GetCultureInfo("en-IN"))}";
 
