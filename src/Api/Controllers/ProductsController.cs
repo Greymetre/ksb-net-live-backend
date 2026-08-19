@@ -23,12 +23,12 @@ public sealed class ProductsController : ControllerBase
 
     [RequirePermission("category_access")]
     [HttpGet("segments")]
-    public async Task<IActionResult> Segments([FromQuery] string? search, CancellationToken cancellationToken) =>
-        Ok(await _service.GetSegmentsAsync(search, includeInactive: true, cancellationToken));
+    public async Task<IActionResult> Segments([FromQuery] string? search, [FromQuery] int? page, [FromQuery(Name = "page_size")] int? pageSize, CancellationToken cancellationToken) =>
+        Ok(await _service.GetSegmentsAsync(search, includeInactive: true, page, pageSize, cancellationToken));
 
     [HttpGet("getsegments")]
     public async Task<IActionResult> SegmentOptions([FromQuery] string? search, CancellationToken cancellationToken) =>
-        Ok(await _service.GetSegmentsAsync(search, includeInactive: false, cancellationToken));
+        Ok(await _service.GetSegmentsAsync(search, includeInactive: false, null, null, cancellationToken));
 
     [RequirePermission("category_download")]
     [HttpGet("segments/export")]
@@ -78,12 +78,12 @@ public sealed class ProductsController : ControllerBase
 
     [RequirePermission("subcategory_access")]
     [HttpGet("families")]
-    public async Task<IActionResult> Families([FromQuery(Name = "segment_id")] ulong? segmentId, [FromQuery] string? search, CancellationToken cancellationToken) =>
-        Ok(await _service.GetFamiliesAsync(segmentId, search, includeInactive: true, cancellationToken));
+    public async Task<IActionResult> Families([FromQuery(Name = "segment_id")] ulong? segmentId, [FromQuery] string? search, [FromQuery] int? page, [FromQuery(Name = "page_size")] int? pageSize, CancellationToken cancellationToken) =>
+        Ok(await _service.GetFamiliesAsync(segmentId, search, includeInactive: true, page, pageSize, cancellationToken));
 
     [HttpGet("getfamilies")]
     public async Task<IActionResult> FamilyOptions([FromQuery(Name = "segment_id")] ulong? segmentId, [FromQuery] string? search, CancellationToken cancellationToken) =>
-        Ok(await _service.GetFamiliesAsync(segmentId, search, includeInactive: false, cancellationToken));
+        Ok(await _service.GetFamiliesAsync(segmentId, search, includeInactive: false, null, null, cancellationToken));
 
     [RequirePermission("subcategory_download")]
     [HttpGet("families/export")]
@@ -133,8 +133,8 @@ public sealed class ProductsController : ControllerBase
 
     [RequirePermission("product_access")]
     [HttpGet("products")]
-    public async Task<IActionResult> Products([FromQuery(Name = "segment_id")] ulong? segmentId, [FromQuery(Name = "family_id")] ulong? familyId, [FromQuery] string? search, CancellationToken cancellationToken) =>
-        Ok(await _service.GetProductsAsync(segmentId, familyId, search, includeInactive: true, cancellationToken));
+    public async Task<IActionResult> Products([FromQuery(Name = "segment_id")] ulong? segmentId, [FromQuery(Name = "family_id")] ulong? familyId, [FromQuery] string? search, [FromQuery] int? page, [FromQuery(Name = "page_size")] int? pageSize, CancellationToken cancellationToken) =>
+        Ok(await _service.GetProductsAsync(segmentId, familyId, search, includeInactive: true, page, pageSize, cancellationToken));
 
     [RequirePermission("product_download")]
     [HttpGet("products/export")]

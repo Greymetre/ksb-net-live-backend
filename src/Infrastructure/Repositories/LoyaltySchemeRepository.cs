@@ -28,7 +28,9 @@ public sealed class LoyaltySchemeRepository : ILoyaltySchemeRepository
             query = query.Where(x => x.SchemeName.Contains(search)
                 || x.SchemeCode.Contains(search)
                 || x.CustomerType.Contains(search)
-                || x.SchemeTag.Contains(search));
+                || x.SchemeTag.Contains(search)
+                || x.AreaScope.Contains(search)
+                || x.AreaValues.Contains(search));
         }
 
         if (!string.IsNullOrWhiteSpace(filter.Status))

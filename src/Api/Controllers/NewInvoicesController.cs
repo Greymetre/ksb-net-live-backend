@@ -28,6 +28,7 @@ public sealed class NewInvoicesController : ControllerBase
         [FromQuery(Name = "retailer_search")] string? retailerSearch,
         [FromQuery(Name = "invoice_number")] string? invoiceNumber,
         [FromQuery(Name = "approval_status")] int? approvalStatus,
+        [FromQuery(Name = "approval_statuses")] int[]? approvalStatuses,
         [FromQuery(Name = "scheme_id")] ulong? schemeId,
         [FromQuery(Name = "branch_id")] ulong? branchId,
         [FromQuery(Name = "zone_id")] ulong? zoneId,
@@ -40,6 +41,7 @@ public sealed class NewInvoicesController : ControllerBase
         filter.RetailerSearch ??= retailerSearch;
         filter.InvoiceNumber ??= invoiceNumber;
         filter.ApprovalStatus ??= approvalStatus;
+        filter.ApprovalStatuses ??= approvalStatuses is { Length: > 0 } ? approvalStatuses : null;
         filter.SchemeId ??= schemeId;
         filter.BranchId ??= branchId;
         filter.DivisionId ??= zoneId;
@@ -58,6 +60,7 @@ public sealed class NewInvoicesController : ControllerBase
         [FromQuery(Name = "retailer_search")] string? retailerSearch,
         [FromQuery(Name = "invoice_number")] string? invoiceNumber,
         [FromQuery(Name = "approval_status")] int? approvalStatus,
+        [FromQuery(Name = "approval_statuses")] int[]? approvalStatuses,
         [FromQuery(Name = "scheme_id")] ulong? schemeId,
         [FromQuery(Name = "branch_id")] ulong? branchId,
         [FromQuery(Name = "zone_id")] ulong? zoneId,
@@ -68,6 +71,7 @@ public sealed class NewInvoicesController : ControllerBase
         filter.RetailerSearch ??= retailerSearch;
         filter.InvoiceNumber ??= invoiceNumber;
         filter.ApprovalStatus ??= approvalStatus;
+        filter.ApprovalStatuses ??= approvalStatuses is { Length: > 0 } ? approvalStatuses : null;
         filter.SchemeId ??= schemeId;
         filter.BranchId ??= branchId;
         filter.DivisionId ??= zoneId;

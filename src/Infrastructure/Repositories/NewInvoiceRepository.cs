@@ -263,6 +263,11 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         }
 
         if (filter.ApprovalStatus.HasValue) query = query.Where(x => x.Invoice.ApprovalStatus == filter.ApprovalStatus);
+        if (filter.ApprovalStatuses is { Count: > 0 })
+        {
+            var statuses = filter.ApprovalStatuses.ToArray();
+            query = query.Where(x => statuses.Contains(x.Invoice.ApprovalStatus));
+        }
         if (filter.BranchId.HasValue)
         {
             var employeeIds = _dbContext.Users.AsNoTracking()

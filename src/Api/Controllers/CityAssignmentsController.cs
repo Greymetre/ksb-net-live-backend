@@ -37,7 +37,7 @@ public sealed class CityAssignmentsController : ControllerBase
             Search = search,
             UserId = userId,
             PageNumber = pageNumber > 0 ? pageNumber : page > 0 ? page : 1,
-            PageLength = pageLength > 0 ? Math.Min(pageLength, 200) : pageSize > 0 ? Math.Min(pageSize, 200) : 10
+            PageLength = pageLength > 0 ? Math.Min(pageLength, 500) : pageSize > 0 ? Math.Min(pageSize, 500) : 10
         }, cancellationToken);
         return Ok(response);
     }

@@ -10,6 +10,16 @@ namespace Infrastructure.Repositories;
 public sealed class MasterDataRepository : IMasterDataRepository
 {
     private const int MaxRows = 50000;
+
+    // Small master tables are cheap to load, so they page in memory. Cities and
+    // products, which are large, page in the database instead.
+    private static PagedResult<T> Page<T>(IReadOnlyCollection<T> all, int page, int pageSize)
+    {
+        page = Pagination.Page(page);
+        pageSize = Pagination.PageSize(pageSize);
+        return new PagedResult<T>(all.Skip((page - 1) * pageSize).Take(pageSize).ToList(), all.Count, page, pageSize);
+    }
+
     private const int MaxCityRows = 50000;
     private readonly AppDbContext _dbContext;
 
@@ -18,12 +28,20 @@ public sealed class MasterDataRepository : IMasterDataRepository
         _dbContext = dbContext;
     }
 
+    public async Task<PagedResult<CountryDto>> GetCountriesPagedAsync(string? search, int page, int pageSize, CancellationToken cancellationToken, bool includeInactive = false)
+    {
+        var all = await GetCountriesAsync(search, cancellationToken, includeInactive);
+        return Page(all, page, pageSize);
+    }
+
     public async Task<IReadOnlyCollection<CountryDto>> GetCountriesAsync(string? search, CancellationToken cancellationToken, bool includeInactive = false)
     {
         var query = _dbContext.Countries.AsNoTracking().Where(x => x.DeletedAt == null && (includeInactive || x.Active == "Y"));
         if (!string.IsNullOrWhiteSpace(search))
         {
-            query = query.Where(x => x.CountryName.Contains(search.Trim()));
+            var countryTerm = search.Trim();
+            query = query.Where(x => x.CountryName.Contains(countryTerm)
+                || _dbContext.Users.Any(user => user.Id == x.CreatedBy && user.Name.Contains(countryTerm)));
         }
 
         return await query
@@ -111,13 +129,23 @@ public sealed class MasterDataRepository : IMasterDataRepository
         return true;
     }
 
+    public async Task<PagedResult<StateDto>> GetStatesPagedAsync(ulong? countryId, string? search, int page, int pageSize, CancellationToken cancellationToken, bool includeInactive = false)
+    {
+        var all = await GetStatesAsync(countryId, search, cancellationToken, includeInactive);
+        return Page(all, page, pageSize);
+    }
+
     public async Task<IReadOnlyCollection<StateDto>> GetStatesAsync(ulong? countryId, string? search, CancellationToken cancellationToken, bool includeInactive = false)
     {
         var query = _dbContext.States.AsNoTracking().Where(x => x.DeletedAt == null && (includeInactive || x.Active == "Y"));
         if (countryId.HasValue) query = query.Where(x => x.CountryId == countryId);
         if (!string.IsNullOrWhiteSpace(search))
         {
-            query = query.Where(x => x.StateName.Contains(search.Trim()));
+            var stateTerm = search.Trim();
+            query = query.Where(x => x.StateName.Contains(stateTerm)
+                || (x.GstCode != null && x.GstCode.Contains(stateTerm))
+                || _dbContext.Countries.Any(c => c.Id == x.CountryId && c.CountryName.Contains(stateTerm))
+                || _dbContext.Users.Any(user => user.Id == x.CreatedBy && user.Name.Contains(stateTerm)));
         }
 
         return await query
@@ -222,13 +250,22 @@ public sealed class MasterDataRepository : IMasterDataRepository
         return true;
     }
 
+    public async Task<PagedResult<DistrictDto>> GetDistrictsPagedAsync(ulong? stateId, string? search, int page, int pageSize, CancellationToken cancellationToken, bool includeInactive = false)
+    {
+        var all = await GetDistrictsAsync(stateId, search, cancellationToken, includeInactive);
+        return Page(all, page, pageSize);
+    }
+
     public async Task<IReadOnlyCollection<DistrictDto>> GetDistrictsAsync(ulong? stateId, string? search, CancellationToken cancellationToken, bool includeInactive = false)
     {
         var query = _dbContext.Districts.AsNoTracking().Where(x => x.DeletedAt == null && (includeInactive || x.Active == "Y"));
         if (stateId.HasValue) query = query.Where(x => x.StateId == stateId);
         if (!string.IsNullOrWhiteSpace(search))
         {
-            query = query.Where(x => x.DistrictName.Contains(search.Trim()));
+            var districtTerm = search.Trim();
+            query = query.Where(x => x.DistrictName.Contains(districtTerm)
+                || _dbContext.States.Any(st => st.Id == x.StateId && st.StateName.Contains(districtTerm))
+                || _dbContext.Users.Any(user => user.Id == x.CreatedBy && user.Name.Contains(districtTerm)));
         }
 
         return await query
@@ -329,7 +366,21 @@ public sealed class MasterDataRepository : IMasterDataRepository
         return true;
     }
 
-    public async Task<IReadOnlyCollection<CityDto>> GetCitiesAsync(ulong? stateId, ulong? districtId, string? search, CancellationToken cancellationToken, bool includeInactive = false)
+    // Cities is the largest master table, so only one page is counted and projected.
+    public async Task<PagedResult<CityDto>> GetCitiesPagedAsync(ulong? stateId, ulong? districtId, string? search, int page, int pageSize, CancellationToken cancellationToken, bool includeInactive = false)
+    {
+        var query = FilteredCities(stateId, districtId, search, includeInactive);
+        page = Pagination.Page(page);
+        pageSize = Pagination.PageSize(pageSize);
+        var total = await query.LongCountAsync(cancellationToken);
+        var items = await ProjectCities(query.OrderByDescending(x => x.Id).Skip((page - 1) * pageSize).Take(pageSize)).ToListAsync(cancellationToken);
+        return new PagedResult<CityDto>(items, total, page, pageSize);
+    }
+
+    public async Task<IReadOnlyCollection<CityDto>> GetCitiesAsync(ulong? stateId, ulong? districtId, string? search, CancellationToken cancellationToken, bool includeInactive = false) =>
+        await ProjectCities(FilteredCities(stateId, districtId, search, includeInactive).OrderByDescending(x => x.Id).Take(MaxCityRows)).ToListAsync(cancellationToken);
+
+    private IQueryable<City> FilteredCities(ulong? stateId, ulong? districtId, string? search, bool includeInactive)
     {
         var query = _dbContext.Cities.AsNoTracking().Where(x => x.DeletedAt == null && (includeInactive || x.Active == "Y"));
         if (stateId.HasValue)
@@ -340,31 +391,32 @@ public sealed class MasterDataRepository : IMasterDataRepository
         if (districtId.HasValue) query = query.Where(x => x.DistrictId == districtId);
         if (!string.IsNullOrWhiteSpace(search))
         {
-            query = query.Where(x => x.CityName.Contains(search.Trim()));
+            var cityTerm = search.Trim();
+            query = query.Where(x => x.CityName.Contains(cityTerm)
+                || _dbContext.Districts.Any(d => d.Id == x.DistrictId && d.DistrictName.Contains(cityTerm))
+                || _dbContext.Users.Any(user => user.Id == x.CreatedBy && user.Name.Contains(cityTerm)));
         }
-
-        return await query
-            .OrderByDescending(x => x.Id)
-            .Take(MaxCityRows)
-            .Select(x => new CityDto
-            {
-                Id = x.Id,
-                CityName = x.CityName,
-                DistrictId = x.DistrictId,
-                DistrictName = _dbContext.Districts.Where(district => district.Id == x.DistrictId).Select(district => district.DistrictName).FirstOrDefault(),
-                StateId = x.StateId ?? _dbContext.Districts.Where(district => district.Id == x.DistrictId).Select(district => district.StateId).FirstOrDefault(),
-                StateName = _dbContext.States
-                    .Where(state => state.Id == (x.StateId ?? _dbContext.Districts.Where(district => district.Id == x.DistrictId).Select(district => district.StateId).FirstOrDefault()))
-                    .Select(state => state.StateName)
-                    .FirstOrDefault(),
-                Grade = x.Grade,
-                Active = x.Active,
-                CreatedBy = x.CreatedBy,
-                CreatedByName = _dbContext.Users.Where(user => user.Id == x.CreatedBy).Select(user => user.Name).FirstOrDefault(),
-                CreatedAt = x.CreatedAt
-            })
-            .ToListAsync(cancellationToken);
+        return query;
     }
+
+    private IQueryable<CityDto> ProjectCities(IQueryable<City> query) =>
+        query.Select(x => new CityDto
+        {
+            Id = x.Id,
+            CityName = x.CityName,
+            DistrictId = x.DistrictId,
+            DistrictName = _dbContext.Districts.Where(district => district.Id == x.DistrictId).Select(district => district.DistrictName).FirstOrDefault(),
+            StateId = x.StateId ?? _dbContext.Districts.Where(district => district.Id == x.DistrictId).Select(district => district.StateId).FirstOrDefault(),
+            StateName = _dbContext.States
+                .Where(state => state.Id == (x.StateId ?? _dbContext.Districts.Where(district => district.Id == x.DistrictId).Select(district => district.StateId).FirstOrDefault()))
+                .Select(state => state.StateName)
+                .FirstOrDefault(),
+            Grade = x.Grade,
+            Active = x.Active,
+            CreatedBy = x.CreatedBy,
+            CreatedByName = _dbContext.Users.Where(user => user.Id == x.CreatedBy).Select(user => user.Name).FirstOrDefault(),
+            CreatedAt = x.CreatedAt
+        });
 
     public async Task<CityDto?> GetCityAsync(ulong id, CancellationToken cancellationToken)
     {
@@ -393,6 +445,16 @@ public sealed class MasterDataRepository : IMasterDataRepository
             })
             .ToListAsync(cancellationToken);
     }
+
+    /// <summary>
+    /// A city name may repeat across districts but not inside one. The database
+    /// collation is case-insensitive, so this also catches differing casing.
+    /// </summary>
+    public Task<bool> CityNameExistsInDistrictAsync(string cityName, ulong districtId, ulong? exceptId, CancellationToken cancellationToken) =>
+        _dbContext.Cities.AsNoTracking().AnyAsync(x => x.DeletedAt == null
+            && x.DistrictId == districtId
+            && x.CityName == cityName
+            && (!exceptId.HasValue || x.Id != exceptId.Value), cancellationToken);
 
     public async Task<CityDto> CreateCityAsync(CityRequestDto request, ulong? actorUserId, CancellationToken cancellationToken)
     {
@@ -585,7 +647,9 @@ public sealed class MasterDataRepository : IMasterDataRepository
         if (!string.IsNullOrWhiteSpace(search))
         {
             var normalized = search.Trim();
-            query = query.Where(x => x.BranchName.Contains(normalized) || (x.BranchCode != null && x.BranchCode.Contains(normalized)));
+            query = query.Where(x => x.BranchName.Contains(normalized)
+                || (x.BranchCode != null && x.BranchCode.Contains(normalized))
+                || _dbContext.Users.Any(user => user.Id == x.CreatedBy && user.Name.Contains(normalized)));
         }
 
         return await query
@@ -696,7 +760,9 @@ public sealed class MasterDataRepository : IMasterDataRepository
         var query = _dbContext.Divisions.AsNoTracking().Where(x => x.DeletedAt == null);
         if (!string.IsNullOrWhiteSpace(search))
         {
-            query = query.Where(x => x.DivisionName.Contains(search.Trim()));
+            var term = search.Trim();
+            query = query.Where(x => x.DivisionName.Contains(term)
+                || _dbContext.Users.Any(user => user.Id == x.CreatedBy && user.Name.Contains(term)));
         }
 
         return await query
@@ -803,7 +869,9 @@ public sealed class MasterDataRepository : IMasterDataRepository
         var query = _dbContext.Designations.AsNoTracking().Where(x => x.DeletedAt == null);
         if (!string.IsNullOrWhiteSpace(search))
         {
-            query = query.Where(x => x.DesignationName.Contains(search.Trim()));
+            var term = search.Trim();
+            query = query.Where(x => x.DesignationName.Contains(term)
+                || _dbContext.Users.Any(user => user.Id == x.CreatedBy && user.Name.Contains(term)));
         }
 
         return await query
@@ -910,7 +978,9 @@ public sealed class MasterDataRepository : IMasterDataRepository
         var query = _dbContext.Departments.AsNoTracking().Where(x => x.DeletedAt == null);
         if (!string.IsNullOrWhiteSpace(search))
         {
-            query = query.Where(x => x.Name.Contains(search.Trim()));
+            var term = search.Trim();
+            query = query.Where(x => x.Name.Contains(term)
+                || _dbContext.Users.Any(user => user.Id == x.CreatedBy && user.Name.Contains(term)));
         }
 
         return await query

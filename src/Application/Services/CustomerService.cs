@@ -11,6 +11,8 @@ namespace Application.Services;
 
 public sealed class CustomerService : ICustomerService
 {
+    private const ulong DistributorCustomerType = 1;
+
     private static readonly string[] AssignmentFieldKeys = ["employee_id", "sales_executive_id", "supervisor_id"];
 
     private static readonly (string Key, string Heading)[] DistributorExportDefinition =
@@ -414,6 +416,12 @@ public sealed class CustomerService : ICustomerService
             "sales_executive_id" => JsonIdArray(Field(customer, "sales_executive_id")),
             "profile_image" => customer.ProfileImage ?? Field(customer, column),
             "shop_image" => customer.ShopImage ?? Field(customer, column),
+            // On a dealer sheet this is the dealer's own code, which older records only
+            // carry on the customer_code column. On a retailer sheet the same key means
+            // the parent dealer's code, so the fallback must not apply there.
+            "distributor_code" => customer.CustomerType == DistributorCustomerType
+                ? FirstNonBlank(Field(customer, "distributor_code"), customer.CustomerCode)
+                : Field(customer, column),
             "distributor_name" => Field(customer, "distributor_name_name") ?? Field(customer, column),
             "agri_distributor" => Field(customer, "agri_distributor_name") ?? Field(customer, column),
             "employee_id" => Field(customer, "employee_id_name") ?? Field(customer, column),

@@ -9,5 +9,5 @@ public sealed record PagedResult<T>(
 public static class Pagination
 {
     public static int Page(int value) => Math.Max(1, value);
-    public static int PageSize(int value) => Math.Clamp(value, 1, 200);
+    public static int PageSize(int value) => Math.Clamp(value, 1, 500);
 }

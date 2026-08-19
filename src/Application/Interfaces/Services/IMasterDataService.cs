@@ -5,7 +5,7 @@ namespace Application.Interfaces.Services;
 
 public interface IMasterDataService
 {
-    Task<LaravelApiResponse> GetCountriesAsync(string? search, CancellationToken cancellationToken, bool includeInactive = false);
+    Task<LaravelApiResponse> GetCountriesAsync(string? search, int? page, int? pageSize, CancellationToken cancellationToken, bool includeInactive = false);
     Task<MasterDataFileDto> ExportCountriesAsync(CancellationToken cancellationToken);
     Task<MasterDataFileDto> GetCountryTemplateAsync(CancellationToken cancellationToken);
     Task<LaravelApiResponse> UploadCountriesAsync(Stream fileStream, ulong? actorUserId, CancellationToken cancellationToken);
@@ -14,7 +14,7 @@ public interface IMasterDataService
     Task<LaravelApiResponse> UpdateCountryAsync(ulong id, CountryRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> SetCountryActiveAsync(ulong id, ActiveStatusRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> DeleteCountryAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
-    Task<LaravelApiResponse> GetStatesAsync(ulong? countryId, string? search, CancellationToken cancellationToken, bool includeInactive = false);
+    Task<LaravelApiResponse> GetStatesAsync(ulong? countryId, string? search, int? page, int? pageSize, CancellationToken cancellationToken, bool includeInactive = false);
     Task<MasterDataFileDto> ExportStatesAsync(CancellationToken cancellationToken);
     Task<MasterDataFileDto> GetStateTemplateAsync(CancellationToken cancellationToken);
     Task<LaravelApiResponse> UploadStatesAsync(Stream fileStream, ulong? actorUserId, CancellationToken cancellationToken);
@@ -23,7 +23,7 @@ public interface IMasterDataService
     Task<LaravelApiResponse> UpdateStateAsync(ulong id, StateRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> SetStateActiveAsync(ulong id, ActiveStatusRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> DeleteStateAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
-    Task<LaravelApiResponse> GetDistrictsAsync(ulong? stateId, string? search, CancellationToken cancellationToken, bool includeInactive = false);
+    Task<LaravelApiResponse> GetDistrictsAsync(ulong? stateId, string? search, int? page, int? pageSize, CancellationToken cancellationToken, bool includeInactive = false);
     Task<MasterDataFileDto> ExportDistrictsAsync(CancellationToken cancellationToken);
     Task<MasterDataFileDto> GetDistrictTemplateAsync(CancellationToken cancellationToken);
     Task<LaravelApiResponse> UploadDistrictsAsync(Stream fileStream, ulong? actorUserId, CancellationToken cancellationToken);
@@ -32,7 +32,7 @@ public interface IMasterDataService
     Task<LaravelApiResponse> UpdateDistrictAsync(ulong id, DistrictRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> SetDistrictActiveAsync(ulong id, ActiveStatusRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> DeleteDistrictAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
-    Task<LaravelApiResponse> GetCitiesAsync(ulong? stateId, ulong? districtId, string? search, CancellationToken cancellationToken, bool includeInactive = false);
+    Task<LaravelApiResponse> GetCitiesAsync(ulong? stateId, ulong? districtId, string? search, int? page, int? pageSize, CancellationToken cancellationToken, bool includeInactive = false);
     Task<MasterDataFileDto> ExportCitiesAsync(CancellationToken cancellationToken);
     Task<MasterDataFileDto> GetCityTemplateAsync(CancellationToken cancellationToken);
     Task<LaravelApiResponse> UploadCitiesAsync(Stream fileStream, ulong? actorUserId, CancellationToken cancellationToken);

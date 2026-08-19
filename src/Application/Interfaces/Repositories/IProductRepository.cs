@@ -1,3 +1,4 @@
+using Application.Common;
 using Application.DTOs.Products;
 
 namespace Application.Interfaces.Repositories;
@@ -5,6 +6,7 @@ namespace Application.Interfaces.Repositories;
 public interface IProductRepository
 {
     Task<IReadOnlyCollection<ProductSegmentDto>> GetSegmentsAsync(string? search, bool includeInactive, CancellationToken cancellationToken);
+    Task<PagedResult<ProductSegmentDto>> GetSegmentsPagedAsync(string? search, bool includeInactive, int page, int pageSize, CancellationToken cancellationToken);
     Task<ProductSegmentDto?> GetSegmentAsync(ulong id, CancellationToken cancellationToken);
     Task<ProductSegmentDto> CreateSegmentAsync(ProductSegmentRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
     Task<ProductSegmentDto?> UpdateSegmentAsync(ulong id, ProductSegmentRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
@@ -12,6 +14,7 @@ public interface IProductRepository
     Task<bool> DeleteSegmentAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
 
     Task<IReadOnlyCollection<ProductFamilyDto>> GetFamiliesAsync(ulong? segmentId, string? search, bool includeInactive, CancellationToken cancellationToken);
+    Task<PagedResult<ProductFamilyDto>> GetFamiliesPagedAsync(ulong? segmentId, string? search, bool includeInactive, int page, int pageSize, CancellationToken cancellationToken);
     Task<ProductFamilyDto?> GetFamilyAsync(ulong id, CancellationToken cancellationToken);
     Task<ProductFamilyDto> CreateFamilyAsync(ProductFamilyRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
     Task<ProductFamilyDto?> UpdateFamilyAsync(ulong id, ProductFamilyRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
@@ -19,6 +22,7 @@ public interface IProductRepository
     Task<bool> DeleteFamilyAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
 
     Task<IReadOnlyCollection<ProductDto>> GetProductsAsync(ulong? segmentId, ulong? familyId, string? search, bool includeInactive, CancellationToken cancellationToken);
+    Task<PagedResult<ProductDto>> GetProductsPagedAsync(ulong? segmentId, ulong? familyId, string? search, bool includeInactive, int page, int pageSize, CancellationToken cancellationToken);
     Task<ProductDto?> GetProductAsync(ulong id, CancellationToken cancellationToken);
     Task<ProductDto> CreateProductAsync(ProductRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
     Task<ProductDto?> UpdateProductAsync(ulong id, ProductRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);

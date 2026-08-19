@@ -27,7 +27,8 @@ public sealed class RoleRepository : IRoleRepository
 
         if (!string.IsNullOrWhiteSpace(search))
         {
-            query = query.Where(x => x.Name.Contains(search.Trim()));
+            var term = search.Trim();
+            query = query.Where(x => x.Name.Contains(term) || x.GuardName.Contains(term));
         }
 
         var roles = await query

@@ -1356,7 +1356,9 @@ public sealed class MobileAppController : ControllerBase
                     InvoiceNumber = invoice.InvoiceNumber,
                     InvoiceNumberDisplay = $"#{invoice.InvoiceNumber.TrimStart('#')}",
                     InvoiceDate = invoice.InvoiceDate,
-                    DisplayDate = displayDate.ToString("dd MMM, h:mm tt", CultureInfo.InvariantCulture),
+                    // An invoice carries a date only, so the stored time is always midnight.
+                    // Formatting it with a clock produced a meaningless "12:00 AM" on every row.
+                    DisplayDate = displayDate.ToString("dd MMM yyyy", CultureInfo.InvariantCulture),
                     MonthKey = invoice.InvoiceDate.ToString("yyyy-MM", CultureInfo.InvariantCulture),
                     MonthLabel = invoice.InvoiceDate.ToString("MMMM yyyy", CultureInfo.InvariantCulture).ToUpperInvariant(),
                     Amount = invoice.Amount,

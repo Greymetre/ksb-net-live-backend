@@ -18,8 +18,19 @@ public sealed class MasterDataService : IMasterDataService
         _repository = repository;
     }
 
-    public async Task<LaravelApiResponse> GetCountriesAsync(string? search, CancellationToken cancellationToken, bool includeInactive = false) =>
-        LaravelApiResponse.Success("countries", await _repository.GetCountriesAsync(search, cancellationToken, includeInactive));
+    public async Task<LaravelApiResponse> GetCountriesAsync(string? search, int? page, int? pageSize, CancellationToken cancellationToken, bool includeInactive = false)
+    {
+        // No page params means the caller wants the full set (exports, dropdowns).
+        if (!page.HasValue || !pageSize.HasValue)
+            return LaravelApiResponse.Success("countries", await _repository.GetCountriesAsync(search, cancellationToken, includeInactive));
+
+        var result = await _repository.GetCountriesPagedAsync(search, page.Value, pageSize.Value, cancellationToken, includeInactive);
+        var response = LaravelApiResponse.Success("countries", result.Items);
+        response.Extra["total"] = result.Total;
+        response.Extra["page"] = result.Page;
+        response.Extra["page_size"] = result.PageSize;
+        return response;
+    }
 
     public async Task<MasterDataFileDto> ExportCountriesAsync(CancellationToken cancellationToken)
     {
@@ -74,8 +85,19 @@ public sealed class MasterDataService : IMasterDataService
         return LaravelApiResponse.MessageOnly("success", "Country deleted successfully!");
     }
 
-    public async Task<LaravelApiResponse> GetStatesAsync(ulong? countryId, string? search, CancellationToken cancellationToken, bool includeInactive = false) =>
-        LaravelApiResponse.Success("states", await _repository.GetStatesAsync(countryId, search, cancellationToken, includeInactive));
+    public async Task<LaravelApiResponse> GetStatesAsync(ulong? countryId, string? search, int? page, int? pageSize, CancellationToken cancellationToken, bool includeInactive = false)
+    {
+        // No page params means the caller wants the full set (exports, dropdowns).
+        if (!page.HasValue || !pageSize.HasValue)
+            return LaravelApiResponse.Success("states", await _repository.GetStatesAsync(countryId, search, cancellationToken, includeInactive));
+
+        var result = await _repository.GetStatesPagedAsync(countryId, search, page.Value, pageSize.Value, cancellationToken, includeInactive);
+        var response = LaravelApiResponse.Success("states", result.Items);
+        response.Extra["total"] = result.Total;
+        response.Extra["page"] = result.Page;
+        response.Extra["page_size"] = result.PageSize;
+        return response;
+    }
 
     public async Task<MasterDataFileDto> ExportStatesAsync(CancellationToken cancellationToken)
     {
@@ -143,8 +165,19 @@ public sealed class MasterDataService : IMasterDataService
         return LaravelApiResponse.MessageOnly("success", "State deleted successfully!");
     }
 
-    public async Task<LaravelApiResponse> GetDistrictsAsync(ulong? stateId, string? search, CancellationToken cancellationToken, bool includeInactive = false) =>
-        LaravelApiResponse.Success("districts", await _repository.GetDistrictsAsync(stateId, search, cancellationToken, includeInactive));
+    public async Task<LaravelApiResponse> GetDistrictsAsync(ulong? stateId, string? search, int? page, int? pageSize, CancellationToken cancellationToken, bool includeInactive = false)
+    {
+        // No page params means the caller wants the full set (exports, dropdowns).
+        if (!page.HasValue || !pageSize.HasValue)
+            return LaravelApiResponse.Success("districts", await _repository.GetDistrictsAsync(stateId, search, cancellationToken, includeInactive));
+
+        var result = await _repository.GetDistrictsPagedAsync(stateId, search, page.Value, pageSize.Value, cancellationToken, includeInactive);
+        var response = LaravelApiResponse.Success("districts", result.Items);
+        response.Extra["total"] = result.Total;
+        response.Extra["page"] = result.Page;
+        response.Extra["page_size"] = result.PageSize;
+        return response;
+    }
 
     public async Task<MasterDataFileDto> ExportDistrictsAsync(CancellationToken cancellationToken)
     {
@@ -203,8 +236,19 @@ public sealed class MasterDataService : IMasterDataService
         return LaravelApiResponse.MessageOnly("success", "District deleted successfully!");
     }
 
-    public async Task<LaravelApiResponse> GetCitiesAsync(ulong? stateId, ulong? districtId, string? search, CancellationToken cancellationToken, bool includeInactive = false) =>
-        LaravelApiResponse.Success("cities", await _repository.GetCitiesAsync(stateId, districtId, search, cancellationToken, includeInactive));
+    public async Task<LaravelApiResponse> GetCitiesAsync(ulong? stateId, ulong? districtId, string? search, int? page, int? pageSize, CancellationToken cancellationToken, bool includeInactive = false)
+    {
+        // No page params means the caller wants the full set (exports, dropdowns).
+        if (!page.HasValue || !pageSize.HasValue)
+            return LaravelApiResponse.Success("cities", await _repository.GetCitiesAsync(stateId, districtId, search, cancellationToken, includeInactive));
+
+        var result = await _repository.GetCitiesPagedAsync(stateId, districtId, search, page.Value, pageSize.Value, cancellationToken, includeInactive);
+        var response = LaravelApiResponse.Success("cities", result.Items);
+        response.Extra["total"] = result.Total;
+        response.Extra["page"] = result.Page;
+        response.Extra["page_size"] = result.PageSize;
+        return response;
+    }
 
     public async Task<MasterDataFileDto> ExportCitiesAsync(CancellationToken cancellationToken)
     {
@@ -263,6 +307,7 @@ public sealed class MasterDataService : IMasterDataService
         RequireId(request.DistrictId, "District is required.");
         await RequireDistrictExistsAsync(request.DistrictId!.Value, cancellationToken);
         if (request.StateId.HasValue) await RequireStateExistsAsync(request.StateId.Value, cancellationToken);
+        await RequireCityNameFreeInDistrictAsync(request.CityName!.Trim(), request.DistrictId!.Value, null, cancellationToken);
         return LaravelApiResponse.Success("city", await _repository.CreateCityAsync(request, actorUserId, cancellationToken), "City Store Successfully");
     }
 
@@ -270,6 +315,17 @@ public sealed class MasterDataService : IMasterDataService
     {
         if (request.DistrictId.HasValue) await RequireDistrictExistsAsync(request.DistrictId.Value, cancellationToken);
         if (request.StateId.HasValue) await RequireStateExistsAsync(request.StateId.Value, cancellationToken);
+
+        // Update is partial, so the check has to run against the values the row will
+        // actually end up with, not only the ones present in this request.
+        var existing = await _repository.GetCityAsync(id, cancellationToken) ?? throw NotFound("City not found");
+        var cityName = string.IsNullOrWhiteSpace(request.CityName) ? existing.CityName : request.CityName.Trim();
+        var districtId = request.DistrictId ?? existing.DistrictId;
+        if (districtId.HasValue && !string.IsNullOrWhiteSpace(cityName))
+        {
+            await RequireCityNameFreeInDistrictAsync(cityName, districtId.Value, id, cancellationToken);
+        }
+
         var city = await _repository.UpdateCityAsync(id, request, actorUserId, cancellationToken);
         return LaravelApiResponse.Success("city", city ?? throw NotFound("City not found"), "City updated successfully");
     }
@@ -654,6 +710,14 @@ public sealed class MasterDataService : IMasterDataService
     {
         var value = await task;
         return value ?? throw NotFound(message);
+    }
+
+    private async Task RequireCityNameFreeInDistrictAsync(string cityName, ulong districtId, ulong? exceptId, CancellationToken cancellationToken)
+    {
+        if (await _repository.CityNameExistsInDistrictAsync(cityName, districtId, exceptId, cancellationToken))
+        {
+            throw new LaravelHttpException(LaravelStatusCodes.BadRequest, "This city already exists in the selected district.");
+        }
     }
 
     private static void RequireValue(string? value, string message)

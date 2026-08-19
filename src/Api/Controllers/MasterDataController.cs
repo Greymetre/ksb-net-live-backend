@@ -25,28 +25,28 @@ public sealed class MasterDataController : ControllerBase
     [HttpGet("getcountry")]
     public async Task<IActionResult> GetCountry([FromQuery] string? search, CancellationToken cancellationToken)
     {
-        var response = await _masterDataService.GetCountriesAsync(search, cancellationToken);
+        var response = await _masterDataService.GetCountriesAsync(search, null, null, cancellationToken);
         return Ok(response);
     }
 
     [HttpGet("getstate")]
     public async Task<IActionResult> GetState([FromQuery(Name = "country_id")] ulong? countryId, [FromQuery] string? search, CancellationToken cancellationToken)
     {
-        var response = await _masterDataService.GetStatesAsync(countryId, search, cancellationToken);
+        var response = await _masterDataService.GetStatesAsync(countryId, search, null, null, cancellationToken);
         return Ok(response);
     }
 
     [HttpGet("getdistrict")]
     public async Task<IActionResult> GetDistrict([FromQuery(Name = "state_id")] ulong? stateId, [FromQuery] string? search, CancellationToken cancellationToken)
     {
-        var response = await _masterDataService.GetDistrictsAsync(stateId, search, cancellationToken);
+        var response = await _masterDataService.GetDistrictsAsync(stateId, search, null, null, cancellationToken);
         return Ok(response);
     }
 
     [HttpGet("getcity")]
     public async Task<IActionResult> GetCity([FromQuery(Name = "state_id")] ulong? stateId, [FromQuery(Name = "district_id")] ulong? districtId, [FromQuery] string? search, CancellationToken cancellationToken)
     {
-        var response = await _masterDataService.GetCitiesAsync(stateId, districtId, search, cancellationToken);
+        var response = await _masterDataService.GetCitiesAsync(stateId, districtId, search, null, null, cancellationToken);
         return Ok(response);
     }
 
@@ -60,36 +60,36 @@ public sealed class MasterDataController : ControllerBase
     [Authorize]
     [RequirePermission("country_access")]
     [HttpGet("countries")]
-    public async Task<IActionResult> GetCountries([FromQuery] string? search, CancellationToken cancellationToken)
+    public async Task<IActionResult> GetCountries([FromQuery] string? search, [FromQuery] int? page, [FromQuery(Name = "page_size")] int? pageSize, CancellationToken cancellationToken)
     {
-        var response = await _masterDataService.GetCountriesAsync(search, cancellationToken, includeInactive: true);
+        var response = await _masterDataService.GetCountriesAsync(search, page, pageSize, cancellationToken, includeInactive: true);
         return Ok(response);
     }
 
     [Authorize]
     [RequirePermission("state_access")]
     [HttpGet("states")]
-    public async Task<IActionResult> GetStates([FromQuery(Name = "country_id")] ulong? countryId, [FromQuery] string? search, CancellationToken cancellationToken)
+    public async Task<IActionResult> GetStates([FromQuery(Name = "country_id")] ulong? countryId, [FromQuery] string? search, [FromQuery] int? page, [FromQuery(Name = "page_size")] int? pageSize, CancellationToken cancellationToken)
     {
-        var response = await _masterDataService.GetStatesAsync(countryId, search, cancellationToken, includeInactive: true);
+        var response = await _masterDataService.GetStatesAsync(countryId, search, page, pageSize, cancellationToken, includeInactive: true);
         return Ok(response);
     }
 
     [Authorize]
     [RequirePermission("district_access")]
     [HttpGet("districts")]
-    public async Task<IActionResult> GetDistricts([FromQuery(Name = "state_id")] ulong? stateId, [FromQuery] string? search, CancellationToken cancellationToken)
+    public async Task<IActionResult> GetDistricts([FromQuery(Name = "state_id")] ulong? stateId, [FromQuery] string? search, [FromQuery] int? page, [FromQuery(Name = "page_size")] int? pageSize, CancellationToken cancellationToken)
     {
-        var response = await _masterDataService.GetDistrictsAsync(stateId, search, cancellationToken, includeInactive: true);
+        var response = await _masterDataService.GetDistrictsAsync(stateId, search, page, pageSize, cancellationToken, includeInactive: true);
         return Ok(response);
     }
 
     [Authorize]
     [RequirePermission("city_access")]
     [HttpGet("cities")]
-    public async Task<IActionResult> GetCities([FromQuery(Name = "state_id")] ulong? stateId, [FromQuery(Name = "district_id")] ulong? districtId, [FromQuery] string? search, CancellationToken cancellationToken)
+    public async Task<IActionResult> GetCities([FromQuery(Name = "state_id")] ulong? stateId, [FromQuery(Name = "district_id")] ulong? districtId, [FromQuery] string? search, [FromQuery] int? page, [FromQuery(Name = "page_size")] int? pageSize, CancellationToken cancellationToken)
     {
-        var response = await _masterDataService.GetCitiesAsync(stateId, districtId, search, cancellationToken, includeInactive: true);
+        var response = await _masterDataService.GetCitiesAsync(stateId, districtId, search, page, pageSize, cancellationToken, includeInactive: true);
         return Ok(response);
     }
 

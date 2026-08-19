@@ -1,3 +1,4 @@
+using Application.Common;
 using Application.DTOs.Products;
 using Application.Interfaces.Repositories;
 using Domain.Entities;
@@ -16,11 +17,22 @@ public sealed class ProductRepository : IProductRepository
         _dbContext = dbContext;
     }
 
-    public async Task<IReadOnlyCollection<ProductSegmentDto>> GetSegmentsAsync(string? search, bool includeInactive, CancellationToken cancellationToken)
+    public async Task<IReadOnlyCollection<ProductSegmentDto>> GetSegmentsAsync(string? search, bool includeInactive, CancellationToken cancellationToken) =>
+        await ProjectSegments(FilteredSegments(search, includeInactive).OrderByDescending(x => x.Id).Take(MaxRows)).ToListAsync(cancellationToken);
+
+    public async Task<PagedResult<ProductSegmentDto>> GetSegmentsPagedAsync(string? search, bool includeInactive, int page, int pageSize, CancellationToken cancellationToken)
+    {
+        var query = FilteredSegments(search, includeInactive).OrderByDescending(x => x.Id);
+        var total = await query.LongCountAsync(cancellationToken);
+        var items = await ProjectSegments(query.Skip((page - 1) * pageSize).Take(pageSize)).ToListAsync(cancellationToken);
+        return new PagedResult<ProductSegmentDto>(items, total, page, pageSize);
+    }
+
+    private IQueryable<ProductCategory> FilteredSegments(string? search, bool includeInactive)
     {
         var query = SegmentQuery(includeInactive);
         if (!string.IsNullOrWhiteSpace(search)) query = query.Where(x => x.CategoryName.Contains(search.Trim()));
-        return await ProjectSegments(query.OrderByDescending(x => x.Id).Take(MaxRows)).ToListAsync(cancellationToken);
+        return query;
     }
 
     public Task<ProductSegmentDto?> GetSegmentAsync(ulong id, CancellationToken cancellationToken) =>
@@ -80,12 +92,23 @@ public sealed class ProductRepository : IProductRepository
         return true;
     }
 
-    public async Task<IReadOnlyCollection<ProductFamilyDto>> GetFamiliesAsync(ulong? segmentId, string? search, bool includeInactive, CancellationToken cancellationToken)
+    public async Task<IReadOnlyCollection<ProductFamilyDto>> GetFamiliesAsync(ulong? segmentId, string? search, bool includeInactive, CancellationToken cancellationToken) =>
+        await ProjectFamilies(FilteredFamilies(segmentId, search, includeInactive).OrderByDescending(x => x.Id).Take(MaxRows)).ToListAsync(cancellationToken);
+
+    public async Task<PagedResult<ProductFamilyDto>> GetFamiliesPagedAsync(ulong? segmentId, string? search, bool includeInactive, int page, int pageSize, CancellationToken cancellationToken)
+    {
+        var query = FilteredFamilies(segmentId, search, includeInactive).OrderByDescending(x => x.Id);
+        var total = await query.LongCountAsync(cancellationToken);
+        var items = await ProjectFamilies(query.Skip((page - 1) * pageSize).Take(pageSize)).ToListAsync(cancellationToken);
+        return new PagedResult<ProductFamilyDto>(items, total, page, pageSize);
+    }
+
+    private IQueryable<ProductFamily> FilteredFamilies(ulong? segmentId, string? search, bool includeInactive)
     {
         var query = FamilyQuery(includeInactive);
         if (segmentId.HasValue) query = query.Where(x => x.CategoryId == segmentId);
         if (!string.IsNullOrWhiteSpace(search)) query = query.Where(x => x.SubcategoryName.Contains(search.Trim()));
-        return await ProjectFamilies(query.OrderByDescending(x => x.Id).Take(MaxRows)).ToListAsync(cancellationToken);
+        return query;
     }
 
     public Task<ProductFamilyDto?> GetFamilyAsync(ulong id, CancellationToken cancellationToken) =>
@@ -147,7 +170,20 @@ public sealed class ProductRepository : IProductRepository
         return true;
     }
 
-    public async Task<IReadOnlyCollection<ProductDto>> GetProductsAsync(ulong? segmentId, ulong? familyId, string? search, bool includeInactive, CancellationToken cancellationToken)
+    public async Task<IReadOnlyCollection<ProductDto>> GetProductsAsync(ulong? segmentId, ulong? familyId, string? search, bool includeInactive, CancellationToken cancellationToken) =>
+        await ProjectProducts(FilteredProducts(segmentId, familyId, search, includeInactive).OrderByDescending(x => x.Id).Take(MaxRows)).ToListAsync(cancellationToken);
+
+    // Real database paging: only one page is projected and materialized, so the
+    // listing cost no longer grows with the size of the catalogue.
+    public async Task<PagedResult<ProductDto>> GetProductsPagedAsync(ulong? segmentId, ulong? familyId, string? search, bool includeInactive, int page, int pageSize, CancellationToken cancellationToken)
+    {
+        var query = FilteredProducts(segmentId, familyId, search, includeInactive).OrderByDescending(x => x.Id);
+        var total = await query.LongCountAsync(cancellationToken);
+        var items = await ProjectProducts(query.Skip((page - 1) * pageSize).Take(pageSize)).ToListAsync(cancellationToken);
+        return new PagedResult<ProductDto>(items, total, page, pageSize);
+    }
+
+    private IQueryable<Product> FilteredProducts(ulong? segmentId, ulong? familyId, string? search, bool includeInactive)
     {
         var query = ProductQuery(includeInactive);
         if (segmentId.HasValue) query = query.Where(x => x.CategoryId == segmentId);
@@ -157,7 +193,7 @@ public sealed class ProductRepository : IProductRepository
             var value = search.Trim();
             query = query.Where(x => x.ProductName.Contains(value) || x.PartNo.Contains(value));
         }
-        return await ProjectProducts(query.OrderByDescending(x => x.Id).Take(MaxRows)).ToListAsync(cancellationToken);
+        return query;
     }
 
     public Task<ProductDto?> GetProductAsync(ulong id, CancellationToken cancellationToken) =>

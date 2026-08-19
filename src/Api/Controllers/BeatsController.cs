@@ -44,7 +44,7 @@ public sealed class BeatsController : ControllerBase
             query = query.Where(x => x.BeatName.Contains(search) || x.Description.Contains(search));
 
         page = Math.Max(1, page);
-        pageSize = Math.Clamp(pageSize, 1, 200);
+        pageSize = Math.Clamp(pageSize, 1, 500);
         var total = await query.LongCountAsync(ct);
         var beats = await query.OrderByDescending(x => x.Id).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct);
         var ids = beats.Select(x => x.Id).ToArray();
@@ -139,8 +139,6 @@ public sealed class BeatsController : ControllerBase
         request.BeatName = request.BeatName?.Trim() ?? string.Empty;
         if (request.BeatName.Length < 2 || request.BeatName.Length > 100)
             return BadRequest(new { message = "Beat name must be between 2 and 100 characters." });
-        var duplicate = await _db.Beats.AnyAsync(x => x.BeatName == request.BeatName && (!id.HasValue || x.Id != id), ct);
-        if (duplicate) return Conflict(new { message = "A beat with this name already exists." });
         var userIds = request.UserIds.Distinct().ToArray();
         var customerIds = request.CustomerIds.Distinct().ToArray();
         var cityIds = request.CityIds.Distinct().ToArray();

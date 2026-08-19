@@ -7,6 +7,9 @@ namespace Api.Filters;
 
 public sealed class ServerPaginationResultFilter : IAsyncResultFilter
 {
+    // Matches the largest option offered by the web "Show N entries" selector.
+    private const int MaxPageSize = 500;
+
     public Task OnResultExecutionAsync(ResultExecutingContext context, ResultExecutionDelegate next)
     {
         if (!HttpMethods.IsGet(context.HttpContext.Request.Method)
@@ -30,7 +33,7 @@ public sealed class ServerPaginationResultFilter : IAsyncResultFilter
     {
         page = int.TryParse(query["page"], out var parsedPage) ? Math.Max(1, parsedPage) : 1;
         var rawSize = query["page_size"].FirstOrDefault() ?? query["pageSize"].FirstOrDefault();
-        pageSize = int.TryParse(rawSize, out var parsedSize) ? Math.Clamp(parsedSize, 1, 200) : 0;
+        pageSize = int.TryParse(rawSize, out var parsedSize) ? Math.Clamp(parsedSize, 1, MaxPageSize) : 0;
         return pageSize > 0;
     }
 

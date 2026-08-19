@@ -89,6 +89,8 @@ public sealed class NewInvoiceFilterDto
     public string? RetailerSearch { get; set; }
     public string? InvoiceNumber { get; set; }
     public int? ApprovalStatus { get; set; }
+    /// <summary>Several stages at once, used by the customer view where SS and Sales collapse into In Process.</summary>
+    public IReadOnlyCollection<int>? ApprovalStatuses { get; set; }
     public ulong? BranchId { get; set; }
     public ulong? DivisionId { get; set; }
     public DateTime? FromDate { get; set; }

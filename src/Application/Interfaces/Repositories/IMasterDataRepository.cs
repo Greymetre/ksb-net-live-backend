@@ -6,6 +6,7 @@ namespace Application.Interfaces.Repositories;
 public interface IMasterDataRepository
 {
     Task<IReadOnlyCollection<CountryDto>> GetCountriesAsync(string? search, CancellationToken cancellationToken, bool includeInactive = false);
+    Task<PagedResult<CountryDto>> GetCountriesPagedAsync(string? search, int page, int pageSize, CancellationToken cancellationToken, bool includeInactive = false);
     Task<IReadOnlyCollection<CountryExportRowDto>> ExportCountriesAsync(CancellationToken cancellationToken);
     Task<CountryDto?> GetCountryAsync(ulong id, CancellationToken cancellationToken);
     Task<CountryDto> CreateCountryAsync(CountryRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
@@ -13,6 +14,7 @@ public interface IMasterDataRepository
     Task<CountryDto?> SetCountryActiveAsync(ulong id, string? active, ulong? actorUserId, CancellationToken cancellationToken);
     Task<bool> DeleteCountryAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
     Task<IReadOnlyCollection<StateDto>> GetStatesAsync(ulong? countryId, string? search, CancellationToken cancellationToken, bool includeInactive = false);
+    Task<PagedResult<StateDto>> GetStatesPagedAsync(ulong? countryId, string? search, int page, int pageSize, CancellationToken cancellationToken, bool includeInactive = false);
     Task<IReadOnlyCollection<StateExportRowDto>> ExportStatesAsync(CancellationToken cancellationToken);
     Task<StateDto?> GetStateAsync(ulong id, CancellationToken cancellationToken);
     Task<StateDto> CreateStateAsync(StateRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
@@ -20,6 +22,7 @@ public interface IMasterDataRepository
     Task<StateDto?> SetStateActiveAsync(ulong id, string? active, ulong? actorUserId, CancellationToken cancellationToken);
     Task<bool> DeleteStateAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
     Task<IReadOnlyCollection<DistrictDto>> GetDistrictsAsync(ulong? stateId, string? search, CancellationToken cancellationToken, bool includeInactive = false);
+    Task<PagedResult<DistrictDto>> GetDistrictsPagedAsync(ulong? stateId, string? search, int page, int pageSize, CancellationToken cancellationToken, bool includeInactive = false);
     Task<IReadOnlyCollection<DistrictExportRowDto>> ExportDistrictsAsync(CancellationToken cancellationToken);
     Task<DistrictDto?> GetDistrictAsync(ulong id, CancellationToken cancellationToken);
     Task<DistrictDto> CreateDistrictAsync(DistrictRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
@@ -27,8 +30,10 @@ public interface IMasterDataRepository
     Task<DistrictDto?> SetDistrictActiveAsync(ulong id, string? active, ulong? actorUserId, CancellationToken cancellationToken);
     Task<bool> DeleteDistrictAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
     Task<IReadOnlyCollection<CityDto>> GetCitiesAsync(ulong? stateId, ulong? districtId, string? search, CancellationToken cancellationToken, bool includeInactive = false);
+    Task<PagedResult<CityDto>> GetCitiesPagedAsync(ulong? stateId, ulong? districtId, string? search, int page, int pageSize, CancellationToken cancellationToken, bool includeInactive = false);
     Task<IReadOnlyCollection<CityExportRowDto>> ExportCitiesAsync(CancellationToken cancellationToken);
     Task<CityDto?> GetCityAsync(ulong id, CancellationToken cancellationToken);
+    Task<bool> CityNameExistsInDistrictAsync(string cityName, ulong districtId, ulong? exceptId, CancellationToken cancellationToken);
     Task<CityDto> CreateCityAsync(CityRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
     Task<CityDto?> UpdateCityAsync(ulong id, CityRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
     Task<CityDto?> SetCityActiveAsync(ulong id, string? active, ulong? actorUserId, CancellationToken cancellationToken);

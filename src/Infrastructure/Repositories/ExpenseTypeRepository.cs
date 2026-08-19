@@ -1,3 +1,4 @@
+using System.Globalization;
 using Application.DTOs.Expenses;
 using Application.Interfaces.Repositories;
 using Domain.Entities;
@@ -18,11 +19,6 @@ public sealed class ExpenseTypeRepository : IExpenseTypeRepository
     public async Task<IReadOnlyCollection<ExpenseTypeDto>> GetExpenseTypesAsync(string? search, CancellationToken cancellationToken)
     {
         var query = _dbContext.ExpenseTypes.AsNoTracking();
-        if (!string.IsNullOrWhiteSpace(search))
-        {
-            var term = search.Trim().ToLowerInvariant();
-            query = query.Where(x => x.Name.ToLower().Contains(term));
-        }
 
         var rows = await query
             .OrderByDescending(x => x.Id)
@@ -43,6 +39,17 @@ public sealed class ExpenseTypeRepository : IExpenseTypeRepository
         {
             row.AllowanceTypeName = ExpenseTypeLookups.AllowanceTypeName(row.AllowanceTypeId);
             row.PayrollName = ExpenseTypeLookups.PayrollName(row.PayrollId);
+        }
+
+        // Allowance type and payroll are resolved from lookups after projection, so
+        // searching them has to happen here rather than in the SQL query.
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var term = search.Trim().ToLowerInvariant();
+            rows = rows.Where(x => x.Name.ToLowerInvariant().Contains(term)
+                || (x.AllowanceTypeName ?? string.Empty).ToLowerInvariant().Contains(term)
+                || (x.PayrollName ?? string.Empty).ToLowerInvariant().Contains(term)
+                || x.Rate.ToString(CultureInfo.InvariantCulture).Contains(term)).ToList();
         }
 
         return rows;

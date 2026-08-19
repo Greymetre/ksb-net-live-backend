@@ -19,8 +19,19 @@ public sealed class ProductService : IProductService
         _repository = repository;
     }
 
-    public async Task<LaravelApiResponse> GetSegmentsAsync(string? search, bool includeInactive, CancellationToken cancellationToken) =>
-        LaravelApiResponse.Success("segments", await _repository.GetSegmentsAsync(search, includeInactive, cancellationToken));
+    public async Task<LaravelApiResponse> GetSegmentsAsync(string? search, bool includeInactive, int? page, int? pageSize, CancellationToken cancellationToken)
+    {
+        // Without page params the caller wants everything (exports, dropdowns).
+        if (!page.HasValue || !pageSize.HasValue)
+            return LaravelApiResponse.Success("segments", await _repository.GetSegmentsAsync(search, includeInactive, cancellationToken));
+
+        var result = await _repository.GetSegmentsPagedAsync(search, includeInactive, Pagination.Page(page.Value), Pagination.PageSize(pageSize.Value), cancellationToken);
+        var response = LaravelApiResponse.Success("segments", result.Items);
+        response.Extra["total"] = result.Total;
+        response.Extra["page"] = result.Page;
+        response.Extra["page_size"] = result.PageSize;
+        return response;
+    }
 
     public async Task<MasterDataFileDto> ExportSegmentsAsync(string? search, CancellationToken cancellationToken)
     {
@@ -72,8 +83,19 @@ public sealed class ProductService : IProductService
         return LaravelApiResponse.MessageOnly("success", "Segment deleted successfully!");
     }
 
-    public async Task<LaravelApiResponse> GetFamiliesAsync(ulong? segmentId, string? search, bool includeInactive, CancellationToken cancellationToken) =>
-        LaravelApiResponse.Success("families", await _repository.GetFamiliesAsync(segmentId, search, includeInactive, cancellationToken));
+    public async Task<LaravelApiResponse> GetFamiliesAsync(ulong? segmentId, string? search, bool includeInactive, int? page, int? pageSize, CancellationToken cancellationToken)
+    {
+        // Without page params the caller wants everything (exports, dropdowns).
+        if (!page.HasValue || !pageSize.HasValue)
+            return LaravelApiResponse.Success("families", await _repository.GetFamiliesAsync(segmentId, search, includeInactive, cancellationToken));
+
+        var result = await _repository.GetFamiliesPagedAsync(segmentId, search, includeInactive, Pagination.Page(page.Value), Pagination.PageSize(pageSize.Value), cancellationToken);
+        var response = LaravelApiResponse.Success("families", result.Items);
+        response.Extra["total"] = result.Total;
+        response.Extra["page"] = result.Page;
+        response.Extra["page_size"] = result.PageSize;
+        return response;
+    }
 
     public async Task<MasterDataFileDto> ExportFamiliesAsync(ulong? segmentId, string? search, CancellationToken cancellationToken)
     {
@@ -128,8 +150,19 @@ public sealed class ProductService : IProductService
         return LaravelApiResponse.MessageOnly("success", "Family deleted successfully!");
     }
 
-    public async Task<LaravelApiResponse> GetProductsAsync(ulong? segmentId, ulong? familyId, string? search, bool includeInactive, CancellationToken cancellationToken) =>
-        LaravelApiResponse.Success("products", await _repository.GetProductsAsync(segmentId, familyId, search, includeInactive, cancellationToken));
+    public async Task<LaravelApiResponse> GetProductsAsync(ulong? segmentId, ulong? familyId, string? search, bool includeInactive, int? page, int? pageSize, CancellationToken cancellationToken)
+    {
+        // Without page params the caller wants everything (exports, dropdowns).
+        if (!page.HasValue || !pageSize.HasValue)
+            return LaravelApiResponse.Success("products", await _repository.GetProductsAsync(segmentId, familyId, search, includeInactive, cancellationToken));
+
+        var result = await _repository.GetProductsPagedAsync(segmentId, familyId, search, includeInactive, Pagination.Page(page.Value), Pagination.PageSize(pageSize.Value), cancellationToken);
+        var response = LaravelApiResponse.Success("products", result.Items);
+        response.Extra["total"] = result.Total;
+        response.Extra["page"] = result.Page;
+        response.Extra["page_size"] = result.PageSize;
+        return response;
+    }
 
     public async Task<MasterDataFileDto> ExportProductsAsync(ulong? segmentId, ulong? familyId, string? search, string baseUrl, CancellationToken cancellationToken)
     {

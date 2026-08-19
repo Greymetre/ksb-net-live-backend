@@ -24,7 +24,7 @@ public sealed class CheckinReportsController : ControllerBase
     public async Task<IActionResult> List([FromQuery] CheckinFilter filter, CancellationToken ct)
     {
         var page = Math.Max(1, filter.Page);
-        var size = Math.Clamp(filter.PageSize, 10, 200);
+        var size = Math.Clamp(filter.PageSize, 10, 500);
         var visibleIds = await VisibleUserIds(ct);
         var total = await Count(filter, visibleIds, ct);
         var rows = await Rows(filter, visibleIds, (page - 1) * size, size, ct);
