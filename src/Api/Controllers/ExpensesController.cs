@@ -1,3 +1,4 @@
+using Api.Extensions;
 using Api.Filters;
 using Application.DTOs.Expenses;
 using Application.Interfaces.Services;
@@ -203,7 +204,7 @@ public sealed class ExpensesController : ControllerBase
 
     private void NormalizeAttachmentUrls(ExpenseDto expense)
     {
-        var baseUrl = $"{Request.Scheme}://{Request.Host}";
+        var baseUrl = Request.PublicBaseUrl();
         foreach (var attachment in expense.Attachments)
         {
             if (!string.IsNullOrWhiteSpace(attachment.Url) && !attachment.Url.StartsWith("http", StringComparison.OrdinalIgnoreCase))

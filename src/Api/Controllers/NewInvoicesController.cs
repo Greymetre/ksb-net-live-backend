@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using Api.Extensions;
 using Api.Filters;
 using Application.DTOs.NewInvoices;
 using Application.Interfaces.Services;
@@ -212,7 +213,7 @@ public sealed class NewInvoicesController : ControllerBase
         return ulong.TryParse(subject, out var userId) ? userId : null;
     }
 
-    private string BackendBaseUrl() => $"{Request.Scheme}://{Request.Host}";
+    private string BackendBaseUrl() => Request.PublicBaseUrl();
 
     private async Task<NewInvoiceRequestDto> ToRequestAsync(NewInvoiceFormRequest form, CancellationToken cancellationToken)
     {

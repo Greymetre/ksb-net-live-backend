@@ -1004,13 +1004,14 @@ WHERE customer_id IN ({customerIdCsv})
 
             var zoneName = await LoadAssignedZoneNameAsync(customer, cancellationToken);
             var stateName = await LoadCustomerStateNameAsync(customer, cancellationToken);
+            var assignedBranchName = await LoadAssignedBranchNameAsync(customer, cancellationToken);
 
             foreach (var row in rows)
             {
                 var invoiceDate = DateOnly.FromDateTime(row.Invoice.InvoiceDate.Date);
                 var matchingSchemes = schemes.Where(scheme =>
                     row.Invoice.LoyaltySchemeId == scheme.Id
-                    && SchemeMatchesCustomer(scheme, invoiceDate, customer, row.Branch, zoneName, stateName));
+                    && SchemeMatchesCustomer(scheme, invoiceDate, customer, assignedBranchName ?? row.Branch?.BranchName, zoneName, stateName));
                 foreach (var scheme in matchingSchemes)
                 {
                     var periodAmount = PeriodAmount(customer.Id, scheme, rows.Select(x => x.Invoice), hoApprovedAmounts);
@@ -1068,12 +1069,39 @@ WHERE customer_id IN ({customerIdCsv})
             .FirstOrDefaultAsync(cancellationToken);
     }
 
-    private async Task<string?> LoadAssignedZoneNameAsync(Customer customer, CancellationToken cancellationToken)
+    /// <summary>
+    /// Branch a Branch-scoped scheme is matched against. The invoice screen reads it
+    /// from the customer's assigned employee and only falls back to whoever created
+    /// the invoice, so this does the same - a dealer login has no branch of its own,
+    /// and reading only the creator left branch schemes matching nothing.
+    /// </summary>
+    private async Task<string?> LoadAssignedBranchNameAsync(Customer customer, CancellationToken cancellationToken)
     {
-        var employeeId = FirstULong(ReadCustomerField(customer, "employee_id"))
+        var employeeId = AssignedEmployeeId(customer);
+        if (!employeeId.HasValue) return null;
+
+        var employee = await _dbContext.Users.AsNoTracking()
+            .Where(x => x.Id == employeeId.Value)
+            .Select(x => new { x.PrimaryBranchId, x.BranchId })
+            .FirstOrDefaultAsync(cancellationToken);
+
+        var branchId = employee?.PrimaryBranchId ?? FirstULong(employee?.BranchId);
+        if (!branchId.HasValue) return null;
+
+        return await _dbContext.Branches.AsNoTracking()
+            .Where(x => x.Id == branchId.Value)
+            .Select(x => x.BranchName)
+            .FirstOrDefaultAsync(cancellationToken);
+    }
+
+    private static ulong? AssignedEmployeeId(Customer customer) =>
+        FirstULong(ReadCustomerField(customer, "employee_id"))
             ?? FirstULong(ReadCustomerField(customer, "sales_executive_id"))
             ?? customer.ExecutiveId;
 
+    private async Task<string?> LoadAssignedZoneNameAsync(Customer customer, CancellationToken cancellationToken)
+    {
+        var employeeId = AssignedEmployeeId(customer);
         if (!employeeId.HasValue) return null;
 
         return await (from user in _dbContext.Users.AsNoTracking()
@@ -1086,9 +1114,9 @@ WHERE customer_id IN ({customerIdCsv})
 
     // Delegates to the shared matcher so customer point totals cannot drift from
     // what the invoice screen and the mobile apps consider eligible.
-    private static bool SchemeMatchesCustomer(LoyaltyScheme scheme, DateOnly invoiceDate, Customer customer, Branch? branch, string? zoneName, string? stateName) =>
+    private static bool SchemeMatchesCustomer(LoyaltyScheme scheme, DateOnly invoiceDate, Customer customer, string? branchName, string? zoneName, string? stateName) =>
         SchemeEligibility.Matches(scheme, invoiceDate, new SchemeAudience(
-            customer.CustomerType, customer.Name, customer.CustomerCode, branch?.BranchName, zoneName, stateName));
+            customer.CustomerType, customer.Name, customer.CustomerCode, branchName, zoneName, stateName));
 
     private static decimal PeriodAmount(
         ulong customerId,

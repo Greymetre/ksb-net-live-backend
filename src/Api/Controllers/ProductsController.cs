@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using Api.Extensions;
 using Api.Filters;
 using Application.DTOs.Products;
 using Application.Interfaces.Services;
@@ -217,7 +218,7 @@ public sealed class ProductsController : ControllerBase
         return ulong.TryParse(subject, out var userId) ? userId : null;
     }
 
-    private string BackendBaseUrl() => $"{Request.Scheme}://{Request.Host}";
+    private string BackendBaseUrl() => Request.PublicBaseUrl();
 }
 
 public sealed class ActiveRequest

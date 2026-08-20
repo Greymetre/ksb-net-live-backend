@@ -22,18 +22,37 @@ public sealed class NewInvoiceService : INewInvoiceService
     public async Task<LaravelApiResponse> GetInvoicesAsync(NewInvoiceFilterDto filter, ulong? actorUserId, CancellationToken cancellationToken)
     {
         var result = await _repository.GetInvoicesAsync(filter, actorUserId, cancellationToken);
+
+        // The totals cover every invoice the filters match, not the page that was
+        // asked for, so they stay unpaged.
         var summaryFilter = new NewInvoiceFilterDto
         {
+            DistributorCustomerId = filter.DistributorCustomerId, SecondaryCustomerIds = filter.SecondaryCustomerIds,
             SchemeId = filter.SchemeId, RetailerSearch = filter.RetailerSearch, InvoiceNumber = filter.InvoiceNumber,
-            ApprovalStatus = filter.ApprovalStatus, BranchId = filter.BranchId, DivisionId = filter.DivisionId,
+            ApprovalStatus = filter.ApprovalStatus, ApprovalStatuses = filter.ApprovalStatuses,
+            BranchId = filter.BranchId, DivisionId = filter.DivisionId,
             FromDate = filter.FromDate, ToDate = filter.ToDate, Search = filter.Search, Unpaged = true
         };
         var summaryInvoices = (await _repository.GetInvoicesAsync(summaryFilter, actorUserId, cancellationToken)).Items;
         var summary = BuildSummary(summaryInvoices);
+
+        // The per-stage counts double as the stage filter buttons, so they deliberately
+        // ignore the selected stage. Counting inside the selection would leave every
+        // other stage reading zero and hide where the invoices actually are.
+        var stageFilter = new NewInvoiceFilterDto
+        {
+            DistributorCustomerId = filter.DistributorCustomerId, SecondaryCustomerIds = filter.SecondaryCustomerIds,
+            SchemeId = filter.SchemeId, RetailerSearch = filter.RetailerSearch, InvoiceNumber = filter.InvoiceNumber,
+            BranchId = filter.BranchId, DivisionId = filter.DivisionId,
+            FromDate = filter.FromDate, ToDate = filter.ToDate, Search = filter.Search, Unpaged = true
+        };
+        var stageCounts = await _repository.GetInvoiceSummaryAsync(stageFilter, actorUserId, cancellationToken);
+
         return LaravelApiResponse.Success("new_invoices", new
         {
             invoices = result.Items,
             summary,
+            stage_counts = stageCounts,
             total = result.Total,
             page = result.Page,
             page_size = result.PageSize,

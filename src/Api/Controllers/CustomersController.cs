@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using System.Text.Json;
+using Api.Extensions;
 using Api.Filters;
 using Application.Common;
 using Application.DTOs.Customers;
@@ -166,21 +167,7 @@ public sealed class CustomersController : ControllerBase
         return ulong.TryParse(subject, out var userId) ? userId : null;
     }
 
-    private string BackendBaseUrl()
-    {
-        var forwardedPrefix = Request.Headers["X-Forwarded-Prefix"].FirstOrDefault();
-        var pathBase = string.IsNullOrWhiteSpace(forwardedPrefix)
-            ? Request.PathBase.Value
-            : forwardedPrefix;
-
-        return $"{Request.Scheme}://{Request.Host}{NormalizePathBase(pathBase)}";
-    }
-
-    private static string NormalizePathBase(string? pathBase)
-    {
-        if (string.IsNullOrWhiteSpace(pathBase) || pathBase == "/") return string.Empty;
-        return $"/{pathBase.Trim('/')}";
-    }
+    private string BackendBaseUrl() => Request.PublicBaseUrl();
 
     private static void ApplyQueryAliases(CustomerListFilterDto filter, ulong? customerType, ulong? stateId, ulong? cityId, ulong? pincodeId, ulong? userId)
     {
