@@ -14,6 +14,9 @@ public sealed class ExpenseFilterDto
     public string? EndDate { get; set; }
     public ulong? ExpenseId { get; set; }
     public string? Search { get; set; }
+
+    /// <summary>Signed-in user. Rows are narrowed to whoever this user may report on.</summary>
+    public ulong? ActorUserId { get; set; }
 }
 
 public sealed class ExpenseDto
@@ -84,9 +87,66 @@ public sealed class ExpenseStatusRequestDto
     public string? Reason { get; set; }
 }
 
+/// <summary>A selectable employee plus the grade that decides their expense types.</summary>
+public sealed class ExpenseUserOptionDto
+{
+    public ulong Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string? Payroll { get; set; }
+}
+
+/// <summary>The signed-in user, as the mobile form needs them: name and payroll grade.</summary>
+public sealed class ExpenseActorDto
+{
+    public ulong Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string? Payroll { get; set; }
+    public string PayrollName { get; set; } = string.Empty;
+    public bool HasGrade { get; set; }
+}
+
+public sealed class ExpenseLogDto
+{
+    public ulong Id { get; set; }
+    public ulong ExpenseId { get; set; }
+    public string StatusType { get; set; } = string.Empty;
+    public string LogDate { get; set; } = string.Empty;
+    public ulong? CreatedBy { get; set; }
+    public string? CreatedByName { get; set; }
+    public DateTime? CreatedAt { get; set; }
+}
+
+public sealed class ExpenseMonthSummaryDto
+{
+    public string Label { get; set; } = string.Empty;
+    public int Total { get; set; }
+    public int Pending { get; set; }
+    public decimal ClaimAmount { get; set; }
+    public decimal ApproveAmount { get; set; }
+}
+
+public sealed class ExpenseSummaryDto
+{
+    public int Total { get; set; }
+    public int Pending { get; set; }
+    public int Checked { get; set; }
+    public int CheckedByReporting { get; set; }
+    public int Approved { get; set; }
+    public int Rejected { get; set; }
+    public int Hold { get; set; }
+    public decimal ClaimAmount { get; set; }
+    public decimal ApproveAmount { get; set; }
+    public ExpenseMonthSummaryDto Month { get; set; } = new();
+}
+
 public sealed class ExpenseOptionsDto
 {
-    public IReadOnlyCollection<OptionDto> Users { get; set; } = [];
+    public IReadOnlyCollection<ExpenseUserOptionDto> Users { get; set; } = [];
+
+    /// <summary>Signed-in user plus the types their grade allows, so the mobile form
+    /// needs a single call and never has to guess the grade rule.</summary>
+    public ExpenseActorDto? Me { get; set; }
+    public IReadOnlyCollection<ExpenseTypeDto> MyExpenseTypes { get; set; } = [];
     public IReadOnlyCollection<ExpenseTypeDto> ExpenseTypes { get; set; } = [];
     public IReadOnlyCollection<OptionDto> Branches { get; set; } = [];
     public IReadOnlyCollection<OptionDto> Divisions { get; set; } = [];

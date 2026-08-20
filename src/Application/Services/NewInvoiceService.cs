@@ -148,15 +148,23 @@ public sealed class NewInvoiceService : INewInvoiceService
         return LaravelApiResponse.Success("new_invoice", updated, "Invoice updated successfully");
     }
 
-    public async Task<LaravelApiResponse> DeleteInvoiceAsync(ulong id, CancellationToken cancellationToken)
+    /// <summary>
+    /// Everyone else may only delete an invoice that is still pending; a superadmin
+    /// can remove one at any stage, which is why <paramref name="allowAnyStatus"/>
+    /// is decided by the caller from the signed-in user's role.
+    /// </summary>
+    public async Task<LaravelApiResponse> DeleteInvoiceAsync(ulong id, bool allowAnyStatus, CancellationToken cancellationToken)
     {
         var invoice = await FindOrThrowAsync(id, cancellationToken);
-        if (invoice.ApprovalStatus != NewInvoice.StatusPending)
+        if (!allowAnyStatus && invoice.ApprovalStatus != NewInvoice.StatusPending)
         {
             throw Http(403, "Only pending invoices can be deleted.");
         }
-        await _repository.DeleteInvoiceAsync(invoice, cancellationToken);
-        return LaravelApiResponse.MessageOnly("success", "Invoice deleted successfully");
+
+        var removedFiles = await _repository.DeleteInvoiceAsync(invoice, cancellationToken);
+        var response = LaravelApiResponse.MessageOnly("success", "Invoice deleted successfully");
+        response.Extra["removed_files"] = removedFiles;
+        return response;
     }
 
     public async Task<LaravelApiResponse> ApproveInvoiceAsync(ulong id, string level, string? remark, decimal? approvedAmount, ulong? actorUserId, CancellationToken cancellationToken)

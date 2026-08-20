@@ -20,6 +20,15 @@ public sealed class ExpenseRepository : IExpenseRepository
     {
         var query = ApplyFilters(_dbContext.Expenses.AsNoTracking(), filter);
 
+        // Same reporting visibility the rest of the app uses: an admin scope sees
+        // everything, a branch manager their branch, everyone else their own
+        // reporting tree.
+        var visibleUserIds = await VisibleUserIdsAsync(filter.ActorUserId, cancellationToken);
+        if (visibleUserIds is not null)
+        {
+            query = query.Where(x => x.UserId.HasValue && visibleUserIds.Contains(x.UserId.Value));
+        }
+
         var rows = await (
             from expense in query
             join typeRow in _dbContext.ExpenseTypes.AsNoTracking() on expense.ExpensesType equals typeRow.Id into types
@@ -119,12 +128,12 @@ public sealed class ExpenseRepository : IExpenseRepository
     public async Task<ExpenseOptionsDto> GetOptionsAsync(ulong? actorUserId, CancellationToken cancellationToken)
     {
         var visibleUserIds = await ReportingVisibility.GetVisibleUserIdsAsync(_dbContext, actorUserId, cancellationToken);
-        return new ExpenseOptionsDto
+        var options = new ExpenseOptionsDto
         {
             Users = await ReportingVisibility.InternalUsersQuery(_dbContext, _dbContext.Users.AsNoTracking())
                 .Where(user => user.Active == "Y" && visibleUserIds.Contains(user.Id))
                 .OrderBy(x => x.Name)
-                .Select(x => new OptionDto { Id = x.Id, Name = x.Name })
+                .Select(x => new ExpenseUserOptionDto { Id = x.Id, Name = x.Name, Payroll = x.Payroll })
                 .ToListAsync(cancellationToken),
             ExpenseTypes = (await new ExpenseTypeRepository(_dbContext).GetExpenseTypesAsync(null, cancellationToken)).Where(x => x.Active == "Y").ToArray(),
             Branches = await _dbContext.Branches.AsNoTracking()
@@ -138,6 +147,86 @@ public sealed class ExpenseRepository : IExpenseRepository
             Payrolls = ExpenseTypeLookups.Payrolls.Select(x => new OptionDto { Id = x.Key, Name = x.Value }).ToArray(),
             Statuses = ExpenseStatusLookups.Statuses.Select(x => new OptionDto { Id = (ulong)x.Key, Name = x.Value }).ToArray()
         };
+
+        var actor = actorUserId.HasValue
+            ? await _dbContext.Users.AsNoTracking()
+                .Where(x => x.Id == actorUserId.Value)
+                .Select(x => new { x.Id, x.Name, x.Payroll })
+                .FirstOrDefaultAsync(cancellationToken)
+            : null;
+
+        if (actor is not null)
+        {
+            var hasGrade = ulong.TryParse(actor.Payroll, out var grade) && grade > 0;
+            options.Me = new ExpenseActorDto
+            {
+                Id = actor.Id,
+                Name = actor.Name ?? string.Empty,
+                Payroll = actor.Payroll,
+                PayrollName = hasGrade ? ExpenseTypeLookups.PayrollName(grade) : string.Empty,
+                HasGrade = hasGrade
+            };
+            options.MyExpenseTypes = hasGrade
+                ? options.ExpenseTypes.Where(x => x.PayrollId is null or 0 || x.PayrollId == grade).ToArray()
+                : [];
+        }
+
+        return options;
+    }
+
+    public async Task<IReadOnlyCollection<ExpenseLogDto>> GetLogsAsync(ulong expenseId, CancellationToken cancellationToken) =>
+        await (from log in _dbContext.ExpenseLogs.AsNoTracking().Where(x => x.ExpenseId == expenseId)
+               join userRow in _dbContext.Users.AsNoTracking() on log.CreatedBy equals userRow.Id into users
+               from user in users.DefaultIfEmpty()
+               orderby log.Id
+               select new ExpenseLogDto
+               {
+                   Id = log.Id,
+                   ExpenseId = expenseId,
+                   StatusType = log.StatusType ?? string.Empty,
+                   LogDate = log.LogDate == null ? string.Empty : log.LogDate.Value.ToString("yyyy-MM-dd"),
+                   CreatedBy = log.CreatedBy,
+                   CreatedByName = user.Name,
+                   CreatedAt = log.CreatedAt
+               }).ToListAsync(cancellationToken);
+
+    /// <summary>Status counts and amounts over the same filtered, visibility-scoped set the list uses.</summary>
+    public async Task<IReadOnlyCollection<ExpenseSummaryRow>> GetSummaryRowsAsync(ExpenseFilterDto filter, CancellationToken cancellationToken)
+    {
+        var query = ApplyFilters(_dbContext.Expenses.AsNoTracking(), filter);
+
+        var visibleUserIds = await VisibleUserIdsAsync(filter.ActorUserId, cancellationToken);
+        if (visibleUserIds is not null)
+        {
+            query = query.Where(x => x.UserId.HasValue && visibleUserIds.Contains(x.UserId.Value));
+        }
+
+        return await query
+            .Select(x => new ExpenseSummaryRow(x.CheckerStatus, x.ClaimAmount ?? 0, x.ApproveAmount ?? 0, x.Date))
+            .ToListAsync(cancellationToken);
+    }
+
+    public async Task<bool> CanActorReportOnAsync(ulong? actorUserId, ulong userId, CancellationToken cancellationToken)
+    {
+        var visibleUserIds = await VisibleUserIdsAsync(actorUserId, cancellationToken);
+        return visibleUserIds is null || visibleUserIds.Contains(userId);
+    }
+
+    /// <summary>
+    /// The user ids an actor may see, or null when no narrowing applies - either an
+    /// internal call with no actor, or an actor whose scope already covers every
+    /// internal user. Returning null there keeps rows of since-deactivated employees
+    /// visible to admins instead of silently dropping them.
+    /// </summary>
+    private async Task<ulong[]?> VisibleUserIdsAsync(ulong? actorUserId, CancellationToken cancellationToken)
+    {
+        if (!actorUserId.HasValue) return null;
+
+        var visibleUserIds = await ReportingVisibility.GetVisibleUserIdsAsync(_dbContext, actorUserId, cancellationToken);
+        var totalInternal = await ReportingVisibility.InternalUsersQuery(_dbContext, _dbContext.Users.AsNoTracking())
+            .CountAsync(x => x.Active == "Y" && !x.IsDeleted, cancellationToken);
+
+        return visibleUserIds.Count >= totalInternal ? null : visibleUserIds.ToArray();
     }
 
     public async Task AddExpenseAsync(Expense expense, CancellationToken cancellationToken) =>
@@ -148,6 +237,16 @@ public sealed class ExpenseRepository : IExpenseRepository
 
     public async Task AddMediaAsync(Media media, CancellationToken cancellationToken) =>
         await _dbContext.Media.AddAsync(media, cancellationToken);
+
+    public Task<Media?> GetAttachmentAsync(ulong expenseId, ulong attachmentId, CancellationToken cancellationToken) =>
+        _dbContext.Media.FirstOrDefaultAsync(
+            x => x.Id == attachmentId
+                && x.ModelId == expenseId
+                && x.ModelType == "App\\Models\\Expenses"
+                && x.CollectionName == "expense_file",
+            cancellationToken);
+
+    public void RemoveMedia(Media media) => _dbContext.Media.Remove(media);
 
     public async Task<bool> DeleteExpenseAsync(ulong id, CancellationToken cancellationToken)
     {

@@ -1,4 +1,5 @@
 using Application.Common;
+using Application.DTOs.Expenses;
 using Application.DTOs.MasterData;
 using Application.DTOs.Users;
 using Application.Interfaces.Repositories;
@@ -272,7 +273,14 @@ public sealed class UserService : IUserService
         user.LastName = CapitalizeWords(lastName);
         if (!updated || !string.IsNullOrWhiteSpace(row.Value("mobile"))) user.Mobile = row.Value("mobile");
         user.Email = row.Value("email");
-        if (!string.IsNullOrWhiteSpace(row.Value("password"))) user.Password = _passwordHasher.Hash(row.Value("password")!);
+        var importedPassword = row.Value("password");
+        if (!string.IsNullOrWhiteSpace(importedPassword))
+        {
+            // The CRM lists the plain value alongside the hash, so both columns have
+            // to move together or the list keeps showing the previous password.
+            user.Password = _passwordHasher.Hash(importedPassword);
+            user.PasswordString = importedPassword;
+        }
         user.Gender = row.Value("gender") ?? user.Gender;
         user.ProfileImage = row.Value("profile_image") ?? user.ProfileImage;
         user.UserCode = row.Value("user_code") ?? user.UserCode;
@@ -285,7 +293,7 @@ public sealed class UserService : IUserService
         user.DepartmentId = row.ULong("department_id");
         user.WarehouseId = row.ULong("warehouse_id");
         user.ReportingId = row.ULong("reporting_id");
-        user.Payroll = row.Value("payroll");
+        user.Payroll = NormalizePayrollGrade(row.Value("payroll"));
         user.SalesType = row.Value("sales_type") ?? user.SalesType;
         user.ShowAttandanceReport = NormalizeAttendance(row.Value("attandance_summary_report")) ?? user.ShowAttandanceReport;
         user.Grade = row.Value("grade");
@@ -559,6 +567,29 @@ public sealed class UserService : IUserService
         if (string.IsNullOrWhiteSpace(request.Email)) throw new LaravelHttpException(LaravelStatusCodes.BadRequest, "Email address is required.");
         if (await _repository.UserEmailExistsAsync(request.Email.Trim(), currentUserId, cancellationToken)) throw new LaravelHttpException(LaravelStatusCodes.BadRequest, "This email address is already registered.");
         if (!currentUserId.HasValue && string.IsNullOrWhiteSpace(request.Password)) throw new LaravelHttpException(LaravelStatusCodes.BadRequest, "Password is required.");
+        ValidatePayrollGrade(request);
+    }
+
+    /// <summary>
+    /// users.payroll holds the payroll grade (1-5), and the expense types are tagged
+    /// with the same grade. Anything else saved here silently locks the employee out
+    /// of expenses, so only a known grade - or nothing - is accepted.
+    /// </summary>
+    private static void ValidatePayrollGrade(UserRequestDto request) =>
+        request.Payroll = NormalizePayrollGrade(request.Payroll);
+
+    /// <summary>Empty stays empty; anything that is not a known grade is rejected.</summary>
+    private static string? NormalizePayrollGrade(string? payroll)
+    {
+        var value = payroll?.Trim();
+        if (string.IsNullOrWhiteSpace(value)) return null;
+
+        if (!ulong.TryParse(value, out var grade) || !ExpenseTypeLookups.Payrolls.ContainsKey(grade))
+        {
+            throw new LaravelHttpException(LaravelStatusCodes.BadRequest, "Payroll grade is invalid. Please use a grade between 1 and 5.");
+        }
+
+        return grade.ToString(CultureInfo.InvariantCulture);
     }
 
     private static (string FirstName, string LastName, string Name) ResolveName(UserRequestDto request, User? current = null)

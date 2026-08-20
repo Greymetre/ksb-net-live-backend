@@ -1,3 +1,4 @@
+using Application.DTOs.Expenses;
 using Application.DTOs.Users;
 using Application.Interfaces.Repositories;
 using Domain.Constants;
@@ -125,7 +126,8 @@ public sealed class UserRepository : IUserRepository
             Divisions = divisions,
             Departments = departments,
             Reportings = reportings,
-            Cities = cities
+            Cities = cities,
+            Payrolls = ExpenseTypeLookups.Payrolls.Select(x => new OptionDto { Id = x.Key, Name = x.Value }).ToArray()
         };
     }
 

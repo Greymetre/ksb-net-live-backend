@@ -135,8 +135,43 @@ public sealed class NewInvoicesController : ControllerBase
     [HttpDelete("{id}")]
     public async Task<IActionResult> DeleteInvoice(ulong id, CancellationToken cancellationToken)
     {
-        var response = await _newInvoiceService.DeleteInvoiceAsync(id, cancellationToken);
+        var response = await _newInvoiceService.DeleteInvoiceAsync(id, IsSuperAdmin(), cancellationToken);
+
+        if (response.Extra.TryGetValue("removed_files", out var removed) && removed is IEnumerable<string> files)
+        {
+            foreach (var file in files) DeleteStoredFile(file);
+            response.Extra.Remove("removed_files");
+        }
+
         return Ok(response);
+    }
+
+    private bool IsSuperAdmin() =>
+        User.Claims.Any(claim => claim.Type == ClaimTypes.Role
+            && string.Equals(claim.Value, "superadmin", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Clears an attachment this API stored. Legacy files served from the read-only
+    /// media mount are left alone; only their database rows go.
+    /// </summary>
+    private void DeleteStoredFile(string storedPath)
+    {
+        const string uploadPrefix = "/uploads/new-invoices/";
+        if (string.IsNullOrWhiteSpace(storedPath) || !storedPath.StartsWith(uploadPrefix, StringComparison.OrdinalIgnoreCase)) return;
+
+        var fileName = Path.GetFileName(storedPath);
+        if (string.IsNullOrWhiteSpace(fileName)) return;
+
+        var root = Path.Combine(_environment.WebRootPath ?? Path.Combine(_environment.ContentRootPath, "wwwroot"), "uploads", "new-invoices");
+        var path = Path.Combine(root, fileName);
+        try
+        {
+            if (System.IO.File.Exists(path)) System.IO.File.Delete(path);
+        }
+        catch (IOException)
+        {
+            // The row is gone either way; a locked file must not fail the request.
+        }
     }
 
     [RequirePermission("new_invoice_approve_ss")]

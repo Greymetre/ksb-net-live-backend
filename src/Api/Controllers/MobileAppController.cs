@@ -902,7 +902,11 @@ public sealed class MobileAppController : ControllerBase
         if (existing.ApprovalStatus != NewInvoice.StatusPending)
             return StatusCode(StatusCodes.Status403Forbidden, new { status = "error", message = "Only pending invoices can be deleted." });
 
-        return Ok(await _newInvoiceService.DeleteInvoiceAsync(id, cancellationToken));
+        // A dealer never deletes past pending, and the stored file paths are of no
+        // use to the app, so they are dropped from the reply.
+        var response = await _newInvoiceService.DeleteInvoiceAsync(id, false, cancellationToken);
+        response.Extra.Remove("removed_files");
+        return Ok(response);
     }
 
     [Authorize]

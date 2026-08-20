@@ -6,11 +6,15 @@ namespace Application.Interfaces.Services;
 public interface IExpenseService
 {
     Task<LaravelApiResponse> GetExpensesAsync(ExpenseFilterDto filter, CancellationToken cancellationToken);
-    Task<LaravelApiResponse> GetExpenseAsync(ulong id, CancellationToken cancellationToken);
+    Task<LaravelApiResponse> GetExpenseAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> GetOptionsAsync(ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> CreateExpenseAsync(ExpenseRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> UpdateExpenseAsync(ulong id, ExpenseRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> AddAttachmentsAsync(ulong id, IReadOnlyCollection<ExpenseUploadDto> uploads, CancellationToken cancellationToken);
-    Task<LaravelApiResponse> DeleteExpenseAsync(ulong id, CancellationToken cancellationToken);
+    Task<LaravelApiResponse> DeleteExpenseAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
+    Task<LaravelApiResponse> RemoveAttachmentAsync(ulong id, ulong attachmentId, ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> SetStatusAsync(ulong id, ExpenseStatusRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
+    Task<LaravelApiResponse> CheckByReportingAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
+    Task<LaravelApiResponse> GetLogsAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
+    Task<LaravelApiResponse> GetSummaryAsync(ExpenseFilterDto filter, CancellationToken cancellationToken);
 }

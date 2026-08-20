@@ -210,6 +210,10 @@ public sealed class UserOptionsDto
     public IReadOnlyCollection<OptionDto> Departments { get; set; } = [];
     public IReadOnlyCollection<OptionDto> Reportings { get; set; } = [];
     public IReadOnlyCollection<OptionDto> Cities { get; set; } = [];
+
+    /// <summary>Payroll grades (Grade 1-5). The same lookup the expense types use,
+    /// because users.payroll is what decides which expense types an employee gets.</summary>
+    public IReadOnlyCollection<OptionDto> Payrolls { get; set; } = [];
 }
 
 public sealed class OptionDto

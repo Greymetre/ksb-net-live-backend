@@ -17,5 +17,10 @@ public interface INewInvoiceRepository
     Task<NewInvoiceDto> CreateInvoiceAsync(NewInvoice invoice, CancellationToken cancellationToken);
     Task<NewInvoice?> FindInvoiceEntityAsync(ulong id, CancellationToken cancellationToken);
     Task<NewInvoiceDto> SaveInvoiceAsync(NewInvoice invoice, string statusType, int? fromStatus, int toStatus, ulong actorUserId, string? remark, decimal? approvedAmount, CancellationToken cancellationToken);
-    Task<bool> DeleteInvoiceAsync(NewInvoice invoice, CancellationToken cancellationToken);
+    /// <summary>
+    /// Removes the invoice with everything hanging off it - approval log, attachment
+    /// rows and the retailer's loyalty points for it. Returns the stored file paths
+    /// so the caller can clear them off disk.
+    /// </summary>
+    Task<IReadOnlyCollection<string>> DeleteInvoiceAsync(NewInvoice invoice, CancellationToken cancellationToken);
 }

@@ -227,14 +227,40 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         return await GetInvoiceAsync(invoice.Id, null, cancellationToken) ?? throw new InvalidOperationException("Invoice could not be loaded.");
     }
 
-    public async Task<bool> DeleteInvoiceAsync(NewInvoice invoice, CancellationToken cancellationToken)
+    public async Task<IReadOnlyCollection<string>> DeleteInvoiceAsync(NewInvoice invoice, CancellationToken cancellationToken)
     {
         var logs = _dbContext.NewInvoiceApprovalLogs.Where(x => x.NewInvoiceId == invoice.Id);
         _dbContext.NewInvoiceApprovalLogs.RemoveRange(logs);
+
+        // Attachment rows written by the legacy app. The current flow keeps the path
+        // on the invoice itself, but older invoices still carry these.
+        var attachments = await _dbContext.Media
+            .Where(x => x.ModelType == LegacyInvoiceModelType && x.ModelId == invoice.Id)
+            .ToListAsync(cancellationToken);
+        _dbContext.Media.RemoveRange(attachments);
+
         _dbContext.NewInvoices.Remove(invoice);
         await _dbContext.SaveChangesAsync(cancellationToken);
-        return true;
+
+        // The retailer's points for this invoice live in the legacy wallet ledger,
+        // which has no EF model. Leaving them behind would credit the retailer for an
+        // invoice that no longer exists.
+        if (!string.IsNullOrWhiteSpace(invoice.InvoiceNumber))
+        {
+            await _dbContext.Database.ExecuteSqlRawAsync(
+                "DELETE FROM wallets WHERE customer_id = {0} AND invoice_no = {1}",
+                [Convert.ToDecimal(invoice.SecondaryCustomerId), invoice.InvoiceNumber],
+                cancellationToken);
+        }
+
+        return attachments
+            .Select(x => x.FileName)
+            .Append(invoice.Attachment ?? string.Empty)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .ToArray();
     }
+
+    private const string LegacyInvoiceModelType = "App\\Models\\NewInvoice";
 
     private IQueryable<InvoiceRow> ApplyFilters(IQueryable<InvoiceRow> query, NewInvoiceFilterDto filter)
     {
