@@ -11,6 +11,7 @@ public sealed class NewInvoiceDto
     public string? CityName { get; set; }
     public string? ZoneName { get; set; }
     public string? BranchName { get; set; }
+    public ulong? AssignedDistributorId { get; set; }
     public string? AssignedDistributorName { get; set; }
     public string? AssignedEmployeeName { get; set; }
     public string InvoiceNumber { get; set; } = string.Empty;
@@ -39,8 +40,17 @@ public sealed class NewInvoiceDto
     public string? SalesApprovalRemark { get; set; }
     public decimal? HoApprovedAmount { get; set; }
     public string? HoApprovalRemark { get; set; }
+
+    /// <summary>Reason given the last time the invoice was put on hold. Kept even
+    /// after the hold is released, so the export still explains the delay.</summary>
+    public string? HoldRemark { get; set; }
     public ulong CreatedBy { get; set; }
     public string? CreatedByName { get; set; }
+
+    /// <summary>Who filed the invoice, in words. An internal user is their own name;
+    /// a dealer login reads as firm name (owner name), because on that side the firm
+    /// is what everyone recognises, not the user row behind it.</summary>
+    public string? CreatedByLabel { get; set; }
     public DateTime? CreatedAt { get; set; }
     public DateTime? UpdatedAt { get; set; }
     public IReadOnlyCollection<NewInvoiceApprovalLogDto> ApprovalLogs { get; set; } = [];
@@ -116,7 +126,12 @@ public sealed class NewInvoiceSummaryDto
     public decimal SsApprovalAmount { get; set; }
     public decimal SalesApprovalAmount { get; set; }
     public decimal HoApprovalAmount { get; set; }
+    /// <summary>Distinct retailers on the matched invoices. Named "dealer nos" by the
+    /// original screen; the card now shows it alongside TotalDealerCount.</summary>
     public int TotalDealerNos { get; set; }
+
+    /// <summary>Distinct dealers behind those retailers.</summary>
+    public int TotalDealerCount { get; set; }
     public decimal TotalRewardEarned { get; set; }
     public decimal TotalExpectedReward { get; set; }
 }

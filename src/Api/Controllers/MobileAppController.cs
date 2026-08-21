@@ -30,15 +30,17 @@ public sealed class MobileAppController : ControllerBase
     private readonly IMasterDataService _masterDataService;
     private readonly INewInvoiceRepository _invoiceRepository;
     private readonly INewInvoiceService _newInvoiceService;
+    private readonly ICustomerRepository _customerRepository;
     private readonly ITokenService _tokenService;
     private readonly IPasswordHasher _passwordHasher;
     private readonly ISmtpEmailSender _emailSender;
     private readonly IWebHostEnvironment _environment;
     private readonly IConfiguration _configuration;
 
-    public MobileAppController(AppDbContext dbContext, IMasterDataService masterDataService, INewInvoiceRepository invoiceRepository, INewInvoiceService newInvoiceService, ITokenService tokenService, IPasswordHasher passwordHasher, ISmtpEmailSender emailSender, IWebHostEnvironment environment, IConfiguration configuration)
+    public MobileAppController(AppDbContext dbContext, IMasterDataService masterDataService, INewInvoiceRepository invoiceRepository, INewInvoiceService newInvoiceService, ICustomerRepository customerRepository, ITokenService tokenService, IPasswordHasher passwordHasher, ISmtpEmailSender emailSender, IWebHostEnvironment environment, IConfiguration configuration)
     {
         _dbContext = dbContext;
+        _customerRepository = customerRepository;
         _masterDataService = masterDataService;
         _invoiceRepository = invoiceRepository;
         _newInvoiceService = newInvoiceService;
@@ -829,18 +831,19 @@ public sealed class MobileAppController : ControllerBase
         if (form.Attachment is null || form.Attachment.Length == 0)
             return UnprocessableEntity(new { status = "error", message = "Invoice attachment is required." });
 
-        var creatorUserId = await _dbContext.Users.AsNoTracking().IgnoreQueryFilters()
-            .Where(x => x.CustomerId == dealer.Customer.Id && x.DeletedAt == null)
-            .Select(x => (ulong?)x.Id).FirstOrDefaultAsync(cancellationToken);
+        // created_by has to be the dealer's own user. It used to fall back to the
+        // retailer's sales employee, which filed the invoice under someone who had
+        // nothing to do with it and lost who actually submitted it. A dealer without a
+        // login gets one provisioned here, the same way creating a dealer in the CRM
+        // does it.
+        var creatorUserId = await DealerUserIdAsync(dealer.Customer.Id, cancellationToken);
         if (!creatorUserId.HasValue)
         {
-            var fields = ReadFields(retailer);
-            var employeeValue = FirstField(fields, "employee_id", "sales_executive_id")?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault();
-            if (ulong.TryParse(employeeValue, out var employeeId)) creatorUserId = employeeId;
-            creatorUserId ??= retailer.ExecutiveId;
+            await _customerRepository.EnsureDistributorLoginUserAsync(dealer.Customer.Id, null, cancellationToken);
+            creatorUserId = await DealerUserIdAsync(dealer.Customer.Id, cancellationToken);
         }
-        if (!creatorUserId.HasValue || !await _dbContext.Users.AsNoTracking().IgnoreQueryFilters().AnyAsync(x => x.Id == creatorUserId.Value, cancellationToken))
-            return UnprocessableEntity(new { status = "error", message = "No valid sales employee is linked with this dealer/retailer. Please contact admin." });
+        if (!creatorUserId.HasValue)
+            return UnprocessableEntity(new { status = "error", message = "This dealer has no login user and one could not be created. Please contact admin." });
 
         var attachment = await SaveFileAsync(form.Attachment, "new-invoices", cancellationToken);
         var response = await WithoutOrphanUploadAsync(attachment, () => _newInvoiceService.CreateInvoiceAsync(new NewInvoiceRequestDto
@@ -1259,6 +1262,12 @@ public sealed class MobileAppController : ControllerBase
             return (null, StatusCode(StatusCodes.Status403Forbidden, new { status = "error", message = "This feature is available only for dealer/distributor accounts." }));
         return (customer, null);
     }
+
+    private async Task<ulong?> DealerUserIdAsync(ulong dealerCustomerId, CancellationToken cancellationToken) =>
+        await _dbContext.Users.AsNoTracking().IgnoreQueryFilters()
+            .Where(x => x.CustomerId == dealerCustomerId && x.DeletedAt == null)
+            .Select(x => (ulong?)x.Id)
+            .FirstOrDefaultAsync(cancellationToken);
 
     private IQueryable<Customer> DealerAssignedRetailers(ulong dealerId)
     {

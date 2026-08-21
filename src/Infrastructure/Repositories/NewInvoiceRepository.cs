@@ -62,6 +62,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         var schemeInvoices = await LoadSchemeInvoicesAsync(rows.Select(x => x.Customer.Id), schemes, cancellationToken);
         var approvals = await LoadApprovalStageSummariesAsync(rows.Select(x => x.Invoice.Id), cancellationToken);
         var items = rows.SelectMany(x => ToSchemeDtos(x.Invoice, x.Customer, CityName(x.Customer, cities), AssignedZoneName(x.Customer, assignedZones), AssignedBranchName(x.Customer, assignedBranches) ?? x.Branch?.BranchName, AssignedDistributorName(x.Customer, assignedDistributors), AssignedEmployeeName(x.Customer, assignedEmployees), x.Creator, x.Branch, schemes, schemeInvoices, ApprovalSummary(x.Invoice.Id, approvals))).ToList();
+        await ApplyCreatedByLabelsAsync(items, rows.Select(x => x.Creator), cancellationToken);
         return new PagedResult<NewInvoiceDto>(items, total, page, filter.Unpaged ? items.Count : pageSize);
     }
 
@@ -100,6 +101,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         var schemeInvoices = await LoadSchemeInvoicesAsync([row.Customer.Id], schemes, cancellationToken);
         var approvals = await LoadApprovalStageSummariesAsync([row.Invoice.Id], cancellationToken);
         var dto = ToSchemeDtos(row.Invoice, row.Customer, CityName(row.Customer, cities), AssignedZoneName(row.Customer, assignedZones), AssignedBranchName(row.Customer, assignedBranches) ?? row.Branch?.BranchName, AssignedDistributorName(row.Customer, assignedDistributors), AssignedEmployeeName(row.Customer, assignedEmployees), row.Creator, row.Branch, schemes, schemeInvoices, ApprovalSummary(row.Invoice.Id, approvals)).First();
+        await ApplyCreatedByLabelsAsync([dto], [row.Creator], cancellationToken);
         dto.ApprovalLogs = await GetApprovalLogsAsync(id, cancellationToken);
         return dto;
     }
@@ -269,7 +271,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
             FromStatus = fromStatus,
             ToStatus = toStatus,
             ApprovedAmount = approvedAmount,
-            Remark = remark,
+            Remark = string.IsNullOrWhiteSpace(remark) ? null : remark.Trim(),
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         }, cancellationToken);
@@ -612,6 +614,48 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
             .ToDictionary(x => x.CustomerId, x => employeeNames[x.EmployeeId!.Value]);
     }
 
+    /// <summary>Turns the creating user id into something readable. A dealer login is
+    /// labelled by the firm it belongs to with the owner in brackets, because that is
+    /// how the business refers to them; everyone else is just their own name.</summary>
+    private async Task<Dictionary<ulong, string>> LoadCreatorLabelsAsync(IEnumerable<User?> creators, CancellationToken cancellationToken)
+    {
+        var users = creators.Where(x => x is not null).Select(x => x!).GroupBy(x => x.Id).Select(x => x.First()).ToList();
+        if (users.Count == 0) return [];
+
+        var customerIds = users.Where(x => x.CustomerId.HasValue && x.CustomerId.Value > 0)
+            .Select(x => x.CustomerId!.Value).Distinct().ToArray();
+        var customers = customerIds.Length == 0
+            ? []
+            : await _dbContext.Customers.AsNoTracking()
+                .IgnoreQueryFilters()
+                .Where(x => customerIds.Contains(x.Id))
+                .ToDictionaryAsync(x => x.Id, x => x, cancellationToken);
+
+        return users.ToDictionary(user => user.Id, user =>
+        {
+            if (user.CustomerId.HasValue && customers.TryGetValue(user.CustomerId.Value, out var customer))
+            {
+                var firm = customer.CustomerType == DistributorCustomerType ? DealerFirmName(customer) : ShopName(customer);
+                var owner = customer.CustomerType == DistributorCustomerType ? DealerOwnerName(customer) : OwnerName(customer);
+                return string.IsNullOrWhiteSpace(owner) || string.Equals(firm, owner, StringComparison.OrdinalIgnoreCase)
+                    ? firm
+                    : $"{firm} ({owner})";
+            }
+
+            return string.IsNullOrWhiteSpace(user.Name) ? $"User {user.Id}" : user.Name;
+        });
+    }
+
+    private async Task ApplyCreatedByLabelsAsync(IReadOnlyCollection<NewInvoiceDto> items, IEnumerable<User?> creators, CancellationToken cancellationToken)
+    {
+        if (items.Count == 0) return;
+        var labels = await LoadCreatorLabelsAsync(creators, cancellationToken);
+        foreach (var item in items)
+        {
+            item.CreatedByLabel = labels.GetValueOrDefault(item.CreatedBy) ?? item.CreatedByName;
+        }
+    }
+
     private async Task<Dictionary<ulong, string>> LoadAssignedDistributorNamesAsync(IEnumerable<Customer> customers, CancellationToken cancellationToken)
     {
         var customerDistributorIds = customers
@@ -663,10 +707,13 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
             .Where(x => x.NewInvoiceId.HasValue
                 && ids.Contains(x.NewInvoiceId.Value)
                 && x.ToStatus.HasValue
-                && x.ApprovedAmount.HasValue
-                && (x.ToStatus == NewInvoice.StatusApprovedSs
-                    || x.ToStatus == NewInvoice.StatusApprovedSales
-                    || x.ToStatus == NewInvoice.StatusApprovedHo))
+                // A hold carries a remark and no amount, so it cannot be filtered on
+                // ApprovedAmount the way the three approvals are.
+                && ((x.ApprovedAmount.HasValue
+                        && (x.ToStatus == NewInvoice.StatusApprovedSs
+                            || x.ToStatus == NewInvoice.StatusApprovedSales
+                            || x.ToStatus == NewInvoice.StatusApprovedHo))
+                    || x.ToStatus == NewInvoice.StatusHold))
             .OrderByDescending(x => x.CreatedAt)
             .ThenByDescending(x => x.Id)
             .Select(x => new
@@ -696,6 +743,12 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
             {
                 summary.HoApprovedAmount = log.ApprovedAmount;
                 summary.HoApprovalRemark = log.Remark;
+            }
+            // Blank counts as no remark, so a hold submitted without a reason does not
+            // hide the reason given on an earlier one.
+            if (log.ToStatus == NewInvoice.StatusHold && string.IsNullOrWhiteSpace(summary.HoldRemark))
+            {
+                summary.HoldRemark = string.IsNullOrWhiteSpace(log.Remark) ? null : log.Remark;
             }
         }
 
@@ -802,6 +855,7 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
             CityName = cityName,
             ZoneName = zoneName,
             BranchName = branchName,
+            AssignedDistributorId = AssignedDistributorId(customer),
             AssignedDistributorName = assignedDistributorName,
             AssignedEmployeeName = assignedEmployeeName,
             InvoiceNumber = invoice.InvoiceNumber,
@@ -830,6 +884,7 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
             SalesApprovalRemark = approvalSummary.SalesApprovalRemark,
             HoApprovedAmount = approvalSummary.HoApprovedAmount,
             HoApprovalRemark = approvalSummary.HoApprovalRemark,
+            HoldRemark = approvalSummary.HoldRemark,
             CreatedBy = invoice.CreatedBy,
             CreatedByName = creator?.Name,
             CreatedAt = invoice.CreatedAt,
@@ -893,6 +948,25 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
         var personName = string.Join(" ", new[] { customer.FirstName, customer.LastName }
             .Where(value => !string.IsNullOrWhiteSpace(value))).Trim();
         return ReadField(customer, "owner_name") ?? (!string.IsNullOrWhiteSpace(personName) ? personName : customer.Name);
+    }
+
+    /// <summary>A dealer's firm name. The CRM form captures Trade / Business Name and
+    /// Dealer Legal Name; either may be left blank, so whichever is filled is used and
+    /// the same value shows wherever the dealer appears.</summary>
+    private static string DealerFirmName(Customer customer) =>
+        ReadField(customer, "trade_name")
+        ?? ReadField(customer, "legal_name")
+        ?? ReadField(customer, "shop_name")
+        ?? customer.Name;
+
+    /// <summary>A dealer's person is the Primary Contact Person on that same form.</summary>
+    private static string DealerOwnerName(Customer customer)
+    {
+        var personName = string.Join(" ", new[] { customer.FirstName, customer.LastName }
+            .Where(value => !string.IsNullOrWhiteSpace(value))).Trim();
+        return ReadField(customer, "contact_person")
+            ?? ReadField(customer, "owner_name")
+            ?? (!string.IsNullOrWhiteSpace(personName) ? personName : customer.Name);
     }
 
     private static string ShopName(Customer customer) => ReadField(customer, "shop_name") ?? customer.Name;
@@ -1004,5 +1078,6 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
         public string? SalesApprovalRemark { get; set; }
         public decimal? HoApprovedAmount { get; set; }
         public string? HoApprovalRemark { get; set; }
+        public string? HoldRemark { get; set; }
     }
 }

@@ -535,6 +535,119 @@ OFFSET {offset} ROWS FETCH NEXT {pageSize} ROWS ONLY", cancellationToken,
         }
     }
 
+    /// <summary>Field snapshot for one customer, for the dashboard block on the SFA
+    /// Customer Details screen: when they were last visited and last ordered, and the
+    /// visit and order run rates month to date and year to date. The year is the
+    /// calendar year, January to December.</summary>
+    [AcceptVerbs("GET", "POST")]
+    [Route("getCustomerSnapshot")]
+    public async Task<IActionResult> GetCustomerSnapshot(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var inactive = await InactiveUser(cancellationToken);
+            if (inactive is not null) return inactive;
+
+            var entityType = NormalizeEntityType(FirstNonEmpty(RequestValue("entity_type"), "secondary_customer"));
+            var entityId = ULongValue("entity_id") ?? ULongValue("customer_id");
+            if (!IsValidEntityType(entityType) || !entityId.HasValue || entityId.Value < 1)
+            {
+                return BadRequest(new { status = "error", message = new { entity_id = new[] { "The entity id field is required." } } });
+            }
+
+            var today = IndiaNow().Date;
+            var monthStart = new DateTime(today.Year, today.Month, 1);
+            var yearStart = new DateTime(today.Year, 1, 1);
+
+            var row = (await QueryRows(@"SELECT
+    (SELECT MAX(ci.checkin_date) FROM check_in ci
+      WHERE ci.deleted_at IS NULL AND ci.entity_type = @entity_type
+        AND COALESCE(ci.entity_id, ci.customer_id) = @entity_id) AS last_visit_date,
+    (SELECT COUNT(*) FROM check_in ci
+      WHERE ci.deleted_at IS NULL AND ci.entity_type = @entity_type
+        AND COALESCE(ci.entity_id, ci.customer_id) = @entity_id
+        AND ci.checkin_date >= @month_start) AS mtd_visits,
+    (SELECT COUNT(*) FROM check_in ci
+      WHERE ci.deleted_at IS NULL AND ci.entity_type = @entity_type
+        AND COALESCE(ci.entity_id, ci.customer_id) = @entity_id
+        AND ci.checkin_date >= @year_start) AS ytd_visits,
+    (SELECT MAX(CAST(o.order_date AS date)) FROM orders o
+      WHERE o.deleted_at IS NULL AND o.buyer_id = @entity_id) AS last_order_date,
+    (SELECT COALESCE(SUM(o.grand_total), 0) FROM orders o
+      WHERE o.deleted_at IS NULL AND o.buyer_id = @entity_id
+        AND o.order_date >= @month_start) AS mtd_order_amount,
+    (SELECT COALESCE(SUM(o.total_qty), 0) FROM orders o
+      WHERE o.deleted_at IS NULL AND o.buyer_id = @entity_id
+        AND o.order_date >= @month_start) AS mtd_order_qty,
+    (SELECT COUNT(*) FROM orders o
+      WHERE o.deleted_at IS NULL AND o.buyer_id = @entity_id
+        AND o.order_date >= @month_start) AS mtd_orders,
+    (SELECT COALESCE(SUM(o.grand_total), 0) FROM orders o
+      WHERE o.deleted_at IS NULL AND o.buyer_id = @entity_id
+        AND o.order_date >= @year_start) AS ytd_order_amount,
+    (SELECT COALESCE(SUM(o.total_qty), 0) FROM orders o
+      WHERE o.deleted_at IS NULL AND o.buyer_id = @entity_id
+        AND o.order_date >= @year_start) AS ytd_order_qty,
+    (SELECT COUNT(*) FROM orders o
+      WHERE o.deleted_at IS NULL AND o.buyer_id = @entity_id
+        AND o.order_date >= @year_start) AS ytd_orders", cancellationToken,
+                ("@entity_type", entityType), ("@entity_id", entityId.Value),
+                ("@month_start", monthStart), ("@year_start", yearStart))).FirstOrDefault();
+
+            var lastVisit = DateString(row, "last_visit_date");
+            var lastOrder = DateString(row, "last_order_date");
+
+            return Ok(new
+            {
+                status = "success",
+                message = "Customer snapshot retrieved successfully.",
+                entity_id = entityId.Value,
+                entity_type = entityType,
+                period = new
+                {
+                    month_label = today.ToString("MMM yyyy", CultureInfo.InvariantCulture),
+                    month_start = monthStart.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                    year_label = yearStart.ToString("yyyy", CultureInfo.InvariantCulture),
+                    year_start = yearStart.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
+                },
+                data = new
+                {
+                    last_visit_date = lastVisit,
+                    last_visit_days_ago = DaysAgo(lastVisit, today),
+                    last_order_date = lastOrder,
+                    last_order_days_ago = DaysAgo(lastOrder, today),
+                    mtd_visits = Int(row, "mtd_visits"),
+                    ytd_visits = Int(row, "ytd_visits"),
+                    mtd_orders = Int(row, "mtd_orders"),
+                    ytd_orders = Int(row, "ytd_orders"),
+                    mtd_order_amount = Decimal(row, "mtd_order_amount"),
+                    ytd_order_amount = Decimal(row, "ytd_order_amount"),
+                    mtd_order_qty = Decimal(row, "mtd_order_qty"),
+                    ytd_order_qty = Decimal(row, "ytd_order_qty")
+                }
+            });
+        }
+        catch (Exception exception)
+        {
+            return StatusCode(500, new { status = "error", message = exception.Message });
+        }
+    }
+
+    private static int? DaysAgo(string? isoDate, DateTime today) =>
+        DateTime.TryParse(isoDate, CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed)
+            ? Math.Max(0, (int)(today - parsed.Date).TotalDays)
+            : null;
+
+    private static int Int(Dictionary<string, object?>? row, string column) =>
+        row is null || row.GetValueOrDefault(column) is null or DBNull
+            ? 0
+            : Convert.ToInt32(row[column], CultureInfo.InvariantCulture);
+
+    private static decimal Decimal(Dictionary<string, object?>? row, string column) =>
+        row is null || row.GetValueOrDefault(column) is null or DBNull
+            ? 0m
+            : Convert.ToDecimal(row[column], CultureInfo.InvariantCulture);
+
     private async Task<IActionResult?> InactiveUser(CancellationToken cancellationToken, int inactiveStatusCode = 401, string inactiveMessage = "User Inactive")
     {
         var active = await QueryScalar("SELECT active FROM users WHERE id = @id AND deleted_at IS NULL LIMIT 1", cancellationToken, ("@id", CurrentUserId()));

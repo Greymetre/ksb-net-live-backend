@@ -65,8 +65,13 @@ public sealed class NewInvoiceService : INewInvoiceService
     {
         filter.Unpaged = true;
         var invoices = (await _repository.GetInvoicesAsync(filter, actorUserId, cancellationToken)).Items;
-        return CreateWorkbook("new-invoices.xlsx",
-            ["id", "retailer_id", "customer", "shop", "mobile", "assigned_distributor", "assigned_employee", "city", "zone", "branch", "invoice_date", "invoice_number", "amount", "ss_approved_amount", "ss_remark", "sales_approved_amount", "sales_remark", "ho_approved_amount", "ho_remark", "scheme_name", "points", "scheme_hint", "attachment", "status", "created_by", "created_at"],
+        // Named for the screen it comes from, and stamped so a second download does
+        // not overwrite the first in the browser's downloads folder.
+        var fileName = $"invoice-transactions-{IndiaToday():yyyy-MM-dd}.xlsx";
+
+        // Hold takes a remark and no amount, so it contributes one column, not two.
+        return CreateWorkbook(fileName,
+            ["id", "retailer_id", "customer", "shop", "mobile", "assigned_distributor", "assigned_employee", "city", "zone", "branch", "invoice_date", "invoice_number", "amount", "hold_remark", "ss_approved_amount", "ss_remark", "sales_approved_amount", "sales_remark", "ho_approved_amount", "ho_remark", "scheme_name", "points", "scheme_hint", "attachment", "status", "created_by", "created_at"],
             invoices.Select(x => new object?[]
             {
                 x.Id,
@@ -82,6 +87,7 @@ public sealed class NewInvoiceService : INewInvoiceService
                 x.InvoiceDate,
                 x.InvoiceNumber,
                 x.Amount,
+                x.HoldRemark,
                 x.SsApprovedAmount,
                 x.SsApprovalRemark,
                 x.SalesApprovedAmount,
@@ -93,7 +99,7 @@ public sealed class NewInvoiceService : INewInvoiceService
                 x.SchemeHintMessage,
                 ExportHyperlinkFactory.Attachment(x.Attachment, baseUrl),
                 x.ApprovalStatusLabel,
-                x.CreatedBy,
+                x.CreatedByLabel ?? x.CreatedByName,
                 x.CreatedAt
             }));
     }
@@ -305,6 +311,9 @@ public sealed class NewInvoiceService : INewInvoiceService
     public async Task<LaravelApiResponse> HoldInvoiceAsync(ulong id, string? remark, ulong? actorUserId, CancellationToken cancellationToken)
     {
         if (!actorUserId.HasValue) throw Http(LaravelStatusCodes.Unauthorized, "Unauthenticated.");
+        // A hold with no reason tells the dealer nothing about what to correct, which
+        // is the whole point of holding rather than rejecting.
+        if (string.IsNullOrWhiteSpace(remark)) throw Http(LaravelStatusCodes.NoContentLikeValidation, "Remark is required to put an invoice on hold.");
 
         var invoice = await FindOrThrowAsync(id, cancellationToken);
         if (!CanHold(invoice.ApprovalStatus))
@@ -407,6 +416,11 @@ public sealed class NewInvoiceService : INewInvoiceService
             SalesApprovalAmount = distinctInvoices.Sum(x => x.SalesApprovedAmount ?? 0),
             HoApprovalAmount = distinctInvoices.Sum(x => x.HoApprovedAmount ?? 0),
             TotalDealerNos = distinctInvoices.Select(x => x.SecondaryCustomerId).Distinct().Count(),
+            TotalDealerCount = distinctInvoices
+                .Where(x => x.AssignedDistributorId.HasValue)
+                .Select(x => x.AssignedDistributorId!.Value)
+                .Distinct()
+                .Count(),
             TotalRewardEarned = distinctInvoices
                 .Where(x => x.ApprovalStatus == NewInvoice.StatusApprovedHo)
                 .Sum(x => x.SchemePoints),
@@ -468,6 +482,8 @@ public sealed class NewInvoiceService : INewInvoiceService
             _ => false
         };
     }
+
+    private static DateTime IndiaToday() => DateTime.UtcNow.AddHours(5.5).Date;
 
     private static string? NormalizeText(string? value)
     {
