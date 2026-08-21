@@ -41,10 +41,11 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         // Inside a stage the oldest invoice date leads so ageing invoices stay on top.
         var orderedQuery = query
             .OrderBy(x => x.Invoice.ApprovalStatus == NewInvoice.StatusPending ? 0
-                : x.Invoice.ApprovalStatus == NewInvoice.StatusApprovedSs ? 1
-                : x.Invoice.ApprovalStatus == NewInvoice.StatusApprovedSales ? 2
-                : x.Invoice.ApprovalStatus == NewInvoice.StatusApprovedHo ? 3
-                : 4)
+                : x.Invoice.ApprovalStatus == NewInvoice.StatusHold ? 1
+                : x.Invoice.ApprovalStatus == NewInvoice.StatusApprovedSs ? 2
+                : x.Invoice.ApprovalStatus == NewInvoice.StatusApprovedSales ? 3
+                : x.Invoice.ApprovalStatus == NewInvoice.StatusApprovedHo ? 4
+                : 5)
             .ThenBy(x => x.Invoice.InvoiceDate)
             .ThenBy(x => x.Invoice.Id);
         var rows = await (filter.Unpaged
@@ -77,6 +78,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
             ApprovedSales = group.Count(x => x.Invoice.ApprovalStatus == NewInvoice.StatusApprovedSales),
             ApprovedHo = group.Count(x => x.Invoice.ApprovalStatus == NewInvoice.StatusApprovedHo),
             Pending = group.Count(x => x.Invoice.ApprovalStatus == NewInvoice.StatusPending),
+            Hold = group.Count(x => x.Invoice.ApprovalStatus == NewInvoice.StatusHold),
             Rejected = group.Count(x => x.Invoice.ApprovalStatus == NewInvoice.StatusRejected),
             TotalPoints = group.Sum(x => x.Invoice.Points),
             TotalAmount = group.Sum(x => x.Invoice.Amount)
@@ -974,6 +976,7 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
 
     private static string StatusLabel(int status) => status switch
     {
+        NewInvoice.StatusHold => "Hold",
         NewInvoice.StatusApprovedSs => "Approved By SS",
         NewInvoice.StatusApprovedSales => "Approved By Sales",
         NewInvoice.StatusApprovedHo => "Approved By HO",

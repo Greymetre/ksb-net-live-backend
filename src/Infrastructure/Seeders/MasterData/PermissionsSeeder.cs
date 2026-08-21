@@ -731,7 +731,8 @@ INSERT INTO `permissions` (`id`, `name`, `guard_name`, `created_at`, `updated_at
 (723, 'pincode_active', 'users', '2026-08-11 00:00:00', '2026-08-11 00:00:00'),
 (724, 'user_app_force_logout', 'users', '2026-08-11 00:00:00', '2026-08-11 00:00:00'),
 (725, 'user_app_uuid_reset', 'users', '2026-08-11 00:00:00', '2026-08-11 00:00:00'),
-(726, 'scheme_draft', 'users', '2026-08-13 00:00:00', '2026-08-13 00:00:00')
+(726, 'scheme_draft', 'users', '2026-08-13 00:00:00', '2026-08-13 00:00:00'),
+(727, 'new_invoice_hold', 'users', '2026-08-21 00:00:00', '2026-08-21 00:00:00')
 ON DUPLICATE KEY UPDATE `name` = VALUES(`name`), `guard_name` = VALUES(`guard_name`), `created_at` = VALUES(`created_at`), `updated_at` = VALUES(`updated_at`);
 """"""";
         await SqlServerSeedSql.ExecuteUpsertAsync(db, sql2, cancellationToken);

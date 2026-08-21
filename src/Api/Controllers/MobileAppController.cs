@@ -868,8 +868,8 @@ public sealed class MobileAppController : ControllerBase
         var existing = await _invoiceRepository.GetInvoiceAsync(id, null, cancellationToken);
         if (existing is null || !await DealerAssignedRetailers(dealer.Customer!.Id).AnyAsync(x => x.Id == existing.SecondaryCustomerId, cancellationToken))
             return NotFound(new { status = "error", message = "Invoice not found." });
-        if (existing.ApprovalStatus != NewInvoice.StatusPending)
-            return StatusCode(StatusCodes.Status403Forbidden, new { status = "error", message = "Only pending invoices can be edited." });
+        if (existing.ApprovalStatus is not (NewInvoice.StatusPending or NewInvoice.StatusHold))
+            return StatusCode(StatusCodes.Status403Forbidden, new { status = "error", message = "Only a pending or held invoice can be edited." });
 
         var retailer = await DealerAssignedRetailers(dealer.Customer.Id).FirstOrDefaultAsync(x => x.Id == form.RetailerId, cancellationToken);
         if (retailer is null) return UnprocessableEntity(new { status = "error", message = "Only a retailer assigned to this dealer can be selected." });
@@ -949,8 +949,10 @@ public sealed class MobileAppController : ControllerBase
                 statuses = new[]
                 {
                     new { key = "all", label = "All" },
-                    new { key = "approved", label = "Approved" },
                     new { key = "pending", label = "Pending" },
+                    new { key = "hold", label = "Hold" },
+                    new { key = "in_process", label = "In Process" },
+                    new { key = "approved", label = "Approved" },
                     new { key = "rejected", label = "Rejected" }
                 }
             },
@@ -1378,6 +1380,7 @@ public sealed class MobileAppController : ControllerBase
                         : statusKey switch
                         {
                             "pending" => "Awaiting Approval",
+                            "hold" => "On hold, correction needed",
                             "in_process" => "Approval In Process",
                             _ => "No reward earned"
                         },
@@ -1387,11 +1390,12 @@ public sealed class MobileAppController : ControllerBase
                         "approved" => "Approved",
                         "rejected" => "Rejected",
                         "in_process" => "In Process",
+                        "hold" => "Hold",
                         _ => "Pending"
                     },
                     IsRewardCredited = rewardAmount > 0,
                     IsPending = statusKey == "pending",
-                    CanEdit = invoice.ApprovalStatus == NewInvoice.StatusPending,
+                    CanEdit = invoice.ApprovalStatus is NewInvoice.StatusPending or NewInvoice.StatusHold,
                     CanDelete = invoice.ApprovalStatus == NewInvoice.StatusPending,
                     RetailerId = invoice.SecondaryCustomerId,
                     SchemeId = invoice.SchemeId,
@@ -2354,20 +2358,21 @@ VALUES ('Y', {0}, {1}, {2}, {3}, {4}, {5}, {6}, SYSUTCDATETIME(), SYSUTCDATETIME
 
     private static DateOnly CurrentBusinessDate() => DateOnly.FromDateTime(DateTime.UtcNow.AddHours(5.5));
 
-    private static string InvoiceStatusKey(int status) => status switch
+    /// <summary>Customer-facing stages. Dealers and retailers read the same five:
+    /// pending, hold, in process, approved, rejected. SS and Sales stay collapsed into
+    /// in_process because those are internal steps of one review.</summary>
+    private static string CustomerInvoiceStatusKey(int status) => status switch
     {
         NewInvoice.StatusApprovedHo => "approved",
         NewInvoice.StatusRejected => "rejected",
-        _ => "pending"
-    };
-
-    private static string DealerInvoiceStatusKey(int status) => status switch
-    {
-        NewInvoice.StatusApprovedHo => "approved",
-        NewInvoice.StatusRejected => "rejected",
+        NewInvoice.StatusHold => "hold",
         NewInvoice.StatusApprovedSs or NewInvoice.StatusApprovedSales => "in_process",
         _ => "pending"
     };
+
+    private static string InvoiceStatusKey(int status) => CustomerInvoiceStatusKey(status);
+
+    private static string DealerInvoiceStatusKey(int status) => CustomerInvoiceStatusKey(status);
 
     private static bool InvoiceStatusMatches(NewInvoiceDto invoice, string status)
     {

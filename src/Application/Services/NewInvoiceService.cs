@@ -7,6 +7,7 @@ using ClosedXML.Excel;
 using Domain.Entities;
 using Shared.Exceptions;
 using Shared.Responses;
+using System.Globalization;
 
 namespace Application.Services;
 
@@ -147,16 +148,23 @@ public sealed class NewInvoiceService : INewInvoiceService
         return LaravelApiResponse.Success("new_invoice", created, "Invoice created successfully");
     }
 
+    /// <summary>An invoice may be corrected while it is still pending or on hold. The
+    /// edit puts it back to pending - whoever reviews it next is looking at different
+    /// figures - and the history records field by field what the editor changed.</summary>
     public async Task<LaravelApiResponse> UpdateInvoiceAsync(ulong id, NewInvoiceRequestDto request, ulong? actorUserId, CancellationToken cancellationToken)
     {
         if (!actorUserId.HasValue) throw Http(LaravelStatusCodes.Unauthorized, "Unauthenticated.");
         var invoice = await FindOrThrowAsync(id, cancellationToken);
-        if (invoice.ApprovalStatus != NewInvoice.StatusPending)
+        if (invoice.ApprovalStatus is not (NewInvoice.StatusPending or NewInvoice.StatusHold))
         {
-            throw Http(403, "Approved or rejected invoices cannot be edited.");
+            throw Http(403, "Only a pending or held invoice can be edited.");
         }
 
-        await ValidateRequestAsync(request, id, actorUserId, cancellationToken);
+        var resolved = await ValidateRequestAsync(request, id, actorUserId, cancellationToken);
+        var before = await _repository.GetInvoiceAsync(id, null, cancellationToken);
+        var fromStatus = invoice.ApprovalStatus;
+
+        var changes = DescribeChanges(invoice, before, request, resolved);
 
         invoice.SecondaryCustomerId = request.SecondaryCustomerId;
         invoice.LoyaltySchemeId = request.SchemeId;
@@ -166,9 +174,62 @@ public sealed class NewInvoiceService : INewInvoiceService
         invoice.Points = 0;
         if (request.Attachment is not null) invoice.Attachment = NormalizeText(request.Attachment);
 
-        var updated = await _repository.SaveInvoiceAsync(invoice, "updated", invoice.ApprovalStatus, invoice.ApprovalStatus, actorUserId.Value, null, null, cancellationToken);
+        // Back to pending: an edited invoice has to be looked at again, and a hold is
+        // answered by the correction that was asked for.
+        invoice.ApprovalStatus = NewInvoice.StatusPending;
+        invoice.ApprovalRemark = null;
+
+        var remark = changes.Count == 0
+            ? "Resubmitted without any change."
+            : string.Join("\n", changes);
+
+        var updated = await _repository.SaveInvoiceAsync(invoice, "edited", fromStatus, NewInvoice.StatusPending, actorUserId.Value, remark, null, cancellationToken);
         return LaravelApiResponse.Success("new_invoice", updated, "Invoice updated successfully");
     }
+
+    /// <summary>Field by field record of an edit, for the approval history. Ids are
+    /// reported as the names the reviewer sees on the screen.</summary>
+    private static List<string> DescribeChanges(NewInvoice invoice, NewInvoiceDto? before, NewInvoiceRequestDto request, ValidatedInvoice resolved)
+    {
+        var changes = new List<string>();
+
+        if (invoice.SecondaryCustomerId != request.SecondaryCustomerId)
+        {
+            changes.Add($"Retailer: {Or(before?.CustomerName)} -> {Or(resolved.RetailerName)}");
+        }
+
+        if (invoice.LoyaltySchemeId != request.SchemeId)
+        {
+            changes.Add($"Scheme: {Or(before?.SchemeName)} -> {Or(resolved.SchemeName)}");
+        }
+
+        var newNumber = request.InvoiceNumber!.Trim();
+        if (!string.Equals(invoice.InvoiceNumber, newNumber, StringComparison.Ordinal))
+        {
+            changes.Add($"Invoice number: {Or(invoice.InvoiceNumber)} -> {newNumber}");
+        }
+
+        var newDate = request.InvoiceDate!.Value.Date;
+        if (invoice.InvoiceDate.Date != newDate)
+        {
+            changes.Add($"Invoice date: {invoice.InvoiceDate:dd-MM-yyyy} -> {newDate:dd-MM-yyyy}");
+        }
+
+        if (invoice.Amount != request.Amount!.Value)
+        {
+            changes.Add($"Amount: {invoice.Amount.ToString("N2", CultureInfo.InvariantCulture)} -> {request.Amount.Value.ToString("N2", CultureInfo.InvariantCulture)}");
+        }
+
+        var newAttachment = NormalizeText(request.Attachment);
+        if (newAttachment is not null && !string.Equals(invoice.Attachment, newAttachment, StringComparison.Ordinal))
+        {
+            changes.Add("Attachment: replaced");
+        }
+
+        return changes;
+    }
+
+    private static string Or(string? value) => string.IsNullOrWhiteSpace(value) ? "-" : value.Trim();
 
     /// <summary>
     /// Everyone else may only delete an invoice that is still pending; a superadmin
@@ -202,7 +263,7 @@ public sealed class NewInvoiceService : INewInvoiceService
             _ => throw Http(LaravelStatusCodes.NotFound, "Approval level not found.")
         };
 
-        if (!CanMoveToStatus(fromStatus, toStatus))
+        if (!CanMoveToStatus(invoice, toStatus))
         {
             throw Http(LaravelStatusCodes.NoContentLikeValidation, "Invoice cannot move to the selected approval status.");
         }
@@ -237,13 +298,38 @@ public sealed class NewInvoiceService : INewInvoiceService
         return LaravelApiResponse.Success("new_invoice", updated, "Invoice approved successfully.");
     }
 
+    /// <summary>Parks an invoice while the reviewer queries it. Unlike an approval it
+    /// carries no amount, and unlike a rejection it is not final: the stage the invoice
+    /// had reached is kept in its approval timestamps, so releasing it resumes from
+    /// there rather than starting the chain again.</summary>
+    public async Task<LaravelApiResponse> HoldInvoiceAsync(ulong id, string? remark, ulong? actorUserId, CancellationToken cancellationToken)
+    {
+        if (!actorUserId.HasValue) throw Http(LaravelStatusCodes.Unauthorized, "Unauthenticated.");
+
+        var invoice = await FindOrThrowAsync(id, cancellationToken);
+        if (!CanHold(invoice.ApprovalStatus))
+        {
+            throw Http(LaravelStatusCodes.NoContentLikeValidation, invoice.ApprovalStatus == NewInvoice.StatusHold
+                ? "This invoice is already on hold."
+                : "An approved or rejected invoice cannot be put on hold.");
+        }
+
+        var fromStatus = invoice.ApprovalStatus;
+        invoice.ApprovalStatus = NewInvoice.StatusHold;
+        invoice.Points = 0;
+        invoice.ApprovalRemark = NormalizeText(remark);
+
+        var updated = await _repository.SaveInvoiceAsync(invoice, "hold", fromStatus, NewInvoice.StatusHold, actorUserId.Value, remark, null, cancellationToken);
+        return LaravelApiResponse.Success("new_invoice", updated, "Invoice put on hold.");
+    }
+
     public async Task<LaravelApiResponse> RejectInvoiceAsync(ulong id, string? remark, ulong? actorUserId, CancellationToken cancellationToken)
     {
         if (!actorUserId.HasValue) throw Http(LaravelStatusCodes.Unauthorized, "Unauthenticated.");
         if (string.IsNullOrWhiteSpace(remark)) throw Http(LaravelStatusCodes.NoContentLikeValidation, "Remark is required.");
 
         var invoice = await FindOrThrowAsync(id, cancellationToken);
-        if (!CanMoveToStatus(invoice.ApprovalStatus, NewInvoice.StatusRejected))
+        if (!CanMoveToStatus(invoice, NewInvoice.StatusRejected))
         {
             throw Http(LaravelStatusCodes.NoContentLikeValidation, "Invoice cannot be rejected from the current status.");
         }
@@ -259,7 +345,9 @@ public sealed class NewInvoiceService : INewInvoiceService
         return LaravelApiResponse.Success("new_invoice", updated, "Invoice rejected successfully.");
     }
 
-    private async Task ValidateRequestAsync(NewInvoiceRequestDto request, ulong? exceptId, ulong? actorUserId, CancellationToken cancellationToken)
+    private sealed record ValidatedInvoice(string RetailerName, string SchemeName);
+
+    private async Task<ValidatedInvoice> ValidateRequestAsync(NewInvoiceRequestDto request, ulong? exceptId, ulong? actorUserId, CancellationToken cancellationToken)
     {
         var errors = new Dictionary<string, string[]>();
         if (request.SecondaryCustomerId == 0) errors["secondary_customer_id"] = ["Customer is required."];
@@ -281,8 +369,11 @@ public sealed class NewInvoiceService : INewInvoiceService
         }
 
         var eligibleSchemes = await _repository.GetEligibleSchemeOptionsAsync(request.SecondaryCustomerId, request.InvoiceDate!.Value, cancellationToken);
-        if (!eligibleSchemes.Any(x => x.Id == request.SchemeId!.Value))
+        var scheme = eligibleSchemes.FirstOrDefault(x => x.Id == request.SchemeId!.Value);
+        if (scheme is null)
             throw Http(LaravelStatusCodes.NoContentLikeValidation, new { scheme_id = new[] { "The selected scheme was not published and active for the invoice date." } });
+
+        return new ValidatedInvoice(retailer.Name, scheme.Name);
     }
 
     private async Task<NewInvoiceDto> GetOrThrowAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken) =>
@@ -306,6 +397,7 @@ public sealed class NewInvoiceService : INewInvoiceService
             ApprovedSales = distinctInvoices.Count(x => x.ApprovalStatus == NewInvoice.StatusApprovedSales),
             ApprovedHo = distinctInvoices.Count(x => x.ApprovalStatus == NewInvoice.StatusApprovedHo),
             Pending = distinctInvoices.Count(x => x.ApprovalStatus == NewInvoice.StatusPending),
+            Hold = distinctInvoices.Count(x => x.ApprovalStatus == NewInvoice.StatusHold),
             Rejected = distinctInvoices.Count(x => x.ApprovalStatus == NewInvoice.StatusRejected),
             TotalPoints = invoices.Sum(x => x.SchemePoints),
             // The dashboard must represent the invoice value at its current
@@ -339,15 +431,34 @@ public sealed class NewInvoiceService : INewInvoiceService
     private static Dictionary<int, string> ApprovalStatuses() => new()
     {
         [NewInvoice.StatusPending] = "Pending",
+        [NewInvoice.StatusHold] = "Hold",
         [NewInvoice.StatusApprovedSs] = "Approved By SS",
         [NewInvoice.StatusApprovedSales] = "Approved By Sales",
         [NewInvoice.StatusApprovedHo] = "Approved By HO",
         [NewInvoice.StatusRejected] = "Rejected"
     };
 
-    private static bool CanMoveToStatus(int current, int next)
+    /// <summary>Hold is offered until the invoice is approved. A fully approved or a
+    /// rejected invoice is finished, and one already on hold has nothing to hold.</summary>
+    private static bool CanHold(int current) =>
+        current is NewInvoice.StatusPending or NewInvoice.StatusApprovedSs or NewInvoice.StatusApprovedSales;
+
+    /// <summary>The stage a held invoice resumes at. Holding does not undo the
+    /// approvals already given, so the timestamps say how far it had got.</summary>
+    private static int ResumeStatus(NewInvoice invoice) =>
+        invoice.ApprovedSalesAt.HasValue ? NewInvoice.StatusApprovedHo
+        : invoice.ApprovedSsAt.HasValue ? NewInvoice.StatusApprovedSales
+        : NewInvoice.StatusApprovedSs;
+
+    private static bool CanMoveToStatus(NewInvoice invoice, int next)
     {
+        var current = invoice.ApprovalStatus;
         if (current is NewInvoice.StatusRejected or NewInvoice.StatusApprovedHo) return false;
+        if (current == NewInvoice.StatusHold)
+        {
+            return next == NewInvoice.StatusRejected || next == ResumeStatus(invoice);
+        }
+
         return next switch
         {
             NewInvoice.StatusApprovedSs => current == NewInvoice.StatusPending,

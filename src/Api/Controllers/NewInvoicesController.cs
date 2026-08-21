@@ -213,6 +213,14 @@ public sealed class NewInvoicesController : ControllerBase
         return Ok(response);
     }
 
+    [RequirePermission("new_invoice_hold")]
+    [HttpPost("{id}/hold")]
+    public async Task<IActionResult> Hold(ulong id, [FromBody] NewInvoiceApprovalRequestDto request, CancellationToken cancellationToken)
+    {
+        var response = await _newInvoiceService.HoldInvoiceAsync(id, request.Remark, CurrentUserId(), cancellationToken);
+        return Ok(response);
+    }
+
     [RequirePermission("new_invoice_reject")]
     [HttpPost("{id}/reject")]
     public async Task<IActionResult> Reject(ulong id, [FromBody] NewInvoiceApprovalRequestDto request, CancellationToken cancellationToken)

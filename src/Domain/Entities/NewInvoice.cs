@@ -8,6 +8,12 @@ public sealed class NewInvoice : BaseEntity
     public const int StatusApprovedHo = 3;
     public const int StatusRejected = 4;
 
+    /// <summary>Parked by the SS reviewer while a pending invoice is queried. It is
+    /// not a decision - the invoice can still be approved or rejected from here. Who
+    /// held it and when is in new_invoice_approval_logs, so it needs no column of
+    /// its own.</summary>
+    public const int StatusHold = 5;
+
     public ulong SecondaryCustomerId { get; set; }
     public ulong? LoyaltySchemeId { get; set; }
     public string InvoiceNumber { get; set; } = string.Empty;

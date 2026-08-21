@@ -17,5 +17,6 @@ public interface INewInvoiceService
     Task<LaravelApiResponse> UpdateInvoiceAsync(ulong id, NewInvoiceRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> DeleteInvoiceAsync(ulong id, bool allowAnyStatus, CancellationToken cancellationToken);
     Task<LaravelApiResponse> ApproveInvoiceAsync(ulong id, string level, string? remark, decimal? approvedAmount, ulong? actorUserId, CancellationToken cancellationToken);
+    Task<LaravelApiResponse> HoldInvoiceAsync(ulong id, string? remark, ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> RejectInvoiceAsync(ulong id, string? remark, ulong? actorUserId, CancellationToken cancellationToken);
 }

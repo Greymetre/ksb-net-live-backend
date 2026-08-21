@@ -431,6 +431,110 @@ ORDER BY checkin_date DESC, checkin_time DESC LIMIT 1", cancellationToken,
         }
     }
 
+    /// <summary>Visit history for one customer, for the Activity screen in the SFA app.
+    /// Every check-in on the customer, by any employee - not just the caller - with the
+    /// value this customer ordered on that date and the note left at checkout.</summary>
+    [AcceptVerbs("GET", "POST")]
+    [Route("getCustomerCheckinActivity")]
+    public async Task<IActionResult> GetCustomerCheckinActivity(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var inactive = await InactiveUser(cancellationToken);
+            if (inactive is not null) return inactive;
+
+            var entityType = NormalizeEntityType(FirstNonEmpty(RequestValue("entity_type"), "secondary_customer"));
+            var entityId = ULongValue("entity_id") ?? ULongValue("customer_id");
+            if (!IsValidEntityType(entityType) || !entityId.HasValue || entityId.Value < 1)
+            {
+                return BadRequest(new { status = "error", message = new { entity_id = new[] { "The entity id field is required." } } });
+            }
+
+            var page = Math.Max(1, (int)(ULongValue("page") ?? 1));
+            var pageSize = Math.Clamp((int)(ULongValue("per_page") ?? ULongValue("page_size") ?? 20), 1, 200);
+            var offset = (page - 1) * pageSize;
+
+            const string scope = @"FROM check_in ci
+WHERE ci.deleted_at IS NULL
+  AND ci.entity_type = @entity_type
+  AND COALESCE(ci.entity_id, ci.customer_id) = @entity_id";
+
+            var total = await QueryScalarLong($"SELECT COUNT(*) {scope}", cancellationToken,
+                ("@entity_type", entityType), ("@entity_id", entityId.Value));
+
+            // Sums cover the whole history, not the page, so the header total does not
+            // change as more pages are pulled in.
+            var totalOrderValue = await QueryScalar(@"SELECT COALESCE(SUM(day_total), 0) FROM (
+    SELECT DISTINCT ci.checkin_date,
+        (SELECT COALESCE(SUM(o.grand_total), 0) FROM orders o
+          WHERE o.deleted_at IS NULL AND o.buyer_id = @entity_id
+            AND CAST(o.order_date AS date) = ci.checkin_date) AS day_total
+    FROM check_in ci
+    WHERE ci.deleted_at IS NULL
+      AND ci.entity_type = @entity_type
+      AND COALESCE(ci.entity_id, ci.customer_id) = @entity_id
+) days", cancellationToken, ("@entity_type", entityType), ("@entity_id", entityId.Value));
+
+            var rows = await QueryRows($@"SELECT ci.id, ci.user_id, ci.checkin_date, ci.checkin_time, ci.checkout_date, ci.checkout_time,
+    u.name AS employee_name, u.employee_codes, d.designation_name,
+    (SELECT TOP 1 vr.description FROM visit_reports vr
+      WHERE vr.checkin_id = ci.id AND vr.deleted_at IS NULL
+      ORDER BY vr.id DESC) AS note,
+    (SELECT COALESCE(SUM(o.grand_total), 0) FROM orders o
+      WHERE o.deleted_at IS NULL AND o.buyer_id = @entity_id
+        AND CAST(o.order_date AS date) = ci.checkin_date) AS order_value
+FROM check_in ci
+LEFT JOIN users u ON u.id = ci.user_id
+LEFT JOIN designations d ON d.id = u.designation_id
+WHERE ci.deleted_at IS NULL
+  AND ci.entity_type = @entity_type
+  AND COALESCE(ci.entity_id, ci.customer_id) = @entity_id
+ORDER BY ci.checkin_date DESC, ci.checkin_time DESC, ci.id DESC
+OFFSET {offset} ROWS FETCH NEXT {pageSize} ROWS ONLY", cancellationToken,
+                ("@entity_type", entityType), ("@entity_id", entityId.Value));
+
+            var entity = await EntityLabel(entityType!, entityId.Value, cancellationToken);
+            var data = rows.Select(row => new
+            {
+                checkin_id = ULong(row, "id"),
+                user_id = ULong(row, "user_id"),
+                employee_name = FirstNonEmpty(Str(row, "employee_name"), "-"),
+                employee_code = Str(row, "employee_codes"),
+                designation = Str(row, "designation_name"),
+                checkin_date = DateString(row, "checkin_date"),
+                checkin_time = TimeString(row, "checkin_time"),
+                checkout_date = DateString(row, "checkout_date"),
+                checkout_time = TimeString(row, "checkout_time"),
+                order_value = Convert.ToDecimal(Obj(row, "order_value") ?? 0m, CultureInfo.InvariantCulture),
+                note = Str(row, "note")
+            }).ToList();
+
+            return Ok(new
+            {
+                status = "success",
+                message = total == 0 ? "No check-in found for this customer." : "Check-in activity retrieved successfully.",
+                entity_id = entityId.Value,
+                entity_type = entityType,
+                entity_name = entity.Name,
+                total_checkins = total,
+                total_order_value = Convert.ToDecimal(totalOrderValue is null or DBNull ? 0m : totalOrderValue, CultureInfo.InvariantCulture),
+                pagination = new
+                {
+                    page,
+                    page_size = pageSize,
+                    total,
+                    total_pages = (int)Math.Ceiling(total / (double)pageSize),
+                    has_more = offset + data.Count < total
+                },
+                data
+            });
+        }
+        catch (Exception exception)
+        {
+            return StatusCode(500, new { status = "error", message = exception.Message });
+        }
+    }
+
     private async Task<IActionResult?> InactiveUser(CancellationToken cancellationToken, int inactiveStatusCode = 401, string inactiveMessage = "User Inactive")
     {
         var active = await QueryScalar("SELECT active FROM users WHERE id = @id AND deleted_at IS NULL LIMIT 1", cancellationToken, ("@id", CurrentUserId()));

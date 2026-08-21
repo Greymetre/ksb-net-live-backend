@@ -109,6 +109,7 @@ public sealed class NewInvoiceSummaryDto
     public int ApprovedSales { get; set; }
     public int ApprovedHo { get; set; }
     public int Pending { get; set; }
+    public int Hold { get; set; }
     public int Rejected { get; set; }
     public decimal TotalPoints { get; set; }
     public decimal TotalAmount { get; set; }
