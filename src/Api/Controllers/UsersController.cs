@@ -52,6 +52,23 @@ public sealed class UsersController : ControllerBase
         return Ok(response);
     }
 
+    /// <summary>Profile screen for whoever is signed in. Deliberately has no
+    /// RequirePermission - a user always reads their own record, and most roles
+    /// (dealers included) do not hold user_access.</summary>
+    [Authorize]
+    [HttpGet("profile/details")]
+    public async Task<IActionResult> GetMyProfile(CancellationToken cancellationToken)
+    {
+        var userId = CurrentUserId();
+        if (userId is null)
+        {
+            return Unauthorized(new { status = "error", message = "Unauthenticated." });
+        }
+
+        var response = await _userService.GetMyProfileAsync(userId.Value, cancellationToken);
+        return Ok(response);
+    }
+
     [Authorize]
     [HttpGet("users/options")]
     public async Task<IActionResult> GetUserOptions(CancellationToken cancellationToken)

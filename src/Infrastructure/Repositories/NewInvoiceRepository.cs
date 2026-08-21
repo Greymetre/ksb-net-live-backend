@@ -15,6 +15,7 @@ namespace Infrastructure.Repositories;
 public sealed class NewInvoiceRepository : INewInvoiceRepository
 {
     private const int MaxRows = 50000;
+    private const ulong DistributorCustomerType = 1;
     private const ulong RetailerCustomerType = 2;
     private const ulong InfluencerCustomerType = 3;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -27,15 +28,25 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
 
     public async Task<PagedResult<NewInvoiceDto>> GetInvoicesAsync(NewInvoiceFilterDto filter, ulong? actorUserId, CancellationToken cancellationToken)
     {
-        var distributorCustomerId = filter.DistributorCustomerId
-            ?? await GetDistributorCustomerIdAsync(actorUserId, cancellationToken);
+        // A dealer login stays pinned to its own retailers; the dealer filter is for
+        // internal users, who have no dealer scope of their own.
+        var distributorCustomerId = await GetDistributorCustomerIdAsync(actorUserId, cancellationToken)
+            ?? filter.DistributorCustomerId;
         var query = ApplyFilters(BaseQuery(distributorCustomerId), filter);
         var page = Pagination.Page(filter.Page);
         var pageSize = Pagination.PageSize(filter.PageSize);
         var total = await query.LongCountAsync(cancellationToken);
+        // Work queue order: whatever still needs action comes first (pending, then the
+        // two half-approved stages), fully approved and rejected drop to the bottom.
+        // Inside a stage the oldest invoice date leads so ageing invoices stay on top.
         var orderedQuery = query
-            .OrderByDescending(x => x.Invoice.CreatedAt)
-            .ThenByDescending(x => x.Invoice.Id);
+            .OrderBy(x => x.Invoice.ApprovalStatus == NewInvoice.StatusPending ? 0
+                : x.Invoice.ApprovalStatus == NewInvoice.StatusApprovedSs ? 1
+                : x.Invoice.ApprovalStatus == NewInvoice.StatusApprovedSales ? 2
+                : x.Invoice.ApprovalStatus == NewInvoice.StatusApprovedHo ? 3
+                : 4)
+            .ThenBy(x => x.Invoice.InvoiceDate)
+            .ThenBy(x => x.Invoice.Id);
         var rows = await (filter.Unpaged
                 ? orderedQuery.Take(MaxRows)
                 : orderedQuery.Skip((page - 1) * pageSize).Take(pageSize))
@@ -55,7 +66,8 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
 
     public async Task<NewInvoiceSummaryDto> GetInvoiceSummaryAsync(NewInvoiceFilterDto filter, ulong? actorUserId, CancellationToken cancellationToken)
     {
-        var distributorCustomerId = await GetDistributorCustomerIdAsync(actorUserId, cancellationToken);
+        var distributorCustomerId = await GetDistributorCustomerIdAsync(actorUserId, cancellationToken)
+            ?? filter.DistributorCustomerId;
         var rows = ApplyFilters(BaseQuery(distributorCustomerId), filter);
         return await rows.GroupBy(_ => 1).Select(group => new NewInvoiceSummaryDto
         {
@@ -122,6 +134,23 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
             CityName = CityName(customer, cities),
             Address = Address(customer)
         }).ToList();
+    }
+
+    /// <summary>Dealer list for the listing filter. A dealer login gets only itself,
+    /// so the dropdown can never be used to look at another dealer's invoices.</summary>
+    public async Task<IReadOnlyCollection<DealerOptionDto>> GetDealerOptionsAsync(ulong? actorUserId, CancellationToken cancellationToken)
+    {
+        var actorDistributorId = await GetDistributorCustomerIdAsync(actorUserId, cancellationToken);
+        var query = _dbContext.Customers.AsNoTracking()
+            .Where(x => x.Active == "Y" && x.CustomerType == DistributorCustomerType);
+
+        if (actorDistributorId.HasValue) query = query.Where(x => x.Id == actorDistributorId.Value);
+
+        return await query
+            .OrderBy(x => x.Name)
+            .Take(MaxRows)
+            .Select(x => new DealerOptionDto { Id = x.Id, Name = x.Name })
+            .ToListAsync(cancellationToken);
     }
 
     public async Task<Customer?> GetRetailerAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken)
@@ -194,8 +223,27 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
             })
             .ToListAsync(cancellationToken);
 
-    public async Task<bool> InvoiceNumberExistsAsync(string invoiceNumber, ulong? exceptId, CancellationToken cancellationToken) =>
-        await _dbContext.NewInvoices.AnyAsync(x => x.InvoiceNumber == invoiceNumber && (!exceptId.HasValue || x.Id != exceptId), cancellationToken);
+    /// <summary>Invoice numbers only have to be unique inside one dealer's own series -
+    /// two dealers numbering their bills 1, 2, 3 is normal. The dealer is resolved from
+    /// the retailer; when a retailer has no dealer mapped we fall back to that retailer
+    /// alone so a straight resubmission is still caught. Rejected invoices are skipped:
+    /// the number is free again so the dealer can re-enter a corrected invoice.</summary>
+    public async Task<bool> InvoiceNumberExistsAsync(string invoiceNumber, ulong secondaryCustomerId, ulong? exceptId, CancellationToken cancellationToken)
+    {
+        var retailer = await _dbContext.Customers.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.Id == secondaryCustomerId, cancellationToken);
+        var distributorCustomerId = retailer is null ? null : AssignedDistributorId(retailer);
+
+        var query = distributorCustomerId.HasValue
+            ? BaseQuery(distributorCustomerId)
+            : BaseQuery(null).Where(x => x.Invoice.SecondaryCustomerId == secondaryCustomerId);
+
+        return await query.AnyAsync(
+            x => x.Invoice.InvoiceNumber == invoiceNumber
+                && x.Invoice.ApprovalStatus != NewInvoice.StatusRejected
+                && (!exceptId.HasValue || x.Invoice.Id != exceptId),
+            cancellationToken);
+    }
 
     public async Task<NewInvoiceDto> CreateInvoiceAsync(NewInvoice invoice, CancellationToken cancellationToken)
     {

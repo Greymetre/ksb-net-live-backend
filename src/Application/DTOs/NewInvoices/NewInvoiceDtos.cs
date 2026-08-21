@@ -130,6 +130,12 @@ public sealed class RetailerOptionDto
     public string? Address { get; set; }
 }
 
+public sealed class DealerOptionDto
+{
+    public ulong Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+}
+
 public sealed class NewInvoiceApprovalRequestDto
 {
     public string? Remark { get; set; }

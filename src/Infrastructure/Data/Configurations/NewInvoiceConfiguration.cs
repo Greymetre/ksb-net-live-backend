@@ -33,7 +33,10 @@ public sealed class NewInvoiceConfiguration : IEntityTypeConfiguration<NewInvoic
         builder.Property(x => x.UpdatedAt).HasColumnName("updated_at");
         builder.Ignore(x => x.DeletedAt);
 
-        builder.HasIndex(x => x.InvoiceNumber).IsUnique();
+        // Not unique: uniqueness is per dealer, which no single column on this table can
+        // express. NewInvoiceRepository.InvoiceNumberExistsAsync enforces it; the index
+        // is here so that lookup stays cheap.
+        builder.HasIndex(x => x.InvoiceNumber);
         builder.HasIndex(x => x.SecondaryCustomerId);
         builder.HasIndex(x => x.LoyaltySchemeId);
         builder.HasIndex(x => x.CreatedBy);

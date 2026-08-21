@@ -8,6 +8,7 @@ public interface IUserRepository
     Task<IReadOnlyCollection<UserDto>> GetUsersAsync(UserListFiltersDto filters, CancellationToken cancellationToken);
     Task<UserDto?> GetUserDtoAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
     Task<UserOptionsDto> GetUserOptionsAsync(ulong? actorUserId, CancellationToken cancellationToken);
+    Task<IReadOnlyCollection<string>> GetCityNamesAsync(IReadOnlyCollection<ulong> cityIds, CancellationToken cancellationToken);
     Task<IReadOnlyCollection<UserExcelRowDto>> ExportUsersAsync(UserExportFiltersDto filters, CancellationToken cancellationToken);
     Task<User?> GetUserAsync(ulong id, CancellationToken cancellationToken);
     Task<bool> UserEmailExistsAsync(string email, ulong? exceptUserId, CancellationToken cancellationToken);

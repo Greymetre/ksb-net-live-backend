@@ -261,8 +261,8 @@ public sealed class OrderService : IOrderService
             if (!actorUserId.HasValue) throw new LaravelHttpException(LaravelStatusCodes.Unauthorized, "Unauthenticated.");
             var schemes = await _newInvoiceRepository.GetEligibleSchemeOptionsAsync(order.BuyerId.Value, request.InvoiceDate.Value, cancellationToken);
             if (schemes.All(x => x.Id != request.LoyaltySchemeId.Value)) throw BadRequest("Selected scheme is not active or eligible for this retailer and invoice date.");
-            if (await _newInvoiceRepository.InvoiceNumberExistsAsync(request.InvoiceNo!.Trim(), null, cancellationToken))
-                throw BadRequest("This invoice number already exists in Loyalty Management.");
+            if (await _newInvoiceRepository.InvoiceNumberExistsAsync(request.InvoiceNo!.Trim(), order.BuyerId.Value, null, cancellationToken))
+                throw BadRequest("This invoice number is already used for this dealer in Loyalty Management.");
         }
         if (!hasQuantity) throw BadRequest("At least one remaining product quantity is required for dispatch.");
         await _repository.DispatchAsync(order, details, request, actorUserId, cancellationToken);

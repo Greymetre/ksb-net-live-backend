@@ -57,6 +57,11 @@ public sealed class UserDto
     public string? Latitude { get; set; }
     public string? Longitude { get; set; }
     public string? Payroll { get; set; }
+
+    /// <summary>Readable form of Payroll / CityIds. Only the profile endpoint fills
+    /// these - the list and export screens resolve the ids from their own lookups.</summary>
+    public string? PayrollName { get; set; }
+    public string? CityNames { get; set; }
     public ulong? WarehouseId { get; set; }
     public string? SalesType { get; set; }
     public string? ShowAttandanceReport { get; set; }

@@ -70,6 +70,17 @@ public sealed class UserRepository : IUserRepository
         return users.FirstOrDefault();
     }
 
+    public async Task<IReadOnlyCollection<string>> GetCityNamesAsync(IReadOnlyCollection<ulong> cityIds, CancellationToken cancellationToken)
+    {
+        if (cityIds.Count == 0) return [];
+
+        return await _dbContext.Cities.AsNoTracking()
+            .Where(x => cityIds.Contains(x.Id))
+            .OrderBy(x => x.CityName)
+            .Select(x => x.CityName)
+            .ToListAsync(cancellationToken);
+    }
+
     public async Task<UserOptionsDto> GetUserOptionsAsync(ulong? actorUserId, CancellationToken cancellationToken)
     {
         var visibleUserIds = await ReportingVisibility.GetVisibleUserIdsAsync(_dbContext, actorUserId, cancellationToken);

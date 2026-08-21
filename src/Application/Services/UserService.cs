@@ -50,6 +50,18 @@ public sealed class UserService : IUserService
         return LaravelApiResponse.Success("user", user ?? throw NotFound("User not found"));
     }
 
+    /// <summary>Own record for the signed-in user. Reads without the reporting
+    /// visibility filter - a dealer login is not inside its own visible set - and
+    /// drops the stored plaintext password before it leaves the API.</summary>
+    public async Task<LaravelApiResponse> GetMyProfileAsync(ulong userId, CancellationToken cancellationToken)
+    {
+        var user = await _repository.GetUserDtoAsync(userId, null, cancellationToken) ?? throw NotFound("User not found");
+        user.PasswordString = null;
+        user.PayrollName = ExpenseTypeLookups.PayrollName(ulong.TryParse(user.Payroll, out var grade) ? grade : null);
+        user.CityNames = string.Join(", ", await _repository.GetCityNamesAsync(user.CityIds.ToArray(), cancellationToken));
+        return LaravelApiResponse.Success("user", user);
+    }
+
     public async Task<LaravelApiResponse> GetUserOptionsAsync(ulong? actorUserId, CancellationToken cancellationToken) =>
         LaravelApiResponse.Success("options", await _repository.GetUserOptionsAsync(actorUserId, cancellationToken));
 

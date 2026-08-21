@@ -5,6 +5,7 @@ using Application.DTOs.NewInvoices;
 using Application.Interfaces.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Shared.Responses;
 
 namespace Api.Controllers;
 
@@ -33,6 +34,7 @@ public sealed class NewInvoicesController : ControllerBase
         [FromQuery(Name = "scheme_id")] ulong? schemeId,
         [FromQuery(Name = "branch_id")] ulong? branchId,
         [FromQuery(Name = "zone_id")] ulong? zoneId,
+        [FromQuery(Name = "dealer_id")] ulong? dealerId,
         [FromQuery(Name = "from_date")] DateTime? fromDate,
         [FromQuery(Name = "to_date")] DateTime? toDate,
         [FromQuery] int page = 1,
@@ -46,6 +48,7 @@ public sealed class NewInvoicesController : ControllerBase
         filter.SchemeId ??= schemeId;
         filter.BranchId ??= branchId;
         filter.DivisionId ??= zoneId;
+        filter.DistributorCustomerId ??= dealerId;
         filter.FromDate ??= fromDate;
         filter.ToDate ??= toDate;
         filter.Page = page;
@@ -65,6 +68,7 @@ public sealed class NewInvoicesController : ControllerBase
         [FromQuery(Name = "scheme_id")] ulong? schemeId,
         [FromQuery(Name = "branch_id")] ulong? branchId,
         [FromQuery(Name = "zone_id")] ulong? zoneId,
+        [FromQuery(Name = "dealer_id")] ulong? dealerId,
         [FromQuery(Name = "from_date")] DateTime? fromDate,
         [FromQuery(Name = "to_date")] DateTime? toDate,
         CancellationToken cancellationToken)
@@ -76,10 +80,18 @@ public sealed class NewInvoicesController : ControllerBase
         filter.SchemeId ??= schemeId;
         filter.BranchId ??= branchId;
         filter.DivisionId ??= zoneId;
+        filter.DistributorCustomerId ??= dealerId;
         filter.FromDate ??= fromDate;
         filter.ToDate ??= toDate;
         var file = await _newInvoiceService.ExportInvoicesAsync(filter, CurrentUserId(), BackendBaseUrl(), cancellationToken);
         return File(file.Content, file.ContentType, file.FileName);
+    }
+
+    [HttpGet("dealers")]
+    public async Task<IActionResult> GetDealers(CancellationToken cancellationToken)
+    {
+        var response = await _newInvoiceService.GetDealersAsync(CurrentUserId(), cancellationToken);
+        return Ok(response);
     }
 
     [HttpGet("retailers")]
@@ -118,7 +130,8 @@ public sealed class NewInvoicesController : ControllerBase
             return UnprocessableEntity(new { status = "error", message = new { attachment = new[] { "Invoice attachment is required." } } });
         }
         var request = await ToRequestAsync(form, cancellationToken);
-        var response = await _newInvoiceService.CreateInvoiceAsync(request, CurrentUserId(), cancellationToken);
+        var response = await WithoutOrphanUploadAsync(request, form,
+            () => _newInvoiceService.CreateInvoiceAsync(request, CurrentUserId(), cancellationToken));
         return StatusCode(StatusCodes.Status201Created, response);
     }
 
@@ -128,7 +141,8 @@ public sealed class NewInvoicesController : ControllerBase
     public async Task<IActionResult> UpdateInvoice(ulong id, [FromForm] NewInvoiceFormRequest form, CancellationToken cancellationToken)
     {
         var request = await ToRequestAsync(form, cancellationToken);
-        var response = await _newInvoiceService.UpdateInvoiceAsync(id, request, CurrentUserId(), cancellationToken);
+        var response = await WithoutOrphanUploadAsync(request, form,
+            () => _newInvoiceService.UpdateInvoiceAsync(id, request, CurrentUserId(), cancellationToken));
         return Ok(response);
     }
 
@@ -227,6 +241,42 @@ public sealed class NewInvoicesController : ControllerBase
             Points = form.Points,
             Attachment = await SaveFileAsync(form.AttachmentFile, cancellationToken) ?? form.Attachment
         };
+    }
+
+    /// <summary>The attachment is written to disk before the service validates the rest
+    /// of the request, so a rejected invoice (duplicate number, ineligible scheme) would
+    /// otherwise leave the uploaded file behind on every retry.</summary>
+    private async Task<LaravelApiResponse> WithoutOrphanUploadAsync(
+        NewInvoiceRequestDto request,
+        NewInvoiceFormRequest form,
+        Func<Task<LaravelApiResponse>> action)
+    {
+        try
+        {
+            return await action();
+        }
+        catch
+        {
+            if (form.AttachmentFile is { Length: > 0 }) DeleteUpload(request.Attachment);
+            throw;
+        }
+    }
+
+    private void DeleteUpload(string? storedPath)
+    {
+        if (string.IsNullOrWhiteSpace(storedPath) || !storedPath.StartsWith("/uploads/new-invoices/", StringComparison.Ordinal)) return;
+
+        var root = _environment.WebRootPath ?? Path.Combine(_environment.ContentRootPath, "wwwroot");
+        var path = Path.Combine(root, storedPath.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
+
+        try
+        {
+            if (System.IO.File.Exists(path)) System.IO.File.Delete(path);
+        }
+        catch (IOException)
+        {
+            // A file left behind is noise, not a failure - never mask the real error.
+        }
     }
 
     private async Task<string?> SaveFileAsync(IFormFile? file, CancellationToken cancellationToken)

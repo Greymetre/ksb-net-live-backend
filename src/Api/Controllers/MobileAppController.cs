@@ -14,6 +14,7 @@ using Infrastructure.Data;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Shared.Responses;
 
 namespace Api.Controllers;
 
@@ -842,7 +843,7 @@ public sealed class MobileAppController : ControllerBase
             return UnprocessableEntity(new { status = "error", message = "No valid sales employee is linked with this dealer/retailer. Please contact admin." });
 
         var attachment = await SaveFileAsync(form.Attachment, "new-invoices", cancellationToken);
-        var response = await _newInvoiceService.CreateInvoiceAsync(new NewInvoiceRequestDto
+        var response = await WithoutOrphanUploadAsync(attachment, () => _newInvoiceService.CreateInvoiceAsync(new NewInvoiceRequestDto
         {
             SecondaryCustomerId = retailer.Id,
             SchemeId = form.SchemeId,
@@ -851,7 +852,7 @@ public sealed class MobileAppController : ControllerBase
             Amount = form.Amount,
             Points = 0,
             Attachment = attachment
-        }, creatorUserId, cancellationToken);
+        }, creatorUserId, cancellationToken));
         return StatusCode(StatusCodes.Status201Created, response);
     }
 
@@ -873,10 +874,11 @@ public sealed class MobileAppController : ControllerBase
         var retailer = await DealerAssignedRetailers(dealer.Customer.Id).FirstOrDefaultAsync(x => x.Id == form.RetailerId, cancellationToken);
         if (retailer is null) return UnprocessableEntity(new { status = "error", message = "Only a retailer assigned to this dealer can be selected." });
 
-        var attachment = form.Attachment is { Length: > 0 }
+        var uploaded = form.Attachment is { Length: > 0 }
             ? await SaveFileAsync(form.Attachment, "new-invoices", cancellationToken)
-            : existing.Attachment;
-        var response = await _newInvoiceService.UpdateInvoiceAsync(id, new NewInvoiceRequestDto
+            : null;
+        var attachment = uploaded ?? existing.Attachment;
+        var response = await WithoutOrphanUploadAsync(uploaded, () => _newInvoiceService.UpdateInvoiceAsync(id, new NewInvoiceRequestDto
         {
             SecondaryCustomerId = retailer.Id,
             SchemeId = form.SchemeId,
@@ -885,7 +887,7 @@ public sealed class MobileAppController : ControllerBase
             Amount = form.Amount,
             Points = 0,
             Attachment = attachment
-        }, existing.CreatedBy, cancellationToken);
+        }, existing.CreatedBy, cancellationToken));
         return Ok(response);
     }
 
@@ -2161,6 +2163,39 @@ VALUES ('Y', {0}, {1}, {2}, {3}, {4}, {5}, {6}, SYSUTCDATETIME(), SYSUTCDATETIME
         if (Uri.TryCreate(path, UriKind.Absolute, out _)) return path;
         var request = Request;
         return $"{request.Scheme}://{request.Host}{path}";
+    }
+
+    /// <summary>The attachment lands on disk before the invoice service validates the
+    /// request, so a rejected invoice would otherwise leave the upload behind. Only the
+    /// file this request wrote is removed - never the one already on the invoice.</summary>
+    private async Task<LaravelApiResponse> WithoutOrphanUploadAsync(string? uploadedPath, Func<Task<LaravelApiResponse>> action)
+    {
+        try
+        {
+            return await action();
+        }
+        catch
+        {
+            DeleteUpload(uploadedPath);
+            throw;
+        }
+    }
+
+    private void DeleteUpload(string? storedPath)
+    {
+        if (string.IsNullOrWhiteSpace(storedPath) || !storedPath.StartsWith("/uploads/", StringComparison.Ordinal)) return;
+
+        var root = _environment.WebRootPath ?? Path.Combine(Directory.GetCurrentDirectory(), "wwwroot");
+        var path = Path.Combine(root, storedPath.TrimStart('/').Replace('/', Path.DirectorySeparatorChar));
+
+        try
+        {
+            if (System.IO.File.Exists(path)) System.IO.File.Delete(path);
+        }
+        catch (IOException)
+        {
+            // A file left behind is noise, not a failure - never mask the real error.
+        }
     }
 
     private async Task<string> SaveFileAsync(IFormFile file, string folder, CancellationToken cancellationToken)

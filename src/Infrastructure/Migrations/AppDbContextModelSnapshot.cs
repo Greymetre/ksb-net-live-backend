@@ -1883,8 +1883,7 @@ namespace Infrastructure.Migrations
 
                     b.HasIndex("CreatedBy");
 
-                    b.HasIndex("InvoiceNumber")
-                        .IsUnique();
+                    b.HasIndex("InvoiceNumber");
 
                     b.HasIndex("LoyaltySchemeId");
 

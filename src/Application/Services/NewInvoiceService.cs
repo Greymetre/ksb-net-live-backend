@@ -103,6 +103,9 @@ public sealed class NewInvoiceService : INewInvoiceService
     public async Task<LaravelApiResponse> GetRetailersAsync(string? search, ulong? actorUserId, CancellationToken cancellationToken) =>
         LaravelApiResponse.Success("retailers", await _repository.GetRetailerOptionsAsync(search, actorUserId, cancellationToken));
 
+    public async Task<LaravelApiResponse> GetDealersAsync(ulong? actorUserId, CancellationToken cancellationToken) =>
+        LaravelApiResponse.Success("dealers", await _repository.GetDealerOptionsAsync(actorUserId, cancellationToken));
+
     public async Task<LaravelApiResponse> GetSchemeOptionsAsync(ulong customerId, DateTime? invoiceDate, CancellationToken cancellationToken)
     {
         if (customerId == 0 || !invoiceDate.HasValue) return LaravelApiResponse.Success("schemes", Array.Empty<InvoiceSchemeOptionDto>());
@@ -272,9 +275,9 @@ public sealed class NewInvoiceService : INewInvoiceService
         var retailer = await _repository.GetRetailerAsync(request.SecondaryCustomerId, actorUserId, cancellationToken);
         if (retailer is null) throw Http(LaravelStatusCodes.NoContentLikeValidation, new { secondary_customer_id = new[] { "Only active retailer customers can be selected." } });
 
-        if (await _repository.InvoiceNumberExistsAsync(request.InvoiceNumber!.Trim(), exceptId, cancellationToken))
+        if (await _repository.InvoiceNumberExistsAsync(request.InvoiceNumber!.Trim(), request.SecondaryCustomerId, exceptId, cancellationToken))
         {
-            throw Http(LaravelStatusCodes.NoContentLikeValidation, new { invoice_number = new[] { "This invoice number already exists." } });
+            throw Http(LaravelStatusCodes.NoContentLikeValidation, new { invoice_number = new[] { "This invoice number is already used for this dealer." } });
         }
 
         var eligibleSchemes = await _repository.GetEligibleSchemeOptionsAsync(request.SecondaryCustomerId, request.InvoiceDate!.Value, cancellationToken);
