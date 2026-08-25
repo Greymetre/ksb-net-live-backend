@@ -65,8 +65,8 @@ public sealed class BeatsController : ControllerBase
         }), total, page, page_size = pageSize });
     }
 
+    // Dropdown values only, so no permission gate.
     [HttpGet("options")]
-    [RequirePermission("beat_access", "beat_create", "beat_edit")]
     public async Task<IActionResult> Options(CancellationToken ct)
     {
         var visibleUserIds = await _hrRepository.GetVisibleUserIdsAsync(CurrentUserId(), ct);

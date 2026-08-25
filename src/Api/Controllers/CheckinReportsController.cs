@@ -31,8 +31,8 @@ public sealed class CheckinReportsController : ControllerBase
         return Ok(new { rows, total, page, page_size = size });
     }
 
+    // Dropdown values only, so no permission gate.
     [HttpGet("options")]
-    [RequirePermission("checkin_access")]
     public async Task<IActionResult> Options(CancellationToken ct)
     {
         var visibleIds = await VisibleUserIds(ct);

@@ -414,7 +414,7 @@ WHERE {string.Join(" AND ", where)}", cancellationToken, parameters.ToArray());
         var rows = await QueryRows($@"SELECT bc.id AS beat_customer_id, bc.beat_id, bc.customer_type, b.beat_name,
 c.id AS customer_id, c.name AS owner_name, c.name AS shop_name, c.name AS legal_name,
 c.mobile AS mobile_number, c.contact_number AS whatsapp_number, c.email, c.active,
-ctype.customertype_name AS type, cd.visit_status AS status, ca.address1 AS address_line, ca.city_id, customer_city.city_name,
+ctype.customertype_name AS type, COALESCE(NULLIF(UPPER(LTRIM(RTRIM(JSON_VALUE(c.custom_fields, '$.status')))), ''), NULLIF(UPPER(LTRIM(RTRIM(cd.visit_status))), ''), 'PENDING') AS status, ca.address1 AS address_line, ca.city_id, customer_city.city_name,
 c.name AS customer_name, c.mobile AS customer_mobile, cd.visit_status,
 CAST(CASE WHEN EXISTS (SELECT 1 FROM check_in ci WHERE ci.user_id = @auth_user AND ci.checkin_date = @today AND (ci.customer_id = bc.customer_id OR ci.entity_id = bc.customer_id)) THEN 1 ELSE 0 END AS bit) AS isvisited
 FROM beat_customers bc
@@ -1171,7 +1171,7 @@ COALESCE(a.pincode_id, CAST(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$
 p.pincode AS pincode_value,
 bc.beat_id,
 b.beat_name,
-cd.visit_status AS status,
+COALESCE(NULLIF(UPPER(LTRIM(RTRIM(JSON_VALUE(c.custom_fields, '$.status')))), ''), NULLIF(UPPER(LTRIM(RTRIM(cd.visit_status))), ''), 'PENDING') AS status,
 c.created_by,
 creator.name AS creator_name,
 c.executive_id AS employee_id,
@@ -1253,7 +1253,7 @@ COALESCE(a.pincode_id, CAST(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$
 p.pincode AS pincode_value,
 bc.beat_id,
 b.beat_name,
-cd.visit_status AS status,
+COALESCE(NULLIF(UPPER(LTRIM(RTRIM(JSON_VALUE(c.custom_fields, '$.status')))), ''), NULLIF(UPPER(LTRIM(RTRIM(cd.visit_status))), ''), 'PENDING') AS status,
 c.created_by,
 creator.name AS creator_name,
 c.executive_id AS employee_id,

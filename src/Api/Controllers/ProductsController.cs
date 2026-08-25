@@ -137,6 +137,13 @@ public sealed class ProductsController : ControllerBase
     public async Task<IActionResult> Products([FromQuery(Name = "segment_id")] ulong? segmentId, [FromQuery(Name = "family_id")] ulong? familyId, [FromQuery] string? search, [FromQuery] int? page, [FromQuery(Name = "page_size")] int? pageSize, CancellationToken cancellationToken) =>
         Ok(await _service.GetProductsAsync(segmentId, familyId, search, includeInactive: true, page, pageSize, cancellationToken));
 
+    // The invoice-detail product lookup is a read-only, active-only search that any
+    // signed-in user may run, so it stays outside the product_access gate that guards
+    // the full master listing.
+    [HttpGet("products/lookup")]
+    public async Task<IActionResult> ProductLookup([FromQuery] string? search, [FromQuery(Name = "page_size")] int? pageSize, CancellationToken cancellationToken) =>
+        Ok(await _service.GetProductsAsync(null, null, search, includeInactive: false, 1, pageSize is > 0 and <= 50 ? pageSize : 15, cancellationToken));
+
     [RequirePermission("product_download")]
     [HttpGet("products/export")]
     public async Task<IActionResult> ExportProducts([FromQuery(Name = "segment_id")] ulong? segmentId, [FromQuery(Name = "family_id")] ulong? familyId, [FromQuery] string? search, CancellationToken cancellationToken)

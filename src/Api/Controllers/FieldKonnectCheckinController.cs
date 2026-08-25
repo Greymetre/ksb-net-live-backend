@@ -730,7 +730,13 @@ AND deleted_at IS NULL", cancellationToken, ("@user_id", CurrentUserId()), ("@to
     {
         var row = await EntityDetails(entityType, entityId, cancellationToken);
         if (row is null) return null;
-        var status = FirstNonEmpty(Str(row, "visit_status"), Str(row, "status"), "APPROVED");
+        // The SFA app compares this against "APPROVED" exactly, so it has to read the
+        // same way the CRM customer list does: the approval kept in custom_fields wins
+        // over the legacy customer_details.visit_status, trimmed and upper cased.
+        var rawStatus = FirstNonEmpty(Str(row, "status"), Str(row, "visit_status"));
+        var status = entityType == "secondary_customer"
+            ? NormalizeApprovalStatus(rawStatus)
+            : FirstNonEmpty(rawStatus, "APPROVED");
         return entityType switch
         {
             "distributor" => new
@@ -755,6 +761,12 @@ AND deleted_at IS NULL", cancellationToken, ("@user_id", CurrentUserId()), ("@to
         };
     }
 
+    private static string NormalizeApprovalStatus(string? value)
+    {
+        var text = (value ?? string.Empty).Trim();
+        return text.Length == 0 ? "PENDING" : text.ToUpperInvariant();
+    }
+
     private async Task<Dictionary<string, object?>?> EntityDetails(string entityType, ulong entityId, CancellationToken cancellationToken)
     {
         var sql = entityType switch
@@ -770,8 +782,8 @@ AND (c.customertype IN (1,3) OR ct.customertype_name LIKE '%Distributor%' OR ct.
 LIMIT 1",
             "secondary_customer" => @"SELECT c.*, c.name AS legal_name, c.name AS trade_name, c.name AS shop_name, ct.customertype_name, ct.type_name,
 a.address1 AS address_line, c.mobile AS mobile_number, c.latitude, c.longitude,
-COALESCE(cd.visit_status, JSON_VALUE(c.custom_fields, '$.status')) AS visit_status,
-COALESCE(cd.visit_status, JSON_VALUE(c.custom_fields, '$.status')) AS status,
+COALESCE(NULLIF(UPPER(LTRIM(RTRIM(JSON_VALUE(c.custom_fields, '$.status')))), ''), NULLIF(UPPER(LTRIM(RTRIM(cd.visit_status))), ''), 'PENDING') AS visit_status,
+COALESCE(NULLIF(UPPER(LTRIM(RTRIM(JSON_VALUE(c.custom_fields, '$.status')))), ''), NULLIF(UPPER(LTRIM(RTRIM(cd.visit_status))), ''), 'PENDING') AS status,
 JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.distributor_name')) AS distributor_name
 FROM customers c
 LEFT JOIN customer_types ct ON ct.id = c.customertype
@@ -788,8 +800,8 @@ LIMIT 1",
         if (row is not null || entityType == "customer") return row;
         return (await QueryRows(@"SELECT c.*, c.name AS legal_name, c.name AS trade_name, c.name AS shop_name, ct.customertype_name, ct.type_name,
 a.address1 AS address_line, a.address1 AS shipping_address, c.mobile AS mobile_number, c.latitude, c.longitude,
-COALESCE(cd.visit_status, JSON_VALUE(c.custom_fields, '$.status')) AS visit_status,
-COALESCE(cd.visit_status, JSON_VALUE(c.custom_fields, '$.status')) AS status,
+COALESCE(NULLIF(UPPER(LTRIM(RTRIM(JSON_VALUE(c.custom_fields, '$.status')))), ''), NULLIF(UPPER(LTRIM(RTRIM(cd.visit_status))), ''), 'PENDING') AS visit_status,
+COALESCE(NULLIF(UPPER(LTRIM(RTRIM(JSON_VALUE(c.custom_fields, '$.status')))), ''), NULLIF(UPPER(LTRIM(RTRIM(cd.visit_status))), ''), 'PENDING') AS status,
 JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.distributor_name')) AS distributor_name
 FROM customers c
 LEFT JOIN customer_types ct ON ct.id = c.customertype

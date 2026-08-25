@@ -62,6 +62,17 @@ public sealed class UserService : IUserService
         return LaravelApiResponse.Success("user", user);
     }
 
+    /// <summary>Profile photo for the signed-in user. Only the image column moves,
+    /// so a user updating their own picture cannot touch any other field.</summary>
+    public async Task<LaravelApiResponse> UpdateMyProfileImageAsync(ulong userId, string imagePath, CancellationToken cancellationToken)
+    {
+        var user = await _repository.GetUserAsync(userId, cancellationToken) ?? throw NotFound("User not found");
+        user.ProfileImage = imagePath;
+        user.UpdatedAt = DateTime.UtcNow;
+        await _repository.SaveChangesAsync(cancellationToken);
+        return await GetMyProfileAsync(userId, cancellationToken);
+    }
+
     public async Task<LaravelApiResponse> GetUserOptionsAsync(ulong? actorUserId, CancellationToken cancellationToken) =>
         LaravelApiResponse.Success("options", await _repository.GetUserOptionsAsync(actorUserId, cancellationToken));
 

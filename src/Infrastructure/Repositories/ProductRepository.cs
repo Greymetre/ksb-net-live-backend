@@ -191,7 +191,16 @@ public sealed class ProductRepository : IProductRepository
         if (!string.IsNullOrWhiteSpace(search))
         {
             var value = search.Trim();
-            query = query.Where(x => x.ProductName.Contains(value) || x.PartNo.Contains(value));
+            // Part numbers are spread across three columns in the imported catalogue:
+            // part_no is a placeholder dot on legacy rows, while the real material code
+            // sits in product_code / sap_code. Search all of them plus the model series.
+            query = query.Where(x =>
+                x.ProductName.Contains(value)
+                || x.Description.Contains(value)
+                || x.PartNo.Contains(value)
+                || (x.ProductCode != null && x.ProductCode.Contains(value))
+                || (x.SapCode != null && x.SapCode.Contains(value))
+                || x.ModelNo.Contains(value));
         }
         return query;
     }

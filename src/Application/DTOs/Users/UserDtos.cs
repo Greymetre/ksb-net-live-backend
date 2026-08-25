@@ -43,6 +43,7 @@ public sealed class UserDto
     public string? EmployeeCodes { get; set; }
     public string? Mobile { get; set; }
     public string? Email { get; set; }
+    public string? ProfileImage { get; set; }
     public string? BranchId { get; set; }
     public string? BranchNames { get; set; }
     public ulong? DesignationId { get; set; }

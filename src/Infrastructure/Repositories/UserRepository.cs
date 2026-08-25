@@ -395,6 +395,7 @@ public sealed class UserRepository : IUserRepository
             EmployeeCodes = row.user.EmployeeCodes,
             Mobile = row.user.Mobile,
             Email = row.user.Email,
+            ProfileImage = row.user.ProfileImage,
             BranchId = row.user.BranchId,
             BranchNames = ResolveBranchNames(row.user.BranchId, branches),
             DesignationId = row.user.DesignationId,

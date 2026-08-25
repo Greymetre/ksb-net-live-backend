@@ -21,8 +21,9 @@ public sealed class ReportManagementController : ControllerBase
     private readonly IHrRepository _hr;
     public ReportManagementController(AppDbContext db, IHrRepository hr) { _db = db; _hr = hr; }
 
+    // Filter dropdowns only ever return id/name lists (users already limited to the
+    // caller's own hierarchy), so they stay ungated - the report data itself does not.
     [HttpGet("asr-performance/options")]
-    [RequirePermission("ASR_report_Download")]
     public async Task<IActionResult> AsrPerformanceOptions(CancellationToken cancellationToken)
     {
         var actor = CurrentUserId();
@@ -40,7 +41,6 @@ public sealed class ReportManagementController : ControllerBase
     }
 
     [HttpGet("rating-report/options")]
-    [RequirePermission("asm_rating_report")]
     public Task<IActionResult> RatingReportOptions(CancellationToken cancellationToken) => AsrPerformanceOptions(cancellationToken);
 
     [HttpGet("rating-report/export")]
@@ -288,7 +288,6 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
     }
 
     [HttpGet("productivity/options")]
-    [RequirePermission("retailer_productivity_report")]
     public async Task<IActionResult> ProductivityOptions(CancellationToken cancellationToken)
     {
         var actor = CurrentUserId();

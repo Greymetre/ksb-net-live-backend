@@ -16,7 +16,8 @@ public sealed class ActivityReportExportsController : ControllerBase
     private readonly IHrRepository _hr;
     public ActivityReportExportsController(AppDbContext db, IHrRepository hr) { _db = db; _hr = hr; }
 
-    [HttpGet("options"), RequirePermission("activity_report_access")]
+    // Dropdown values only - the report rows below stay permission gated.
+    [HttpGet("options")]
     public async Task<IActionResult> Options(CancellationToken ct)
     {
         var rows = await Rows(new ActivityReportFilter(), ct);

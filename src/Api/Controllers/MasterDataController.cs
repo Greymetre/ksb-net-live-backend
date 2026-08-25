@@ -528,9 +528,18 @@ public sealed class MasterDataController : ControllerBase
         return Ok(response);
     }
 
+    // Dropdown feed: branch names fill filters all over the app, so the option route
+    // needs no branch-master permission. The listing route below stays gated.
+    [Authorize]
+    [HttpGet("getbranches")]
+    public async Task<IActionResult> BranchOptions([FromQuery] string? search, CancellationToken cancellationToken)
+    {
+        var response = await _masterDataService.GetBranchesAsync(search, cancellationToken);
+        return Ok(response);
+    }
+
     [Authorize]
     [RequirePermission("branch")]
-    [HttpGet("getbranches")]
     [HttpGet("branches")]
     public async Task<IActionResult> GetBranches([FromQuery] string? search, CancellationToken cancellationToken)
     {
@@ -594,9 +603,18 @@ public sealed class MasterDataController : ControllerBase
         return Ok(response);
     }
 
+    // Dropdown feed: zone names fill filters all over the app, so the option route
+    // needs no division-master permission. The listing routes below stay gated.
+    [Authorize]
+    [HttpGet("getdivisions")]
+    public async Task<IActionResult> DivisionOptions([FromQuery] string? search, CancellationToken cancellationToken)
+    {
+        var response = await _masterDataService.GetDivisionsAsync(search, cancellationToken);
+        return Ok(response);
+    }
+
     [Authorize]
     [RequirePermission("division")]
-    [HttpGet("getdivisions")]
     [HttpGet("division")]
     [HttpGet("divisions")]
     public async Task<IActionResult> GetDivisions([FromQuery] string? search, CancellationToken cancellationToken)
@@ -747,9 +765,17 @@ public sealed class MasterDataController : ControllerBase
         return Ok(response);
     }
 
+    // Dropdown feed - see BranchOptions above. The listing route below stays gated.
+    [Authorize]
+    [HttpGet("getdepartments")]
+    public async Task<IActionResult> DepartmentOptions([FromQuery] string? search, CancellationToken cancellationToken)
+    {
+        var response = await _masterDataService.GetDepartmentsAsync(search, cancellationToken);
+        return Ok(response);
+    }
+
     [Authorize]
     [RequirePermission("departments")]
-    [HttpGet("getdepartments")]
     [HttpGet("departments")]
     public async Task<IActionResult> GetDepartments([FromQuery] string? search, CancellationToken cancellationToken)
     {
