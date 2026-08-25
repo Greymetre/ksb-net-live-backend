@@ -18,6 +18,20 @@ public sealed class RedemptionRepository : IRedemptionRepository
         _dbContext = dbContext;
     }
 
+    /// <summary>The customer a dealer login belongs to, or null for an internal user.</summary>
+    private async Task<ulong?> DealerCustomerIdAsync(ulong? actorUserId, CancellationToken cancellationToken)
+    {
+        if (!actorUserId.HasValue) return null;
+
+        var isDealer = await ReportingVisibility.IsDistributorUserAsync(_dbContext, actorUserId, cancellationToken);
+        if (!isDealer) return null;
+
+        return await _dbContext.Users.AsNoTracking()
+            .Where(user => user.Id == actorUserId.Value)
+            .Select(user => user.CustomerId)
+            .FirstOrDefaultAsync(cancellationToken);
+    }
+
     public async Task<IReadOnlyCollection<RedemptionDto>> GetRedemptionsAsync(RedemptionFilterDto filter, CancellationToken cancellationToken)
     {
         var query =
@@ -29,6 +43,11 @@ public sealed class RedemptionRepository : IRedemptionRepository
             from user in users.DefaultIfEmpty()
             orderby redemption.CreatedAt descending, redemption.Id descending
             select new { Redemption = redemption, Customer = customer, CreatedByName = user != null ? user.Name : null };
+
+        // A dealer's CRM login is linked to its customer row. It sees its own redemptions
+        // only - the listing used to return every customer's to anybody who could open it.
+        var dealerCustomerId = await DealerCustomerIdAsync(filter.ActorUserId, cancellationToken);
+        if (dealerCustomerId.HasValue) query = query.Where(x => x.Redemption.CustomerId == dealerCustomerId.Value);
 
         if (filter.Status.HasValue) query = query.Where(x => x.Redemption.Status == filter.Status.Value);
         if (!string.IsNullOrWhiteSpace(filter.RedeemMode))

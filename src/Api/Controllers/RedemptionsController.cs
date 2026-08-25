@@ -19,7 +19,7 @@ public sealed class RedemptionsController : ControllerBase
         _service = service;
     }
 
-    [RequirePermission("redemption_access")]
+    [RequirePermission("redemption.view")]
     [HttpGet]
     public async Task<IActionResult> GetRedemptions(
         [FromQuery] RedemptionFilterDto filter,
@@ -27,10 +27,11 @@ public sealed class RedemptionsController : ControllerBase
         CancellationToken cancellationToken)
     {
         filter.RedeemMode ??= redeemMode;
+        filter.ActorUserId = CurrentUserId();
         return Ok(await _service.GetRedemptionsAsync(filter, cancellationToken));
     }
 
-    [RequirePermission("redemption_download")]
+    [RequirePermission("redemption.export")]
     [HttpGet("export")]
     public async Task<IActionResult> ExportRedemptions(
         [FromQuery] RedemptionFilterDto filter,
@@ -38,6 +39,7 @@ public sealed class RedemptionsController : ControllerBase
         CancellationToken cancellationToken)
     {
         filter.RedeemMode ??= redeemMode;
+        filter.ActorUserId = CurrentUserId();
         var file = await _service.ExportRedemptionsAsync(filter, cancellationToken);
         return File(file.Content, file.ContentType, file.FileName);
     }

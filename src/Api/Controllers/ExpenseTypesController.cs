@@ -20,7 +20,7 @@ public sealed class ExpenseTypesController : ControllerBase
     }
 
     [HttpGet]
-    [RequirePermission("expenses_type")]
+    [RequirePermission("expense_type.view")]
     public async Task<IActionResult> GetExpenseTypes([FromQuery] string? search, CancellationToken cancellationToken)
     {
         var response = await _service.GetExpenseTypesAsync(search, cancellationToken);
@@ -35,7 +35,7 @@ public sealed class ExpenseTypesController : ControllerBase
     }
 
     [HttpGet("{id}")]
-    [RequirePermission("expenses_type")]
+    [RequirePermission("expense_type.view")]
     public async Task<IActionResult> GetExpenseType(ulong id, CancellationToken cancellationToken)
     {
         var response = await _service.GetExpenseTypeAsync(id, cancellationToken);
@@ -43,7 +43,7 @@ public sealed class ExpenseTypesController : ControllerBase
     }
 
     [HttpPost]
-    [RequirePermission("expenses_type_create")]
+    [RequirePermission("expense_type.create")]
     public async Task<IActionResult> CreateExpenseType([FromBody] ExpenseTypeRequestDto request, CancellationToken cancellationToken)
     {
         var response = await _service.CreateExpenseTypeAsync(request, cancellationToken);
@@ -52,7 +52,7 @@ public sealed class ExpenseTypesController : ControllerBase
 
     [HttpPut("{id}")]
     [HttpPatch("{id}")]
-    [RequirePermission("expenses_type_update")]
+    [RequirePermission("expense_type.edit")]
     public async Task<IActionResult> UpdateExpenseType(ulong id, [FromBody] ExpenseTypeRequestDto request, CancellationToken cancellationToken)
     {
         var response = await _service.UpdateExpenseTypeAsync(id, request, cancellationToken);
@@ -60,7 +60,7 @@ public sealed class ExpenseTypesController : ControllerBase
     }
 
     [HttpPatch("{id}/status")]
-    [RequirePermission("expenses_type_update")]
+    [RequirePermission("expense_type.active")]
     public async Task<IActionResult> SetExpenseTypeActive(ulong id, [FromBody] ActiveStatusRequestDto request, CancellationToken cancellationToken)
     {
         var response = await _service.SetExpenseTypeActiveAsync(id, request.Active, cancellationToken);
@@ -68,7 +68,7 @@ public sealed class ExpenseTypesController : ControllerBase
     }
 
     [HttpDelete("{id}")]
-    [RequirePermission("expenses_type_update")]
+    [RequirePermission("expense_type.delete")]
     public async Task<IActionResult> DeleteExpenseType(ulong id, CancellationToken cancellationToken)
     {
         var response = await _service.DeleteExpenseTypeAsync(id, cancellationToken);

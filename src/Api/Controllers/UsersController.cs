@@ -24,7 +24,7 @@ public sealed class UsersController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("user_access")]
+    [RequirePermission("user.view")]
     [HttpGet("users")]
     public async Task<IActionResult> GetUsers(
         [FromQuery] string? search,
@@ -49,7 +49,7 @@ public sealed class UsersController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("user_access")]
+    [RequirePermission("user.view")]
     [HttpGet("users/{id}")]
     public async Task<IActionResult> GetUser(ulong id, CancellationToken cancellationToken)
     {
@@ -127,7 +127,7 @@ public sealed class UsersController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("user_create")]
+    [RequirePermission("user.create")]
     [HttpPost("users")]
     public async Task<IActionResult> CreateUser([FromBody] UserRequestDto request, CancellationToken cancellationToken)
     {
@@ -136,7 +136,7 @@ public sealed class UsersController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("user_edit")]
+    [RequirePermission("user.edit")]
     [HttpPut("users/{id}")]
     [HttpPatch("users/{id}")]
     public async Task<IActionResult> UpdateUser(ulong id, [FromBody] UserRequestDto request, CancellationToken cancellationToken)
@@ -146,7 +146,7 @@ public sealed class UsersController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("user_active")]
+    [RequirePermission("user.active")]
     [HttpPatch("users/{id}/status")]
     public async Task<IActionResult> SetUserActive(ulong id, [FromBody] UserRequestDto request, CancellationToken cancellationToken)
     {
@@ -155,7 +155,7 @@ public sealed class UsersController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("user_delete")]
+    [RequirePermission("user.delete")]
     [HttpDelete("users/{id}")]
     public async Task<IActionResult> DeleteUser(ulong id, CancellationToken cancellationToken)
     {
@@ -182,7 +182,7 @@ public sealed class UsersController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("user_download")]
+    [RequirePermission("user.export")]
     [HttpGet("users-download")]
     [HttpGet("users/export")]
     public async Task<IActionResult> ExportUsers([FromQuery(Name = "user_type")] string? userType, [FromQuery] string? active, [FromQuery(Name = "division_id")] ulong? divisionId, [FromQuery(Name = "branch_id")] string? branchId, [FromQuery(Name = "department_id")] ulong? departmentId, CancellationToken cancellationToken)
@@ -200,7 +200,7 @@ public sealed class UsersController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("user_template")]
+    [RequirePermission("user.template")]
     [HttpGet("users-template")]
     [HttpGet("users/template")]
     public async Task<IActionResult> UserTemplate(CancellationToken cancellationToken)
@@ -210,7 +210,7 @@ public sealed class UsersController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("user_upload")]
+    [RequirePermission("user.import")]
     [HttpPost("users-upload")]
     [HttpPost("users/upload")]
     [Consumes("multipart/form-data")]

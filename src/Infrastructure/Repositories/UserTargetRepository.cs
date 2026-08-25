@@ -21,6 +21,14 @@ public sealed class UserTargetRepository : IUserTargetRepository
     {
         var query = ApplyFilters(_dbContext.SalesTargetUsers.AsNoTracking(), filter);
 
+        // The listing used to return every user's targets to anybody who could open the
+        // screen. It now shows only the users the caller may see.
+        if (filter.ActorUserId.HasValue)
+        {
+            var visibleUserIds = await ReportingVisibility.GetVisibleUserIdsAsync(_dbContext, filter.ActorUserId, cancellationToken);
+            query = query.Where(target => target.UserId.HasValue && visibleUserIds.Contains(target.UserId.Value));
+        }
+
         var rows = await (
             from target in query
             join userRow in _dbContext.Users.AsNoTracking() on target.UserId equals userRow.Id into users
@@ -99,8 +107,9 @@ public sealed class UserTargetRepository : IUserTargetRepository
         return result;
     }
 
-    public async Task<UserTargetDto?> GetTargetDtoAsync(ulong id, CancellationToken cancellationToken) =>
-        (await GetTargetsAsync(new UserTargetFilterDto(), cancellationToken)).FirstOrDefault(x => x.Id == id);
+    public async Task<UserTargetDto?> GetTargetDtoAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken) =>
+        (await GetTargetsAsync(new UserTargetFilterDto { ActorUserId = actorUserId }, cancellationToken))
+            .FirstOrDefault(x => x.Id == id);
 
     public Task<SalesTargetUser?> GetTargetAsync(ulong id, CancellationToken cancellationToken) =>
         _dbContext.SalesTargetUsers.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);

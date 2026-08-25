@@ -281,9 +281,9 @@ ORDER BY page.created_at DESC, page.id DESC", cancellationToken, parameters.ToAr
 
         var permission = status?.Trim().ToUpperInvariant() switch
         {
-            "APPROVED" => "retailer_approve",
-            "REJECTED" => "retailer_reject",
-            "PENDING" => "retailer_pending",
+            "APPROVED" => "customer.approve",
+            "REJECTED" => "customer.reject",
+            "PENDING" => "customer.pending",
             _ => string.Empty
         };
         if (permission.Length == 0) return false;

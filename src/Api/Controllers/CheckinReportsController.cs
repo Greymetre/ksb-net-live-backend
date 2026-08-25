@@ -20,7 +20,7 @@ public sealed class CheckinReportsController : ControllerBase
     public CheckinReportsController(AppDbContext db, IHrRepository hr) { _db = db; _hr = hr; }
 
     [HttpGet]
-    [RequirePermission("checkin_access")]
+    [RequirePermission("checkin.view")]
     public async Task<IActionResult> List([FromQuery] CheckinFilter filter, CancellationToken ct)
     {
         var page = Math.Max(1, filter.Page);
@@ -45,7 +45,7 @@ public sealed class CheckinReportsController : ControllerBase
     }
 
     [HttpGet("export")]
-    [RequirePermission("checkin_download")]
+    [RequirePermission("checkin.export")]
     public async Task<IActionResult> Export([FromQuery] CheckinFilter filter, CancellationToken ct)
     {
         var rows = await Rows(filter, await VisibleUserIds(ct), null, null, ct);

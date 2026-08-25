@@ -89,7 +89,7 @@ public sealed class FieldKonnectMobileController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("loyalty_app_setting_access", "field_konnect_app_setting_access")]
+    [RequirePermission("app_setting.view")]
     [HttpGet("field-konnect-app-setting")]
     public async Task<IActionResult> GetAdminSetting(CancellationToken cancellationToken)
     {
@@ -107,7 +107,7 @@ public sealed class FieldKonnectMobileController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("loyalty_app_setting_access", "field_konnect_app_setting_access")]
+    [RequirePermission("app_setting.edit")]
     [HttpPost("field-konnect-app-setting")]
     [HttpPut("field-konnect-app-setting")]
     public async Task<IActionResult> SaveAdminSetting([FromBody] SaveFieldKonnectSettingRequest request, CancellationToken cancellationToken)

@@ -23,7 +23,7 @@ public sealed class ExpensesController : ControllerBase
     }
 
     [HttpGet]
-    [RequirePermission("expense_access")]
+    [RequirePermission("expense.view")]
     public async Task<IActionResult> GetExpenses([FromQuery(Name = "executive_id")] ulong? executiveId, [FromQuery(Name = "expenses_type")] ulong? expensesType, [FromQuery(Name = "branch_id")] ulong? branchId, [FromQuery(Name = "division_id")] ulong? divisionId, [FromQuery] string? payroll, [FromQuery] int? status, [FromQuery(Name = "start_date")] string? startDate, [FromQuery(Name = "end_date")] string? endDate, [FromQuery(Name = "expense_id")] ulong? expenseId, [FromQuery] string? search, CancellationToken cancellationToken)
     {
         var response = await _service.GetExpensesAsync(new ExpenseFilterDto { ExecutiveId = executiveId, ExpensesType = expensesType, BranchId = branchId, DivisionId = divisionId, Payroll = payroll, Status = status, StartDate = startDate, EndDate = endDate, ExpenseId = expenseId, Search = search, ActorUserId = CurrentUserId() }, cancellationToken);
@@ -33,7 +33,7 @@ public sealed class ExpensesController : ControllerBase
 
     /// <summary>Status counts and amounts for the same scope and filters the list uses.</summary>
     [HttpGet("summary")]
-    [RequirePermission("expense_access")]
+    [RequirePermission("expense.view")]
     public async Task<IActionResult> GetSummary([FromQuery(Name = "executive_id")] ulong? executiveId, [FromQuery(Name = "expenses_type")] ulong? expensesType, [FromQuery(Name = "branch_id")] ulong? branchId, [FromQuery(Name = "division_id")] ulong? divisionId, [FromQuery] string? payroll, [FromQuery] int? status, [FromQuery(Name = "start_date")] string? startDate, [FromQuery(Name = "end_date")] string? endDate, CancellationToken cancellationToken) =>
         Ok(await _service.GetSummaryAsync(new ExpenseFilterDto { ExecutiveId = executiveId, ExpensesType = expensesType, BranchId = branchId, DivisionId = divisionId, Payroll = payroll, Status = status, StartDate = startDate, EndDate = endDate, ActorUserId = CurrentUserId() }, cancellationToken));
 
@@ -45,7 +45,7 @@ public sealed class ExpensesController : ControllerBase
     }
 
     [HttpGet("{id}")]
-    [RequirePermission("expense_access")]
+    [RequirePermission("expense.view")]
     public async Task<IActionResult> GetExpense(ulong id, CancellationToken cancellationToken)
     {
         var response = await _service.GetExpenseAsync(id, CurrentUserId(), cancellationToken);
@@ -54,7 +54,7 @@ public sealed class ExpensesController : ControllerBase
     }
 
     [HttpPost]
-    [RequirePermission("expenses_create")]
+    [RequirePermission("expense.create")]
     [Consumes("multipart/form-data")]
     public async Task<IActionResult> CreateExpense([FromForm] ExpenseFormRequest request, CancellationToken cancellationToken)
     {
@@ -66,7 +66,7 @@ public sealed class ExpensesController : ControllerBase
 
     [HttpPut("{id}")]
     [HttpPatch("{id}")]
-    [RequirePermission("expenses_edit")]
+    [RequirePermission("expense.edit")]
     [Consumes("multipart/form-data")]
     public async Task<IActionResult> UpdateExpense(ulong id, [FromForm] ExpenseFormRequest request, CancellationToken cancellationToken)
     {
@@ -77,7 +77,7 @@ public sealed class ExpensesController : ControllerBase
     }
 
     [HttpPatch("{id}/status")]
-    [RequirePermission("expenses_authority")]
+    [RequirePermission("expense.approve")]
     public async Task<IActionResult> SetStatus(ulong id, [FromBody] ExpenseStatusRequestDto request, CancellationToken cancellationToken)
     {
         var response = await _service.SetStatusAsync(id, request, CurrentUserId(), cancellationToken);
@@ -91,7 +91,7 @@ public sealed class ExpensesController : ControllerBase
     /// reject stays on the CRM status endpoint above.
     /// </summary>
     [HttpPatch("{id}/checked-by-reporting")]
-    [RequirePermission("expenses_authority", "expense_checked")]
+    [RequirePermission("expense.approve", "expense.check")]
     public async Task<IActionResult> CheckByReporting(ulong id, CancellationToken cancellationToken)
     {
         var response = await _service.CheckByReportingAsync(id, CurrentUserId(), cancellationToken);
@@ -100,13 +100,13 @@ public sealed class ExpensesController : ControllerBase
     }
 
     [HttpGet("{id}/logs")]
-    [RequirePermission("expense_access")]
+    [RequirePermission("expense.view")]
     public async Task<IActionResult> GetLogs(ulong id, CancellationToken cancellationToken) =>
         Ok(await _service.GetLogsAsync(id, CurrentUserId(), cancellationToken));
 
     /// <summary>Removes one attachment while the expense is still Pending.</summary>
     [HttpDelete("{id}/attachments/{attachmentId}")]
-    [RequirePermission("expenses_edit")]
+    [RequirePermission("expense.edit")]
     public async Task<IActionResult> RemoveAttachment(ulong id, ulong attachmentId, CancellationToken cancellationToken)
     {
         var response = await _service.RemoveAttachmentAsync(id, attachmentId, CurrentUserId(), cancellationToken);
@@ -122,7 +122,7 @@ public sealed class ExpensesController : ControllerBase
     }
 
     [HttpDelete("{id}")]
-    [RequirePermission("expenses_delete")]
+    [RequirePermission("expense.delete")]
     public async Task<IActionResult> DeleteExpense(ulong id, CancellationToken cancellationToken)
     {
         var response = await _service.DeleteExpenseAsync(id, CurrentUserId(), cancellationToken);

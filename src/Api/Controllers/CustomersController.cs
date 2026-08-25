@@ -27,7 +27,7 @@ public sealed class CustomersController : ControllerBase
         _environment = environment;
     }
 
-    [RequirePermission("customer_access")]
+    [RequirePermission("customer.view")]
     [HttpGet]
     public async Task<IActionResult> GetCustomers(
         [FromQuery] CustomerListFilterDto filter,
@@ -44,7 +44,7 @@ public sealed class CustomersController : ControllerBase
         return Ok(response);
     }
 
-    [RequirePermission("customer_download", "customers_report")]
+    [RequirePermission("customer.export")]
     [HttpGet("export")]
     public async Task<IActionResult> ExportCustomers(
         [FromQuery] CustomerListFilterDto filter,
@@ -61,7 +61,7 @@ public sealed class CustomersController : ControllerBase
         return File(file.Content, file.ContentType, file.FileName);
     }
 
-    [RequirePermission("customer_template")]
+    [RequirePermission("customer.template")]
     [HttpGet("template")]
     public async Task<IActionResult> CustomerTemplate(CancellationToken cancellationToken)
     {
@@ -69,7 +69,7 @@ public sealed class CustomersController : ControllerBase
         return File(file.Content, file.ContentType, file.FileName);
     }
 
-    [RequirePermission("customer_upload")]
+    [RequirePermission("customer.import")]
     [HttpPost("upload")]
     [Consumes("multipart/form-data")]
     public async Task<IActionResult> UploadCustomers(IFormFile import_file, CancellationToken cancellationToken)
@@ -79,7 +79,7 @@ public sealed class CustomersController : ControllerBase
         return Ok(response);
     }
 
-    [RequirePermission("customer_show")]
+    [RequirePermission("customer.detail")]
     [HttpGet("{id}")]
     public async Task<IActionResult> GetCustomer(ulong id, CancellationToken cancellationToken)
     {
@@ -87,7 +87,7 @@ public sealed class CustomersController : ControllerBase
         return Ok(response);
     }
 
-    [RequirePermission("customer_create")]
+    [RequirePermission("customer.create")]
     [HttpPost]
     [Consumes("multipart/form-data")]
     public async Task<IActionResult> CreateCustomer([FromForm] CustomerFormRequestDto form, CancellationToken cancellationToken)
@@ -97,7 +97,7 @@ public sealed class CustomersController : ControllerBase
         return StatusCode(StatusCodes.Status201Created, response);
     }
 
-    [RequirePermission("customer_edit")]
+    [RequirePermission("customer.edit")]
     [HttpPut("{id}")]
     [HttpPatch("{id}")]
     [Consumes("multipart/form-data")]
@@ -108,7 +108,7 @@ public sealed class CustomersController : ControllerBase
         return Ok(response);
     }
 
-    [RequirePermission("customer_active")]
+    [RequirePermission("customer.active")]
     [HttpPatch("{id}/status")]
     public async Task<IActionResult> SetCustomerActive(ulong id, [FromBody] ActiveStatusRequestDto request, CancellationToken cancellationToken)
     {
@@ -116,17 +116,17 @@ public sealed class CustomersController : ControllerBase
         return Ok(response);
     }
 
-    [RequirePermission("retailer_approve")]
+    [RequirePermission("customer.approve")]
     [HttpPost("{id}/approval-status/approve")]
     public Task<IActionResult> ApproveRetailer(ulong id, [FromBody] CustomerApprovalStatusRequestDto request, CancellationToken cancellationToken) =>
         SetRetailerApprovalStatus(id, "APPROVED", request.Remark, cancellationToken);
 
-    [RequirePermission("retailer_reject")]
+    [RequirePermission("customer.reject")]
     [HttpPost("{id}/approval-status/reject")]
     public Task<IActionResult> RejectRetailer(ulong id, [FromBody] CustomerApprovalStatusRequestDto request, CancellationToken cancellationToken) =>
         SetRetailerApprovalStatus(id, "REJECTED", request.Remark, cancellationToken);
 
-    [RequirePermission("retailer_pending")]
+    [RequirePermission("customer.pending")]
     [HttpPost("{id}/approval-status/pending")]
     public Task<IActionResult> MarkRetailerPending(ulong id, [FromBody] CustomerApprovalStatusRequestDto request, CancellationToken cancellationToken) =>
         SetRetailerApprovalStatus(id, "PENDING", request.Remark, cancellationToken);
@@ -137,7 +137,7 @@ public sealed class CustomersController : ControllerBase
         return Ok(response);
     }
 
-    [RequirePermission("customer_kyc_access")]
+    [RequirePermission("customer.kyc_review")]
     [HttpPost("{id}/kyc/{documentKey}/approve")]
     public async Task<IActionResult> ApproveKycDocument(ulong id, string documentKey, [FromBody] CustomerKycApprovalRequestDto request, CancellationToken cancellationToken)
     {
@@ -145,7 +145,7 @@ public sealed class CustomersController : ControllerBase
         return Ok(response);
     }
 
-    [RequirePermission("customer_kyc_access")]
+    [RequirePermission("customer.kyc_review")]
     [HttpPost("{id}/kyc/{documentKey}/reject")]
     public async Task<IActionResult> RejectKycDocument(ulong id, string documentKey, [FromBody] CustomerKycApprovalRequestDto request, CancellationToken cancellationToken)
     {
@@ -153,7 +153,7 @@ public sealed class CustomersController : ControllerBase
         return Ok(response);
     }
 
-    [RequirePermission("customer_delete")]
+    [RequirePermission("customer.delete")]
     [HttpDelete("{id}")]
     public async Task<IActionResult> DeleteCustomer(ulong id, CancellationToken cancellationToken)
     {

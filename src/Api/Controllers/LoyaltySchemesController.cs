@@ -21,7 +21,7 @@ public sealed class LoyaltySchemesController : ControllerBase
         _environment = environment;
     }
 
-    [RequirePermission("scheme_access_list", "scheme_access")]
+    [RequirePermission("scheme.view")]
     [HttpGet]
     public async Task<IActionResult> GetSchemes([FromQuery] LoyaltySchemeFilterDto filter, CancellationToken cancellationToken)
     {
@@ -36,7 +36,7 @@ public sealed class LoyaltySchemesController : ControllerBase
         return Ok(response);
     }
 
-    [RequirePermission("scheme_access_list", "scheme_access", "scheme_create", "scheme_edit")]
+    [RequirePermission("scheme.view", "scheme.create", "scheme.edit")]
     [HttpGet("generate-code")]
     public async Task<IActionResult> GenerateCode(
         [FromQuery(Name = "scheme_name")] string? schemeName,
@@ -48,7 +48,7 @@ public sealed class LoyaltySchemesController : ControllerBase
         return Ok(response);
     }
 
-    [RequirePermission("scheme_show")]
+    [RequirePermission("scheme.detail")]
     [HttpGet("{id}")]
     public async Task<IActionResult> GetScheme(ulong id, CancellationToken cancellationToken)
     {
@@ -56,7 +56,7 @@ public sealed class LoyaltySchemesController : ControllerBase
         return Ok(response);
     }
 
-    [RequirePermission("scheme_create")]
+    [RequirePermission("scheme.create")]
     [HttpPost]
     public async Task<IActionResult> CreateScheme([FromBody] LoyaltySchemeRequestDto request, CancellationToken cancellationToken)
     {
@@ -64,7 +64,7 @@ public sealed class LoyaltySchemesController : ControllerBase
         return StatusCode(StatusCodes.Status201Created, response);
     }
 
-    [RequirePermission("scheme_edit")]
+    [RequirePermission("scheme.edit")]
     [HttpPut("{id}")]
     [HttpPatch("{id}")]
     public async Task<IActionResult> UpdateScheme(ulong id, [FromBody] LoyaltySchemeRequestDto request, CancellationToken cancellationToken)
@@ -73,21 +73,21 @@ public sealed class LoyaltySchemesController : ControllerBase
         return Ok(response);
     }
 
-    [RequirePermission("scheme_draft")]
+    [RequirePermission("scheme.draft")]
     [HttpPost("{id}/draft")]
     public async Task<IActionResult> SendToDraft(ulong id, CancellationToken cancellationToken)
     {
         return Ok(await _loyaltySchemeService.SendToDraftAsync(id, CurrentUserId(), IsSuperAdmin(), cancellationToken));
     }
 
-    [RequirePermission("scheme_submit")]
+    [RequirePermission("scheme.submit")]
     [HttpPost("{id}/submit")]
     public async Task<IActionResult> SubmitScheme(ulong id, CancellationToken cancellationToken)
     {
         return Ok(await _loyaltySchemeService.SubmitSchemeAsync(id, CurrentUserId(), cancellationToken));
     }
 
-    [RequirePermission("scheme_approve")]
+    [RequirePermission("scheme.approve")]
     [HttpPost("{id}/approve")]
     public async Task<IActionResult> ApproveScheme(ulong id, [FromBody] LoyaltySchemeDecisionDto request, CancellationToken cancellationToken)
     {
@@ -95,21 +95,21 @@ public sealed class LoyaltySchemesController : ControllerBase
         return Ok(response);
     }
 
-    [RequirePermission("scheme_reject")]
+    [RequirePermission("scheme.reject")]
     [HttpPost("{id}/reject")]
     public async Task<IActionResult> RejectScheme(ulong id, [FromBody] LoyaltySchemeDecisionDto request, CancellationToken cancellationToken)
     {
         return Ok(await _loyaltySchemeService.RejectSchemeAsync(id, request.Remark, CurrentUserId(), cancellationToken));
     }
 
-    [RequirePermission("scheme_publish")]
+    [RequirePermission("scheme.publish")]
     [HttpPost("{id}/publish")]
     public async Task<IActionResult> PublishScheme(ulong id, CancellationToken cancellationToken)
     {
         return Ok(await _loyaltySchemeService.PublishSchemeAsync(id, CurrentUserId(), cancellationToken));
     }
 
-    [RequirePermission("scheme_create", "scheme_edit")]
+    [RequirePermission("scheme.create", "scheme.edit")]
     [HttpPost("{id}/brochure")]
     [RequestSizeLimit(10 * 1024 * 1024)]
     public async Task<IActionResult> UploadBrochure(ulong id, IFormFile brochure, CancellationToken cancellationToken)
@@ -129,7 +129,7 @@ public sealed class LoyaltySchemesController : ControllerBase
         return Ok(await _loyaltySchemeService.SetBrochureAsync(id, $"/uploads/loyalty-schemes/{fileName}", CurrentUserId(), cancellationToken));
     }
 
-    [RequirePermission("scheme_delete")]
+    [RequirePermission("scheme.delete")]
     [HttpDelete("{id}")]
     public async Task<IActionResult> DeleteScheme(ulong id, CancellationToken cancellationToken)
     {

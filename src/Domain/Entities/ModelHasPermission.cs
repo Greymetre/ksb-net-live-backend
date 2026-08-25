@@ -1,5 +1,7 @@
 namespace Domain.Entities;
 
+/// <summary>Legacy per-user permission grants. Unused: every permission this CRM checks
+/// comes from the user's roles, and the table is kept empty.</summary>
 public sealed class ModelHasPermission
 {
     public ulong PermissionId { get; set; }

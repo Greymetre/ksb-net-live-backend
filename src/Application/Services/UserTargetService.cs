@@ -24,8 +24,8 @@ public sealed class UserTargetService : IUserTargetService
     public async Task<LaravelApiResponse> GetTargetsAsync(UserTargetFilterDto filter, CancellationToken cancellationToken) =>
         LaravelApiResponse.Success("user_targets", await _repository.GetTargetsAsync(filter, cancellationToken));
 
-    public async Task<LaravelApiResponse> GetTargetAsync(ulong id, CancellationToken cancellationToken) =>
-        LaravelApiResponse.Success("user_target", await GetOrThrowAsync(_repository.GetTargetDtoAsync(id, cancellationToken), "User Target not found"));
+    public async Task<LaravelApiResponse> GetTargetAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken) =>
+        LaravelApiResponse.Success("user_target", await GetOrThrowAsync(_repository.GetTargetDtoAsync(id, actorUserId, cancellationToken), "User Target not found"));
 
     public async Task<LaravelApiResponse> GetOptionsAsync(ulong? actorUserId, CancellationToken cancellationToken) =>
         LaravelApiResponse.Success("options", await _repository.GetOptionsAsync(actorUserId, cancellationToken));
@@ -37,7 +37,7 @@ public sealed class UserTargetService : IUserTargetService
         target.UpdatedAt = DateTime.Now;
         await _repository.AddTargetAsync(target, cancellationToken);
         await _repository.SaveChangesAsync(cancellationToken);
-        return LaravelApiResponse.Success("user_target", await _repository.GetTargetDtoAsync(target.Id, cancellationToken), "User Target Store Successfully");
+        return LaravelApiResponse.Success("user_target", await _repository.GetTargetDtoAsync(target.Id, null, cancellationToken), "User Target Store Successfully");
     }
 
     public async Task<LaravelApiResponse> UpdateTargetAsync(ulong id, UserTargetRequestDto request, CancellationToken cancellationToken)
@@ -46,7 +46,7 @@ public sealed class UserTargetService : IUserTargetService
         await BuildTargetAsync(target, request, cancellationToken);
         target.UpdatedAt = DateTime.Now;
         await _repository.SaveChangesAsync(cancellationToken);
-        return LaravelApiResponse.Success("user_target", await _repository.GetTargetDtoAsync(id, cancellationToken), "User Target Updated Successfully");
+        return LaravelApiResponse.Success("user_target", await _repository.GetTargetDtoAsync(id, null, cancellationToken), "User Target Updated Successfully");
     }
 
     public async Task<LaravelApiResponse> DeleteTargetAsync(ulong id, CancellationToken cancellationToken)

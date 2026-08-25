@@ -33,6 +33,10 @@ public sealed class RedemptionFilterDto
     public string? Search { get; set; }
     public int? Status { get; set; }
     public string? RedeemMode { get; set; }
+
+    /// <summary>Who is asking. A dealer login sees only its own redemptions, the same way
+    /// it sees only its own invoices; internal users see everything the permission allows.</summary>
+    public ulong? ActorUserId { get; set; }
 }
 
 public sealed class RedemptionCreateRequestDto

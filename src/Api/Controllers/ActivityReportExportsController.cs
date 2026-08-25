@@ -28,7 +28,7 @@ public sealed class ActivityReportExportsController : ControllerBase
         });
     }
 
-    [HttpGet("sales-engineer-export"), RequirePermission("activity_report_sales_engineer_download")]
+    [HttpGet("sales-engineer-export"), RequirePermission("activity_report.export_sales_engineer")]
     public async Task<IActionResult> SalesEngineer([FromQuery] ActivityReportFilter filter, CancellationToken ct)
     {
         if (!ValidMeet(filter.Meet)) return BadRequest(new { status = "error", message = "Please select a valid meet before downloading the report." });
@@ -39,7 +39,7 @@ public sealed class ActivityReportExportsController : ControllerBase
         return Workbook(rows, filter, "Sales Engg wise", false);
     }
 
-    [HttpGet("distributor-export"), RequirePermission("activity_report_distributor_download")]
+    [HttpGet("distributor-export"), RequirePermission("activity_report.export_distributor")]
     public async Task<IActionResult> Distributor([FromQuery] ActivityReportFilter filter, CancellationToken ct)
     {
         if (!ValidMeet(filter.Meet)) return BadRequest(new { status = "error", message = "Please select a valid meet before downloading the report." });
@@ -50,7 +50,7 @@ public sealed class ActivityReportExportsController : ControllerBase
         return Workbook(rows, filter, "Distributor wise", true);
     }
 
-    [HttpGet("gift-summary-export"), RequirePermission("activity_report_gift_summary_download")]
+    [HttpGet("gift-summary-export"), RequirePermission("activity_report.export_gift_summary")]
     public async Task<IActionResult> GiftSummary([FromQuery] ActivityReportFilter filter, CancellationToken ct)
     {
         if (!ValidMeet(filter.Meet)) return BadRequest(new { status = "error", message = "Please select a valid meet before downloading the report." });
@@ -80,7 +80,7 @@ public sealed class ActivityReportExportsController : ControllerBase
         return Excel(book, $"{MeetFileName(filter.Meet)}_Gift_Summary_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx");
     }
 
-    [HttpGet("preview"), RequirePermission("activity_report_access")]
+    [HttpGet("preview"), RequirePermission("activity_report.view")]
     public async Task<IActionResult> Preview([FromQuery] ActivityReportFilter filter, CancellationToken ct)
     {
         if (!ValidMeet(filter.Meet)) return BadRequest(new { status = "error", message = "Please select a valid meet." });

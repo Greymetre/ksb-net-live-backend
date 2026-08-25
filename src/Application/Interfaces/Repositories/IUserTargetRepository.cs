@@ -6,7 +6,7 @@ namespace Application.Interfaces.Repositories;
 public interface IUserTargetRepository
 {
     Task<IReadOnlyCollection<UserTargetDto>> GetTargetsAsync(UserTargetFilterDto filter, CancellationToken cancellationToken);
-    Task<UserTargetDto?> GetTargetDtoAsync(ulong id, CancellationToken cancellationToken);
+    Task<UserTargetDto?> GetTargetDtoAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
     Task<SalesTargetUser?> GetTargetAsync(ulong id, CancellationToken cancellationToken);
     Task<UserTargetOptionsDto> GetOptionsAsync(ulong? actorUserId, CancellationToken cancellationToken);
     Task<User?> GetUserAsync(ulong id, CancellationToken cancellationToken);

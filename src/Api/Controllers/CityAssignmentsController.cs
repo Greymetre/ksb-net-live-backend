@@ -19,7 +19,7 @@ public sealed class CityAssignmentsController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("city_assigned")]
+    [RequirePermission("city_assignment.view")]
     [HttpGet("usercity")]
     [HttpGet("city-assignments")]
     public async Task<IActionResult> GetAssignments(
@@ -48,19 +48,19 @@ public sealed class CityAssignmentsController : ControllerBase
         Ok(await _service.GetOptionsAsync(CurrentUserId(), cancellationToken));
 
     [Authorize]
-    [RequirePermission("city_assigned")]
+    [RequirePermission("city_assignment.create")]
     [HttpPost("city-assignments")]
     public async Task<IActionResult> SaveAssignment([FromBody] CityAssignmentRequestDto request, CancellationToken cancellationToken) =>
         StatusCode(StatusCodes.Status201Created, await _service.SaveAssignmentAsync(request, cancellationToken));
 
     [Authorize]
-    [RequirePermission("city_assigned")]
+    [RequirePermission("city_assignment.delete")]
     [HttpDelete("city-assignments/{id}")]
     public async Task<IActionResult> DeleteAssignment(ulong id, CancellationToken cancellationToken) =>
         Ok(await _service.DeleteAssignmentAsync(id, cancellationToken));
 
     [Authorize]
-    [RequirePermission("user_download", "city_assigned")]
+    [RequirePermission("city_assignment.export")]
     [HttpGet("usercity-download")]
     [HttpGet("city-assignments/export")]
     public async Task<IActionResult> ExportAssignments(
@@ -82,7 +82,7 @@ public sealed class CityAssignmentsController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("city_assigned")]
+    [RequirePermission("city_assignment.template")]
     [HttpGet("city-assignments/template")]
     public async Task<IActionResult> Template(CancellationToken cancellationToken)
     {
@@ -91,7 +91,7 @@ public sealed class CityAssignmentsController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("user_upload", "city_assigned")]
+    [RequirePermission("city_assignment.import")]
     [HttpPost("usercity-upload")]
     [HttpPost("city-assignments/upload")]
     public async Task<IActionResult> UploadAssignments(IFormFile import_file, CancellationToken cancellationToken)

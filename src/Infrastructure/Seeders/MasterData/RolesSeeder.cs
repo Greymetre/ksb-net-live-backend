@@ -11,10 +11,10 @@ public static class RolesSeeder
 
     private static readonly string[] DistributorPermissions =
     [
-        "dashboard_access",
-        "scheme_access",
-        "new_invoice_access",
-        "new_invoice_create"
+        "dashboard.view",
+        "scheme.view",
+        "invoice_transaction.view",
+        "invoice_transaction.create"
     ];
 
     public static async Task SeedAsync(AppDbContext db, CancellationToken cancellationToken = default)

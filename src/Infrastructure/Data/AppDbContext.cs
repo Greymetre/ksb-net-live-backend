@@ -16,7 +16,6 @@ public sealed class AppDbContext : DbContext
     public DbSet<Role> Roles => Set<Role>();
     public DbSet<Permission> Permissions => Set<Permission>();
     public DbSet<ModelHasRole> ModelHasRoles => Set<ModelHasRole>();
-    public DbSet<ModelHasPermission> ModelHasPermissions => Set<ModelHasPermission>();
     public DbSet<RoleHasPermission> RoleHasPermissions => Set<RoleHasPermission>();
     public DbSet<MobileUserLoginDetail> MobileUserLoginDetails => Set<MobileUserLoginDetail>();
     public DbSet<OAuthAccessToken> OAuthAccessTokens => Set<OAuthAccessToken>();

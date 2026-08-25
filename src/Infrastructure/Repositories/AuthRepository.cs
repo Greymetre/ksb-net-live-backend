@@ -66,9 +66,6 @@ public sealed class AuthRepository : IAuthRepository
             ModelId = userId,
             ModelType = LaravelModelTypes.User
         }), cancellationToken);
-
-        var currentPermissions = _dbContext.ModelHasPermissions.Where(x => x.ModelId == userId && x.ModelType == LaravelModelTypes.User);
-        _dbContext.ModelHasPermissions.RemoveRange(currentPermissions);
     }
 
     public async Task<Customer> AddCustomerAsync(Customer customer, CancellationToken cancellationToken)

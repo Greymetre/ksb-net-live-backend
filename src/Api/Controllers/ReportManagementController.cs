@@ -44,7 +44,7 @@ public sealed class ReportManagementController : ControllerBase
     public Task<IActionResult> RatingReportOptions(CancellationToken cancellationToken) => AsrPerformanceOptions(cancellationToken);
 
     [HttpGet("rating-report/export")]
-    [RequirePermission("asm_rating_report")]
+    [RequirePermission("rating_report.export")]
     public async Task<IActionResult> ExportRatingReport([FromQuery] RatingReportFilter filter, CancellationToken ct)
     {
         var validation = ValidateRatingReportFilter(filter);
@@ -63,7 +63,7 @@ public sealed class ReportManagementController : ControllerBase
     }
 
     [HttpGet("rating-report/dashboard")]
-    [RequirePermission("asm_rating_report")]
+    [RequirePermission("rating_report.view")]
     public async Task<IActionResult> RatingReportDashboard([FromQuery] RatingReportFilter filter, CancellationToken ct)
     {
         if (!filter.DesignationId.HasValue) return BadRequest(new { status = false, message = "Designation is required." });
@@ -306,7 +306,7 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
     }
 
     [HttpGet("retailer-performance/export")]
-    [RequirePermission("retailer_productivity_report")]
+    [RequirePermission("retailer_performance_report.export")]
     public async Task<IActionResult> ExportRetailerPerformance([FromQuery] ProductivityFilter filter, CancellationToken ct)
     {
         if (!filter.DivisionId.HasValue) return BadRequest(new { status = false, message = "Please select a zone before downloading the report." });
@@ -350,7 +350,7 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
     }
 
     [HttpGet("dealer-performance/export")]
-    [RequirePermission("retailer_productivity_report")]
+    [RequirePermission("dealer_performance_report.export")]
     public async Task<IActionResult> ExportDealerPerformance([FromQuery] ProductivityFilter filter, CancellationToken ct)
     {
         var actor = CurrentUserId(); var visible = (await _hr.GetVisibleUserIdsAsync(actor, ct)).Distinct().ToHashSet();
@@ -389,7 +389,7 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
     }
 
     [HttpGet("asr-performance/export")]
-    [RequirePermission("ASR_report_Download")]
+    [RequirePermission("asr_performance_report.export")]
     public async Task<IActionResult> ExportAsrPerformance([FromQuery] AsrPerformanceFilter filter, CancellationToken cancellationToken)
     {
         if (filter.StartDate == default || filter.EndDate == default)
@@ -490,7 +490,7 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
     }
 
     [HttpGet("market-intelligence")]
-    [RequirePermission("market_intelligence_access")]
+    [RequirePermission("market_intelligence_report.view")]
     public async Task<IActionResult> MarketIntelligence([FromQuery] string? search, CancellationToken cancellationToken)
     {
         var actor = CurrentUserId();

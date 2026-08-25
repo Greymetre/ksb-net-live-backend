@@ -24,7 +24,7 @@ public sealed class BeatsController : ControllerBase
     }
 
     [HttpGet]
-    [RequirePermission("beat_access")]
+    [RequirePermission("beat.view")]
     public async Task<IActionResult> List([FromQuery] string? search, [FromQuery] int page = 1, [FromQuery(Name = "page_size")] int pageSize = 10, CancellationToken ct = default)
     {
         var query = _db.Beats.AsNoTracking();
@@ -66,6 +66,28 @@ public sealed class BeatsController : ControllerBase
     }
 
     // Dropdown values only, so no permission gate.
+    // Dropdown feed: beat names fill the filter on the Customers list, which is read by
+    // people who hold no beat-master permission. Only id and name leave here; the beat
+    // listing below stays gated.
+    [HttpGet("names")]
+    public async Task<IActionResult> BeatNames([FromQuery] string? search, CancellationToken ct)
+    {
+        // The beats table has no deleted_at column, so active is what filters the list.
+        var query = _db.Beats.AsNoTracking().Where(x => x.Active == "Y");
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var term = search.Trim();
+            query = query.Where(x => x.BeatName.Contains(term));
+        }
+
+        var beats = await query
+            .OrderBy(x => x.BeatName)
+            .Select(x => new { id = x.Id, name = x.BeatName })
+            .ToListAsync(ct);
+
+        return Ok(new { status = "success", beats });
+    }
+
     [HttpGet("options")]
     public async Task<IActionResult> Options(CancellationToken ct)
     {
@@ -80,7 +102,7 @@ public sealed class BeatsController : ControllerBase
     }
 
     [HttpGet("{id:long}")]
-    [RequirePermission("beat_show")]
+    [RequirePermission("beat.detail")]
     public async Task<IActionResult> Get(ulong id, CancellationToken ct)
     {
         var visibleUserIds = (await _hrRepository.GetVisibleUserIdsAsync(CurrentUserId(), ct)).ToHashSet();
@@ -101,15 +123,15 @@ public sealed class BeatsController : ControllerBase
     }
 
     [HttpPost]
-    [RequirePermission("beat_create")]
+    [RequirePermission("beat.create")]
     public Task<IActionResult> Create([FromBody] BeatRequest request, CancellationToken ct) => Save(null, request, ct);
 
     [HttpPut("{id:long}")]
-    [RequirePermission("beat_edit")]
+    [RequirePermission("beat.edit")]
     public Task<IActionResult> Update(ulong id, [FromBody] BeatRequest request, CancellationToken ct) => Save(id, request, ct);
 
     [HttpPatch("{id:long}/status")]
-    [RequirePermission("beat_edit")]
+    [RequirePermission("beat.edit")]
     public async Task<IActionResult> Status(ulong id, [FromBody] BeatStatusRequest request, CancellationToken ct)
     {
         var beat = await _db.Beats.FirstOrDefaultAsync(x => x.Id == id, ct);
@@ -121,7 +143,7 @@ public sealed class BeatsController : ControllerBase
     }
 
     [HttpDelete("{id:long}")]
-    [RequirePermission("beat_delete")]
+    [RequirePermission("beat.delete")]
     public async Task<IActionResult> Delete(ulong id, CancellationToken ct)
     {
         var beat = await _db.Beats.FirstOrDefaultAsync(x => x.Id == id, ct);

@@ -51,7 +51,7 @@ WHERE"), cancellationToken);
     }
 
     [HttpGet("user-app-details")]
-    [RequirePermission("user_app_details_access")]
+    [RequirePermission("user_app.view")]
     public async Task<IActionResult> UserAppDetails([FromQuery(Name = "user_id")] ulong? userId, [FromQuery] int page=1, [FromQuery(Name="page_size")] int pageSize=10, CancellationToken cancellationToken=default)
     {
         page=Math.Max(1,page);pageSize=Math.Clamp(pageSize,1,100);
@@ -83,7 +83,7 @@ OFFSET {offset} ROWS FETCH NEXT {pageSize} ROWS ONLY", cancellationToken);
     }
 
     [HttpPost("user-app-details/{userId:long}/force-logout")]
-    [RequirePermission("user_app_force_logout")]
+    [RequirePermission("user_app.force_logout")]
     public async Task<IActionResult> ForceLogoutUser(ulong userId, CancellationToken cancellationToken)
     {
         if (!await CanManageAppUser(userId, cancellationToken))
@@ -94,7 +94,7 @@ OFFSET {offset} ROWS FETCH NEXT {pageSize} ROWS ONLY", cancellationToken);
     }
 
     [HttpDelete("user-app-details/{userId:long}/unique-id")]
-    [RequirePermission("user_app_uuid_reset")]
+    [RequirePermission("user_app.reset_device")]
     public async Task<IActionResult> ClearUserDeviceUuid(ulong userId, CancellationToken cancellationToken)
     {
         if (!await CanManageAppUser(userId, cancellationToken))
@@ -135,7 +135,7 @@ OFFSET {offset} ROWS FETCH NEXT {pageSize} ROWS ONLY", cancellationToken);
     }
 
     [HttpGet("user-live-activity")]
-    [RequirePermission("user_location")]
+    [RequirePermission("user_activity.view")]
     public async Task<IActionResult> UserLiveActivity([FromQuery(Name = "user_id")] ulong userId, [FromQuery] DateTime? date, CancellationToken cancellationToken)
     {
         var ids = await VisibleReportingUserIds(CurrentUserId(), cancellationToken);
@@ -151,7 +151,7 @@ ORDER BY time,id", cancellationToken, ("@user_id",userId), ("@date",day));
     }
 
     [HttpGet("user-live-activity/map")]
-    [RequirePermission("user_location")]
+    [RequirePermission("user_activity.view")]
     public async Task<IActionResult> UserLiveActivityMap([FromQuery(Name="user_id")] ulong userId, [FromQuery] string? mode, [FromQuery] DateTime? date, [FromQuery(Name="to_date")] DateTime? toDate, CancellationToken cancellationToken)
     {
         var ids = await VisibleReportingUserIds(CurrentUserId(), cancellationToken);

@@ -28,6 +28,13 @@ public sealed class PermissionConfiguration : IEntityTypeConfiguration<Permissio
         builder.Property(x => x.Id).HasColumnName("id");
         builder.Property(x => x.Name).HasColumnName("name").HasMaxLength(255);
         builder.Property(x => x.GuardName).HasColumnName("guard_name").HasMaxLength(255);
+        builder.Property(x => x.Label).HasColumnName("label").HasMaxLength(255);
+        builder.Property(x => x.GroupKey).HasColumnName("group_key").HasMaxLength(64);
+        builder.Property(x => x.GroupLabel).HasColumnName("group_label").HasMaxLength(255);
+        builder.Property(x => x.ModuleKey).HasColumnName("module_key").HasMaxLength(64);
+        builder.Property(x => x.ModuleLabel).HasColumnName("module_label").HasMaxLength(255);
+        builder.Property(x => x.ActionKey).HasColumnName("action_key").HasMaxLength(64);
+        builder.Property(x => x.SortOrder).HasColumnName("sort_order");
         builder.Property(x => x.CreatedAt).HasColumnName("created_at");
         builder.Property(x => x.UpdatedAt).HasColumnName("updated_at");
         builder.HasIndex(x => new { x.Name, x.GuardName }).IsUnique();
@@ -47,6 +54,10 @@ public sealed class ModelHasRoleConfiguration : IEntityTypeConfiguration<ModelHa
     }
 }
 
+/// <summary>The CRM grants permissions through roles only - there is no screen or API that
+/// gives one user a permission of their own. The table is kept mapped so no migration drops
+/// it and the foreign key to permissions stays valid, but nothing reads or writes it, and
+/// the catalog seeder empties it on every start.</summary>
 public sealed class ModelHasPermissionConfiguration : IEntityTypeConfiguration<ModelHasPermission>
 {
     public void Configure(EntityTypeBuilder<ModelHasPermission> builder)

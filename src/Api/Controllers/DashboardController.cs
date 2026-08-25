@@ -30,7 +30,7 @@ public sealed class DashboardController : ControllerBase
         _invoices = invoices;
     }
 
-    [RequirePermission("dashboard_access")]
+    [RequirePermission("dashboard.view")]
     [HttpGet("dealer")]
     public async Task<IActionResult> Dealer(CancellationToken ct)
     {
@@ -174,7 +174,7 @@ public sealed class DashboardController : ControllerBase
     /// Scheme detail for the dealer CRM page. Mirrors the mobile dealer scheme screen:
     /// points are real only after HO approval, anything still in approval is expected.
     /// </summary>
-    [RequirePermission("dashboard_access")]
+    [RequirePermission("dashboard.view")]
     [HttpGet("dealer/schemes/{id}")]
     public async Task<IActionResult> DealerSchemeDetail(ulong id, CancellationToken ct)
     {

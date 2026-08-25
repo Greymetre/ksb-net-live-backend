@@ -17,7 +17,7 @@ public sealed class RoleRepository : IRoleRepository
         _dbContext = dbContext;
     }
 
-    public async Task<IReadOnlyCollection<RoleDto>> GetRolesAsync(string? search, bool includePermissions, ulong? actorUserId, CancellationToken cancellationToken)
+    public async Task<(IReadOnlyCollection<RoleDto> Rows, int Total)> GetRolesAsync(string? search, bool includePermissions, ulong? actorUserId, int page, int pageSize, CancellationToken cancellationToken)
     {
         var query = _dbContext.Roles.AsNoTracking();
         if (!await IsSuperAdminAsync(actorUserId, cancellationToken))
@@ -28,23 +28,60 @@ public sealed class RoleRepository : IRoleRepository
         if (!string.IsNullOrWhiteSpace(search))
         {
             var term = search.Trim();
-            query = query.Where(x => x.Name.Contains(term) || x.GuardName.Contains(term));
+            query = query.Where(x => x.Name.Contains(term));
         }
 
+        var total = await query.CountAsync(cancellationToken);
+
+        // The listing is paged in the database. It used to read every role and let the
+        // browser page the result, which meant the row count on screen was the count of
+        // roles loaded rather than the count that exist.
+        var take = pageSize > 0 ? Math.Min(pageSize, MaxRows) : 10;
+        var skip = Math.Max(page - 1, 0) * take;
         var roles = await query
             .OrderByDescending(x => x.Id)
-            .Take(MaxRows)
+            .Skip(skip)
+            .Take(take)
             .ToListAsync(cancellationToken);
 
-        if (!includePermissions || roles.Count == 0)
-        {
-            return roles.Select(role => ToRoleDto(role, [])).ToList();
-        }
+        if (roles.Count == 0) return ([], total);
 
-        var permissionsByRole = await GetPermissionsByRoleAsync(roles.Select(x => x.Id), cancellationToken);
-        return roles
-            .Select(role => ToRoleDto(role, permissionsByRole.GetValueOrDefault(role.Id, [])))
+        var roleIds = roles.Select(x => x.Id).ToArray();
+        var userCounts = await UserCountsAsync(roleIds, cancellationToken);
+        var permissionsByRole = includePermissions
+            ? await GetPermissionsByRoleAsync(roleIds, cancellationToken)
+            : [];
+
+        var rows = roles
+            .Select(role => ToRoleDto(
+                role,
+                permissionsByRole.GetValueOrDefault(role.Id, []),
+                userCounts.GetValueOrDefault(role.Id)))
             .ToList();
+
+        return (rows, total);
+    }
+
+    /// <summary>Users still on this role. A deleted user keeps its row in model_has_roles,
+    /// so the join to users is what stops a long-gone account from blocking the role.</summary>
+    public Task<int> RoleUserCountAsync(ulong id, CancellationToken cancellationToken) =>
+        _dbContext.ModelHasRoles.AsNoTracking()
+            .Where(x => x.RoleId == id && x.ModelType == LaravelModelTypes.User)
+            .Join(_dbContext.Users.AsNoTracking().Where(user => user.DeletedAt == null),
+                modelRole => modelRole.ModelId, user => user.Id, (modelRole, _) => modelRole)
+            .CountAsync(cancellationToken);
+
+    private async Task<Dictionary<ulong, int>> UserCountsAsync(IReadOnlyCollection<ulong> roleIds, CancellationToken cancellationToken)
+    {
+        var counts = await _dbContext.ModelHasRoles.AsNoTracking()
+            .Where(x => roleIds.Contains(x.RoleId) && x.ModelType == LaravelModelTypes.User)
+            .Join(_dbContext.Users.AsNoTracking().Where(user => user.DeletedAt == null),
+                modelRole => modelRole.ModelId, user => user.Id, (modelRole, _) => modelRole)
+            .GroupBy(x => x.RoleId)
+            .Select(group => new { RoleId = group.Key, Count = group.Count() })
+            .ToListAsync(cancellationToken);
+
+        return counts.ToDictionary(x => x.RoleId, x => x.Count);
     }
 
     public async Task<RoleDto?> GetRoleAsync(ulong id, CancellationToken cancellationToken)
@@ -53,7 +90,8 @@ public sealed class RoleRepository : IRoleRepository
         if (role is null) return null;
 
         var permissionsByRole = await GetPermissionsByRoleAsync([id], cancellationToken);
-        return ToRoleDto(role, permissionsByRole.GetValueOrDefault(id, []));
+        var userCount = await RoleUserCountAsync(id, cancellationToken);
+        return ToRoleDto(role, permissionsByRole.GetValueOrDefault(id, []), userCount);
     }
 
     public async Task<RoleDto> CreateRoleAsync(RoleRequestDto request, CancellationToken cancellationToken)
@@ -150,9 +188,9 @@ public sealed class RoleRepository : IRoleRepository
         }
 
         return await query
-            .OrderBy(x => x.Name)
+            .OrderBy(x => x.SortOrder).ThenBy(x => x.Name)
             .Take(MaxRows)
-            .Select(x => new PermissionDto { Id = x.Id, Name = x.Name, GuardName = x.GuardName })
+            .Select(x => ToPermissionDto(x))
             .ToListAsync(cancellationToken);
     }
 
@@ -172,7 +210,7 @@ public sealed class RoleRepository : IRoleRepository
                 rolePermission => rolePermission.PermissionId,
                 permission => permission.Id,
                 (rolePermission, permission) => new { rolePermission.RoleId, Permission = permission })
-            .OrderBy(x => x.Permission.Name)
+            .OrderBy(x => x.Permission.SortOrder).ThenBy(x => x.Permission.Name)
             .ToListAsync(cancellationToken);
 
         return rows
@@ -180,7 +218,7 @@ public sealed class RoleRepository : IRoleRepository
             .ToDictionary(
                 group => group.Key,
                 group => (IReadOnlyCollection<PermissionDto>)group
-                    .Select(x => new PermissionDto { Id = x.Permission.Id, Name = x.Permission.Name, GuardName = x.Permission.GuardName })
+                    .Select(x => ToPermissionDto(x.Permission))
                     .ToList());
     }
 
@@ -194,13 +232,28 @@ public sealed class RoleRepository : IRoleRepository
             .AnyAsync(name => name == "superadmin", cancellationToken);
     }
 
-    private static RoleDto ToRoleDto(Role role, IReadOnlyCollection<PermissionDto> permissions) => new()
+
+    private static PermissionDto ToPermissionDto(Permission permission) => new()
+    {
+        Id = permission.Id,
+        Name = permission.Name,
+        GuardName = permission.GuardName,
+        Label = permission.Label ?? permission.Name,
+        GroupKey = permission.GroupKey ?? string.Empty,
+        GroupLabel = permission.GroupLabel ?? string.Empty,
+        ModuleKey = permission.ModuleKey ?? string.Empty,
+        ModuleLabel = permission.ModuleLabel ?? string.Empty,
+        ActionKey = permission.ActionKey ?? string.Empty,
+        SortOrder = permission.SortOrder
+    };
+    private static RoleDto ToRoleDto(Role role, IReadOnlyCollection<PermissionDto> permissions, int userCount = 0) => new()
     {
         Id = role.Id,
         Name = role.Name,
         GuardName = role.GuardName,
         CreatedAt = role.CreatedAt,
         UpdatedAt = role.UpdatedAt,
+        UserCount = userCount,
         Permissions = permissions
     };
 }

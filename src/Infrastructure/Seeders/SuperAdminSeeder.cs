@@ -127,16 +127,6 @@ public static class SuperAdminSeeder
 
             await db.SaveChangesAsync(cancellationToken);
 
-            var directPermissions = await db.ModelHasPermissions
-                .Where(x => x.ModelId == user.Id && x.ModelType == LaravelModelTypes.User)
-                .ToListAsync(cancellationToken);
-
-            if (directPermissions.Count > 0)
-            {
-                db.ModelHasPermissions.RemoveRange(directPermissions);
-                await db.SaveChangesAsync(cancellationToken);
-            }
-
             var hasRole = await db.ModelHasRoles.AnyAsync(
                 x => x.RoleId == role.Id &&
                      x.ModelId == user.Id &&

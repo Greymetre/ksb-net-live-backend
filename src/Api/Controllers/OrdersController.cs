@@ -24,7 +24,7 @@ public sealed class OrdersController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("order_access")]
+    [RequirePermission("order.view")]
     [HttpGet("orders")]
     public async Task<IActionResult> GetOrders(
         [FromQuery(Name = "retailers_id")] ulong? retailersId,
@@ -65,43 +65,43 @@ public sealed class OrdersController : ControllerBase
         Ok(await _service.GetProductsByFamilyAsync(subcategoryId, cancellationToken));
 
     [Authorize]
-    [RequirePermission("order_show")]
+    [RequirePermission("order.detail")]
     [HttpGet("orders/{id}")]
     public async Task<IActionResult> GetOrder(ulong id, CancellationToken cancellationToken) =>
         Ok(await _service.GetOrderAsync(id, CurrentUserId(), cancellationToken));
 
     [Authorize]
-    [RequirePermission("order_create")]
+    [RequirePermission("order.create")]
     [HttpPost("orders")]
     public async Task<IActionResult> CreateOrder([FromBody] OrderRequestDto request, CancellationToken cancellationToken) =>
         StatusCode(StatusCodes.Status201Created, await _service.CreateOrderAsync(request, CurrentUserId(), cancellationToken));
 
     [Authorize]
-    [RequirePermission("order_edit")]
+    [RequirePermission("order.edit")]
     [HttpPut("orders/{id}")]
     public async Task<IActionResult> UpdateOrder(ulong id, [FromBody] OrderRequestDto request, CancellationToken cancellationToken) =>
         Ok(await _service.UpdateOrderAsync(id, request, CurrentUserId(), cancellationToken));
 
     [Authorize]
-    [RequirePermission("order_delete")]
+    [RequirePermission("order.delete")]
     [HttpDelete("orders/{id}")]
     public async Task<IActionResult> DeleteOrder(ulong id, CancellationToken cancellationToken) =>
         Ok(await _service.DeleteOrderAsync(id, cancellationToken));
 
     [Authorize]
-    [RequirePermission("order_active")]
+    [RequirePermission("order.active")]
     [HttpPost("orders/{id}/active")]
     public async Task<IActionResult> SetActive(ulong id, [FromBody] OrderActiveRequestDto request, CancellationToken cancellationToken) =>
         Ok(await _service.SetActiveAsync(id, request, cancellationToken));
 
     [Authorize]
-    [RequirePermission("order_edit")]
+    [RequirePermission("order.edit")]
     [HttpPost("orders/{id}/status")]
     public async Task<IActionResult> SetStatus(ulong id, [FromBody] OrderStatusRequestDto request, CancellationToken cancellationToken) =>
         Ok(await _service.SetStatusAsync(id, request, cancellationToken));
 
     [Authorize]
-    [RequirePermission("order_dispatch")]
+    [RequirePermission("order.dispatch")]
     [HttpPost("orders/{id}/dispatch")]
     public async Task<IActionResult> Dispatch(ulong id, [FromForm] OrderDispatchFormRequest form, CancellationToken cancellationToken)
     {
@@ -126,19 +126,19 @@ public sealed class OrdersController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("sale_access")]
+    [RequirePermission("order_dispatch.view")]
     [HttpGet("order-dispatches")]
     public async Task<IActionResult> GetDispatches([FromQuery] string? mode, CancellationToken cancellationToken) =>
         Ok(await _service.GetDispatchesAsync(mode, CurrentUserId(), cancellationToken));
 
     [Authorize]
-    [RequirePermission("sale_show")]
+    [RequirePermission("order_dispatch.detail")]
     [HttpGet("order-dispatches/{id}")]
     public async Task<IActionResult> GetDispatchDetail(ulong id, CancellationToken cancellationToken) =>
         Ok(await _service.GetDispatchDetailAsync(id, CurrentUserId(), cancellationToken));
 
     [Authorize]
-    [RequirePermission("order_download")]
+    [RequirePermission("order.export")]
     [HttpGet("orders/export")]
     public async Task<IActionResult> ExportOrders(
         [FromQuery(Name = "retailers_id")] ulong? retailersId,

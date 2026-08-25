@@ -5,7 +5,7 @@ namespace Application.Interfaces.Services;
 
 public interface IRoleService
 {
-    Task<LaravelApiResponse> GetRolesAsync(string? search, bool includePermissions, ulong? actorUserId, CancellationToken cancellationToken);
+    Task<LaravelApiResponse> GetRolesAsync(string? search, bool includePermissions, ulong? actorUserId, int page, int pageSize, CancellationToken cancellationToken);
     Task<LaravelApiResponse> GetRoleAsync(ulong id, CancellationToken cancellationToken);
     Task<LaravelApiResponse> CreateRoleAsync(RoleRequestDto request, CancellationToken cancellationToken);
     Task<LaravelApiResponse> UpdateRoleAsync(ulong id, RoleRequestDto request, CancellationToken cancellationToken);

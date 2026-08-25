@@ -22,7 +22,7 @@ public sealed class ProductsController : ControllerBase
         _environment = environment;
     }
 
-    [RequirePermission("category_access")]
+    [RequirePermission("segment.view")]
     [HttpGet("segments")]
     public async Task<IActionResult> Segments([FromQuery] string? search, [FromQuery] int? page, [FromQuery(Name = "page_size")] int? pageSize, CancellationToken cancellationToken) =>
         Ok(await _service.GetSegmentsAsync(search, includeInactive: true, page, pageSize, cancellationToken));
@@ -31,7 +31,7 @@ public sealed class ProductsController : ControllerBase
     public async Task<IActionResult> SegmentOptions([FromQuery] string? search, CancellationToken cancellationToken) =>
         Ok(await _service.GetSegmentsAsync(search, includeInactive: false, null, null, cancellationToken));
 
-    [RequirePermission("category_download")]
+    [RequirePermission("segment.export")]
     [HttpGet("segments/export")]
     public async Task<IActionResult> ExportSegments([FromQuery] string? search, CancellationToken cancellationToken)
     {
@@ -39,7 +39,7 @@ public sealed class ProductsController : ControllerBase
         return File(file.Content, file.ContentType, file.FileName);
     }
 
-    [RequirePermission("category_template")]
+    [RequirePermission("segment.template")]
     [HttpGet("segments/template")]
     public async Task<IActionResult> SegmentTemplate(CancellationToken cancellationToken)
     {
@@ -47,7 +47,7 @@ public sealed class ProductsController : ControllerBase
         return File(file.Content, file.ContentType, file.FileName);
     }
 
-    [RequirePermission("category_upload")]
+    [RequirePermission("segment.import")]
     [HttpPost("segments/upload")]
     [Consumes("multipart/form-data")]
     public async Task<IActionResult> UploadSegments(IFormFile import_file, CancellationToken cancellationToken)
@@ -56,28 +56,28 @@ public sealed class ProductsController : ControllerBase
         return Ok(await _service.UploadSegmentsAsync(stream, CurrentUserId(), cancellationToken));
     }
 
-    [RequirePermission("category_create")]
+    [RequirePermission("segment.create")]
     [HttpPost("segments")]
     public async Task<IActionResult> CreateSegment([FromBody] ProductSegmentRequestDto request, CancellationToken cancellationToken) =>
         StatusCode(StatusCodes.Status201Created, await _service.CreateSegmentAsync(request, CurrentUserId(), cancellationToken));
 
-    [RequirePermission("category_edit")]
+    [RequirePermission("segment.edit")]
     [HttpPut("segments/{id}")]
     [HttpPatch("segments/{id}")]
     public async Task<IActionResult> UpdateSegment(ulong id, [FromBody] ProductSegmentRequestDto request, CancellationToken cancellationToken) =>
         Ok(await _service.UpdateSegmentAsync(id, request, CurrentUserId(), cancellationToken));
 
-    [RequirePermission("category_active")]
+    [RequirePermission("segment.active")]
     [HttpPatch("segments/{id}/status")]
     public async Task<IActionResult> SegmentStatus(ulong id, [FromBody] ActiveRequest request, CancellationToken cancellationToken) =>
         Ok(await _service.SetSegmentActiveAsync(id, request.Active, CurrentUserId(), cancellationToken));
 
-    [RequirePermission("category_delete")]
+    [RequirePermission("segment.delete")]
     [HttpDelete("segments/{id}")]
     public async Task<IActionResult> DeleteSegment(ulong id, CancellationToken cancellationToken) =>
         Ok(await _service.DeleteSegmentAsync(id, CurrentUserId(), cancellationToken));
 
-    [RequirePermission("subcategory_access")]
+    [RequirePermission("family.view")]
     [HttpGet("families")]
     public async Task<IActionResult> Families([FromQuery(Name = "segment_id")] ulong? segmentId, [FromQuery] string? search, [FromQuery] int? page, [FromQuery(Name = "page_size")] int? pageSize, CancellationToken cancellationToken) =>
         Ok(await _service.GetFamiliesAsync(segmentId, search, includeInactive: true, page, pageSize, cancellationToken));
@@ -86,7 +86,7 @@ public sealed class ProductsController : ControllerBase
     public async Task<IActionResult> FamilyOptions([FromQuery(Name = "segment_id")] ulong? segmentId, [FromQuery] string? search, CancellationToken cancellationToken) =>
         Ok(await _service.GetFamiliesAsync(segmentId, search, includeInactive: false, null, null, cancellationToken));
 
-    [RequirePermission("subcategory_download")]
+    [RequirePermission("family.export")]
     [HttpGet("families/export")]
     public async Task<IActionResult> ExportFamilies([FromQuery(Name = "segment_id")] ulong? segmentId, [FromQuery] string? search, CancellationToken cancellationToken)
     {
@@ -94,7 +94,7 @@ public sealed class ProductsController : ControllerBase
         return File(file.Content, file.ContentType, file.FileName);
     }
 
-    [RequirePermission("subcategory_template")]
+    [RequirePermission("family.template")]
     [HttpGet("families/template")]
     public async Task<IActionResult> FamilyTemplate(CancellationToken cancellationToken)
     {
@@ -102,7 +102,7 @@ public sealed class ProductsController : ControllerBase
         return File(file.Content, file.ContentType, file.FileName);
     }
 
-    [RequirePermission("subcategory_upload")]
+    [RequirePermission("family.import")]
     [HttpPost("families/upload")]
     [Consumes("multipart/form-data")]
     public async Task<IActionResult> UploadFamilies(IFormFile import_file, CancellationToken cancellationToken)
@@ -111,28 +111,28 @@ public sealed class ProductsController : ControllerBase
         return Ok(await _service.UploadFamiliesAsync(stream, CurrentUserId(), cancellationToken));
     }
 
-    [RequirePermission("subcategory_create")]
+    [RequirePermission("family.create")]
     [HttpPost("families")]
     public async Task<IActionResult> CreateFamily([FromBody] ProductFamilyRequestDto request, CancellationToken cancellationToken) =>
         StatusCode(StatusCodes.Status201Created, await _service.CreateFamilyAsync(request, CurrentUserId(), cancellationToken));
 
-    [RequirePermission("subcategory_edit")]
+    [RequirePermission("family.edit")]
     [HttpPut("families/{id}")]
     [HttpPatch("families/{id}")]
     public async Task<IActionResult> UpdateFamily(ulong id, [FromBody] ProductFamilyRequestDto request, CancellationToken cancellationToken) =>
         Ok(await _service.UpdateFamilyAsync(id, request, CurrentUserId(), cancellationToken));
 
-    [RequirePermission("subcategory_active")]
+    [RequirePermission("family.active")]
     [HttpPatch("families/{id}/status")]
     public async Task<IActionResult> FamilyStatus(ulong id, [FromBody] ActiveRequest request, CancellationToken cancellationToken) =>
         Ok(await _service.SetFamilyActiveAsync(id, request.Active, CurrentUserId(), cancellationToken));
 
-    [RequirePermission("subcategory_delete")]
+    [RequirePermission("family.delete")]
     [HttpDelete("families/{id}")]
     public async Task<IActionResult> DeleteFamily(ulong id, CancellationToken cancellationToken) =>
         Ok(await _service.DeleteFamilyAsync(id, CurrentUserId(), cancellationToken));
 
-    [RequirePermission("product_access")]
+    [RequirePermission("product.view")]
     [HttpGet("products")]
     public async Task<IActionResult> Products([FromQuery(Name = "segment_id")] ulong? segmentId, [FromQuery(Name = "family_id")] ulong? familyId, [FromQuery] string? search, [FromQuery] int? page, [FromQuery(Name = "page_size")] int? pageSize, CancellationToken cancellationToken) =>
         Ok(await _service.GetProductsAsync(segmentId, familyId, search, includeInactive: true, page, pageSize, cancellationToken));
@@ -144,7 +144,7 @@ public sealed class ProductsController : ControllerBase
     public async Task<IActionResult> ProductLookup([FromQuery] string? search, [FromQuery(Name = "page_size")] int? pageSize, CancellationToken cancellationToken) =>
         Ok(await _service.GetProductsAsync(null, null, search, includeInactive: false, 1, pageSize is > 0 and <= 50 ? pageSize : 15, cancellationToken));
 
-    [RequirePermission("product_download")]
+    [RequirePermission("product.export")]
     [HttpGet("products/export")]
     public async Task<IActionResult> ExportProducts([FromQuery(Name = "segment_id")] ulong? segmentId, [FromQuery(Name = "family_id")] ulong? familyId, [FromQuery] string? search, CancellationToken cancellationToken)
     {
@@ -152,7 +152,7 @@ public sealed class ProductsController : ControllerBase
         return File(file.Content, file.ContentType, file.FileName);
     }
 
-    [RequirePermission("product_template")]
+    [RequirePermission("product.template")]
     [HttpGet("products/template")]
     public async Task<IActionResult> ProductTemplate(CancellationToken cancellationToken)
     {
@@ -160,7 +160,7 @@ public sealed class ProductsController : ControllerBase
         return File(file.Content, file.ContentType, file.FileName);
     }
 
-    [RequirePermission("product_upload")]
+    [RequirePermission("product.import")]
     [HttpPost("products/upload")]
     [Consumes("multipart/form-data")]
     public async Task<IActionResult> UploadProducts(IFormFile import_file, CancellationToken cancellationToken)
@@ -169,25 +169,25 @@ public sealed class ProductsController : ControllerBase
         return Ok(await _service.UploadProductsAsync(stream, CurrentUserId(), cancellationToken));
     }
 
-    [RequirePermission("product_create")]
+    [RequirePermission("product.create")]
     [HttpPost("products")]
     [Consumes("multipart/form-data")]
     public async Task<IActionResult> CreateProduct([FromForm] ProductFormRequest form, CancellationToken cancellationToken) =>
         StatusCode(StatusCodes.Status201Created, await _service.CreateProductAsync(await ToProductRequestAsync(form, cancellationToken), CurrentUserId(), cancellationToken));
 
-    [RequirePermission("product_edit")]
+    [RequirePermission("product.edit")]
     [HttpPut("products/{id}")]
     [HttpPatch("products/{id}")]
     [Consumes("multipart/form-data")]
     public async Task<IActionResult> UpdateProduct(ulong id, [FromForm] ProductFormRequest form, CancellationToken cancellationToken) =>
         Ok(await _service.UpdateProductAsync(id, await ToProductRequestAsync(form, cancellationToken), CurrentUserId(), cancellationToken));
 
-    [RequirePermission("product_active")]
+    [RequirePermission("product.active")]
     [HttpPatch("products/{id}/status")]
     public async Task<IActionResult> ProductStatus(ulong id, [FromBody] ActiveRequest request, CancellationToken cancellationToken) =>
         Ok(await _service.SetProductActiveAsync(id, request.Active, CurrentUserId(), cancellationToken));
 
-    [RequirePermission("product_delete")]
+    [RequirePermission("product.delete")]
     [HttpDelete("products/{id}")]
     public async Task<IActionResult> DeleteProduct(ulong id, CancellationToken cancellationToken) =>
         Ok(await _service.DeleteProductAsync(id, CurrentUserId(), cancellationToken));

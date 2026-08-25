@@ -537,7 +537,10 @@ public sealed class AuthService : IAuthService
             EmployeeCodes = user.EmployeeCodes,
             AccessToken = accessToken ?? string.Empty,
             Roles = roles.Select(role => role.Id).ToArray(),
-            Permissions = permissions.Select(permission => permission.Name).ToArray(),
+            // Aliases keep SFA app builds released before the permission rename working.
+            Permissions = LegacyMobilePermissionAliases
+                .Expand(permissions.Select(permission => permission.Name))
+                .ToArray(),
             UserType = roleNames,
             LeaveBalance = user.LeaveBalance,
             Provider = roleNames.Contains("Customer Dealer") ? "retailers" : "users"

@@ -7,7 +7,7 @@ namespace Application.Interfaces.Services;
 public interface IUserTargetService
 {
     Task<LaravelApiResponse> GetTargetsAsync(UserTargetFilterDto filter, CancellationToken cancellationToken);
-    Task<LaravelApiResponse> GetTargetAsync(ulong id, CancellationToken cancellationToken);
+    Task<LaravelApiResponse> GetTargetAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> GetOptionsAsync(ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> CreateTargetAsync(UserTargetRequestDto request, CancellationToken cancellationToken);
     Task<LaravelApiResponse> UpdateTargetAsync(ulong id, UserTargetRequestDto request, CancellationToken cancellationToken);

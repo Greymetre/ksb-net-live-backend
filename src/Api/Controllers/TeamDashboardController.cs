@@ -39,7 +39,7 @@ public sealed class TeamDashboardController : ControllerBase
         _invoices = invoices;
     }
 
-    [RequirePermission("dashboard_secondary")]
+    [RequirePermission("dashboard.secondary_sales")]
     [HttpGet("overview")]
     public async Task<IActionResult> Overview(CancellationToken ct)
     {
@@ -254,7 +254,7 @@ public sealed class TeamDashboardController : ControllerBase
     /// full approval chain is shown. SS and Sales collapse into "In Process" only
     /// for dealer and retailer logins, never here.
     /// </summary>
-    [RequirePermission("dashboard_loyalty")]
+    [RequirePermission("dashboard.loyalty")]
     [HttpGet("loyalty")]
     public async Task<IActionResult> Loyalty(CancellationToken ct)
     {
@@ -411,7 +411,7 @@ public sealed class TeamDashboardController : ControllerBase
     /// Activity dashboard: attendance, field work, tours, leaves and expenses for
     /// every user in scope.
     /// </summary>
-    [RequirePermission("dashboard_activity")]
+    [RequirePermission("dashboard.activity")]
     [HttpGet("activity")]
     public async Task<IActionResult> Activity(CancellationToken ct)
     {

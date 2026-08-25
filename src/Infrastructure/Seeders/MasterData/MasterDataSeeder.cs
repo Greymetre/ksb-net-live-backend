@@ -13,7 +13,7 @@ public static class MasterDataSeeder
         await DistrictsSeeder.SeedAsync(db, cancellationToken);
         await CitiesSeeder.SeedAsync(db, cancellationToken);
         await PincodesSeeder.SeedAsync(db, cancellationToken);
-        await PermissionsSeeder.SeedAsync(db, cancellationToken);
+        await PermissionCatalogSeeder.SeedAsync(db, cancellationToken);
         await RolesSeeder.SeedAsync(db, cancellationToken);
     }
 }

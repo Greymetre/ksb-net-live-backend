@@ -11,6 +11,11 @@ public sealed class UserTargetFilterDto
     public string? Month { get; set; }
     public string? FinancialYear { get; set; }
     public string? Search { get; set; }
+
+    /// <summary>Who is asking. Targets are shown for the users this person may see:
+    /// everyone for an admin role, the branch for a branch manager, the dealer's own
+    /// field users for a dealer login, and self plus reportees for anybody else.</summary>
+    public ulong? ActorUserId { get; set; }
 }
 
 public sealed class UserTargetDto

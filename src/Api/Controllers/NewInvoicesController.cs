@@ -23,7 +23,7 @@ public sealed class NewInvoicesController : ControllerBase
         _environment = environment;
     }
 
-    [RequirePermission("new_invoice_access")]
+    [RequirePermission("invoice_transaction.view")]
     [HttpGet]
     public async Task<IActionResult> GetInvoices(
         [FromQuery] NewInvoiceFilterDto filter,
@@ -57,7 +57,7 @@ public sealed class NewInvoicesController : ControllerBase
         return Ok(response);
     }
 
-    [RequirePermission("new_invoice_export")]
+    [RequirePermission("invoice_transaction.export")]
     [HttpGet("export")]
     public async Task<IActionResult> ExportInvoices(
         [FromQuery] NewInvoiceFilterDto filter,
@@ -113,7 +113,7 @@ public sealed class NewInvoicesController : ControllerBase
         return Ok(await _newInvoiceService.GetSchemeFilterOptionsAsync(cancellationToken));
     }
 
-    [RequirePermission("new_invoice_access")]
+    [RequirePermission("invoice_transaction.detail")]
     [HttpGet("{id}")]
     public async Task<IActionResult> GetInvoice(ulong id, CancellationToken cancellationToken)
     {
@@ -121,7 +121,7 @@ public sealed class NewInvoicesController : ControllerBase
         return Ok(response);
     }
 
-    [RequirePermission("new_invoice_create")]
+    [RequirePermission("invoice_transaction.create")]
     [HttpPost]
     public async Task<IActionResult> CreateInvoice([FromForm] NewInvoiceFormRequest form, CancellationToken cancellationToken)
     {
@@ -135,7 +135,7 @@ public sealed class NewInvoicesController : ControllerBase
         return StatusCode(StatusCodes.Status201Created, response);
     }
 
-    [RequirePermission("new_invoice_edit")]
+    [RequirePermission("invoice_transaction.edit")]
     [HttpPut("{id}")]
     [HttpPatch("{id}")]
     public async Task<IActionResult> UpdateInvoice(ulong id, [FromForm] NewInvoiceFormRequest form, CancellationToken cancellationToken)
@@ -146,7 +146,7 @@ public sealed class NewInvoicesController : ControllerBase
         return Ok(response);
     }
 
-    [RequirePermission("new_invoice_delete")]
+    [RequirePermission("invoice_transaction.delete")]
     [HttpDelete("{id}")]
     public async Task<IActionResult> DeleteInvoice(ulong id, CancellationToken cancellationToken)
     {
@@ -189,7 +189,7 @@ public sealed class NewInvoicesController : ControllerBase
         }
     }
 
-    [RequirePermission("new_invoice_approve_ss")]
+    [RequirePermission("invoice_transaction.approve_ss")]
     [HttpPost("{id}/approve/ss")]
     public async Task<IActionResult> ApproveSs(ulong id, [FromBody] NewInvoiceApprovalRequestDto request, CancellationToken cancellationToken)
     {
@@ -197,7 +197,7 @@ public sealed class NewInvoicesController : ControllerBase
         return Ok(response);
     }
 
-    [RequirePermission("new_invoice_approve_sales")]
+    [RequirePermission("invoice_transaction.approve_sales")]
     [HttpPost("{id}/approve/sales")]
     public async Task<IActionResult> ApproveSales(ulong id, [FromBody] NewInvoiceApprovalRequestDto request, CancellationToken cancellationToken)
     {
@@ -205,7 +205,7 @@ public sealed class NewInvoicesController : ControllerBase
         return Ok(response);
     }
 
-    [RequirePermission("new_invoice_approve_ho")]
+    [RequirePermission("invoice_transaction.approve_ho")]
     [HttpPost("{id}/approve/ho")]
     public async Task<IActionResult> ApproveHo(ulong id, [FromBody] NewInvoiceApprovalRequestDto request, CancellationToken cancellationToken)
     {
@@ -213,7 +213,7 @@ public sealed class NewInvoicesController : ControllerBase
         return Ok(response);
     }
 
-    [RequirePermission("new_invoice_hold")]
+    [RequirePermission("invoice_transaction.hold")]
     [HttpPost("{id}/hold")]
     public async Task<IActionResult> Hold(ulong id, [FromBody] NewInvoiceApprovalRequestDto request, CancellationToken cancellationToken)
     {
@@ -221,7 +221,7 @@ public sealed class NewInvoicesController : ControllerBase
         return Ok(response);
     }
 
-    [RequirePermission("new_invoice_reject")]
+    [RequirePermission("invoice_transaction.reject")]
     [HttpPost("{id}/reject")]
     public async Task<IActionResult> Reject(ulong id, [FromBody] NewInvoiceApprovalRequestDto request, CancellationToken cancellationToken)
     {

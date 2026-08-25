@@ -58,7 +58,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("country_access")]
+    [RequirePermission("country.view")]
     [HttpGet("countries")]
     public async Task<IActionResult> GetCountries([FromQuery] string? search, [FromQuery] int? page, [FromQuery(Name = "page_size")] int? pageSize, CancellationToken cancellationToken)
     {
@@ -67,7 +67,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("state_access")]
+    [RequirePermission("state.view")]
     [HttpGet("states")]
     public async Task<IActionResult> GetStates([FromQuery(Name = "country_id")] ulong? countryId, [FromQuery] string? search, [FromQuery] int? page, [FromQuery(Name = "page_size")] int? pageSize, CancellationToken cancellationToken)
     {
@@ -76,7 +76,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("district_access")]
+    [RequirePermission("district.view")]
     [HttpGet("districts")]
     public async Task<IActionResult> GetDistricts([FromQuery(Name = "state_id")] ulong? stateId, [FromQuery] string? search, [FromQuery] int? page, [FromQuery(Name = "page_size")] int? pageSize, CancellationToken cancellationToken)
     {
@@ -85,7 +85,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("city_access")]
+    [RequirePermission("city.view")]
     [HttpGet("cities")]
     public async Task<IActionResult> GetCities([FromQuery(Name = "state_id")] ulong? stateId, [FromQuery(Name = "district_id")] ulong? districtId, [FromQuery] string? search, [FromQuery] int? page, [FromQuery(Name = "page_size")] int? pageSize, CancellationToken cancellationToken)
     {
@@ -94,7 +94,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("pincode_access")]
+    [RequirePermission("pincode.view")]
     [HttpGet("pincodes")]
     public async Task<IActionResult> GetPincodes(
         [FromQuery(Name = "city_id")] ulong? cityId,
@@ -109,7 +109,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("country_download")]
+    [RequirePermission("country.export")]
     [HttpGet("country-download")]
     [HttpGet("countries/export")]
     public async Task<IActionResult> ExportCountries(CancellationToken cancellationToken)
@@ -119,7 +119,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("country_template")]
+    [RequirePermission("country.template")]
     [HttpGet("country-template")]
     [HttpGet("countries/template")]
     public async Task<IActionResult> CountryTemplate(CancellationToken cancellationToken)
@@ -129,7 +129,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("country_upload")]
+    [RequirePermission("country.import")]
     [HttpPost("country-upload")]
     [HttpPost("countries/upload")]
     [Consumes("multipart/form-data")]
@@ -141,7 +141,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("state_download")]
+    [RequirePermission("state.export")]
     [HttpGet("state-download")]
     [HttpGet("states/export")]
     public async Task<IActionResult> ExportStates(CancellationToken cancellationToken)
@@ -151,7 +151,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("state_template")]
+    [RequirePermission("state.template")]
     [HttpGet("state-template")]
     [HttpGet("states/template")]
     public async Task<IActionResult> StateTemplate(CancellationToken cancellationToken)
@@ -161,7 +161,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("state_upload")]
+    [RequirePermission("state.import")]
     [HttpPost("state-upload")]
     [HttpPost("states/upload")]
     [Consumes("multipart/form-data")]
@@ -173,7 +173,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("district_download")]
+    [RequirePermission("district.export")]
     [HttpGet("district-download")]
     [HttpGet("districts/export")]
     public async Task<IActionResult> ExportDistricts(CancellationToken cancellationToken)
@@ -183,7 +183,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("district_template")]
+    [RequirePermission("district.template")]
     [HttpGet("district-template")]
     [HttpGet("districts/template")]
     public async Task<IActionResult> DistrictTemplate(CancellationToken cancellationToken)
@@ -193,7 +193,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("district_upload")]
+    [RequirePermission("district.import")]
     [HttpPost("district-upload")]
     [HttpPost("districts/upload")]
     [Consumes("multipart/form-data")]
@@ -205,7 +205,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("city_download")]
+    [RequirePermission("city.export")]
     [HttpGet("city-download")]
     [HttpGet("cities/export")]
     public async Task<IActionResult> ExportCities(CancellationToken cancellationToken)
@@ -215,7 +215,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("city_template")]
+    [RequirePermission("city.template")]
     [HttpGet("city-template")]
     [HttpGet("cities/template")]
     public async Task<IActionResult> CityTemplate(CancellationToken cancellationToken)
@@ -225,7 +225,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("city_upload")]
+    [RequirePermission("city.import")]
     [HttpPost("city-upload")]
     [HttpPost("cities/upload")]
     [Consumes("multipart/form-data")]
@@ -237,7 +237,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("pincode_download")]
+    [RequirePermission("pincode.export")]
     [HttpGet("pincode-download")]
     [HttpGet("pincodes/export")]
     public async Task<IActionResult> ExportPincodes(CancellationToken cancellationToken)
@@ -247,7 +247,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("pincode_template")]
+    [RequirePermission("pincode.template")]
     [HttpGet("pincode-template")]
     [HttpGet("pincodes/template")]
     public async Task<IActionResult> PincodeTemplate(CancellationToken cancellationToken)
@@ -257,7 +257,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("pincode_upload")]
+    [RequirePermission("pincode.import")]
     [HttpPost("pincode-upload")]
     [HttpPost("pincodes/upload")]
     [Consumes("multipart/form-data")]
@@ -269,7 +269,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("country_access")]
+    [RequirePermission("country.view")]
     [HttpGet("country/{id}")]
     [HttpGet("countries/{id}")]
     public async Task<IActionResult> GetCountryById(ulong id, CancellationToken cancellationToken)
@@ -279,7 +279,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("country_create")]
+    [RequirePermission("country.create")]
     [HttpPost("country")]
     [HttpPost("countries")]
     public async Task<IActionResult> CreateCountry([FromBody] CountryRequestDto request, CancellationToken cancellationToken)
@@ -289,7 +289,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("country_edit")]
+    [RequirePermission("country.edit")]
     [HttpPut("country/{id}")]
     [HttpPut("countries/{id}")]
     [HttpPatch("country/{id}")]
@@ -301,7 +301,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("country_active")]
+    [RequirePermission("country.active")]
     [HttpPatch("country/{id}/status")]
     [HttpPatch("countries/{id}/status")]
     public async Task<IActionResult> SetCountryActive(ulong id, [FromBody] ActiveStatusRequestDto request, CancellationToken cancellationToken)
@@ -311,7 +311,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("country_delete")]
+    [RequirePermission("country.delete")]
     [HttpDelete("country/{id}")]
     [HttpDelete("countries/{id}")]
     public async Task<IActionResult> DeleteCountry(ulong id, CancellationToken cancellationToken)
@@ -321,7 +321,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("state_access")]
+    [RequirePermission("state.view")]
     [HttpGet("state/{id}")]
     [HttpGet("states/{id}")]
     public async Task<IActionResult> GetStateById(ulong id, CancellationToken cancellationToken)
@@ -331,7 +331,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("state_create")]
+    [RequirePermission("state.create")]
     [HttpPost("state")]
     [HttpPost("states")]
     public async Task<IActionResult> CreateState([FromBody] StateRequestDto request, CancellationToken cancellationToken)
@@ -341,7 +341,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("state_edit")]
+    [RequirePermission("state.edit")]
     [HttpPut("state/{id}")]
     [HttpPut("states/{id}")]
     [HttpPatch("state/{id}")]
@@ -353,7 +353,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("state_active")]
+    [RequirePermission("state.active")]
     [HttpPatch("state/{id}/status")]
     [HttpPatch("states/{id}/status")]
     public async Task<IActionResult> SetStateActive(ulong id, [FromBody] ActiveStatusRequestDto request, CancellationToken cancellationToken)
@@ -363,7 +363,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("state_delete")]
+    [RequirePermission("state.delete")]
     [HttpDelete("state/{id}")]
     [HttpDelete("states/{id}")]
     public async Task<IActionResult> DeleteState(ulong id, CancellationToken cancellationToken)
@@ -373,7 +373,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("district_access")]
+    [RequirePermission("district.view")]
     [HttpGet("district/{id}")]
     [HttpGet("districts/{id}")]
     public async Task<IActionResult> GetDistrictById(ulong id, CancellationToken cancellationToken)
@@ -383,7 +383,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("district_create")]
+    [RequirePermission("district.create")]
     [HttpPost("district")]
     [HttpPost("districts")]
     public async Task<IActionResult> CreateDistrict([FromBody] DistrictRequestDto request, CancellationToken cancellationToken)
@@ -393,7 +393,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("district_edit")]
+    [RequirePermission("district.edit")]
     [HttpPut("district/{id}")]
     [HttpPut("districts/{id}")]
     [HttpPatch("district/{id}")]
@@ -405,7 +405,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("district_active")]
+    [RequirePermission("district.active")]
     [HttpPatch("district/{id}/status")]
     [HttpPatch("districts/{id}/status")]
     public async Task<IActionResult> SetDistrictActive(ulong id, [FromBody] ActiveStatusRequestDto request, CancellationToken cancellationToken)
@@ -415,7 +415,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("district_delete")]
+    [RequirePermission("district.delete")]
     [HttpDelete("district/{id}")]
     [HttpDelete("districts/{id}")]
     public async Task<IActionResult> DeleteDistrict(ulong id, CancellationToken cancellationToken)
@@ -425,7 +425,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("city_access")]
+    [RequirePermission("city.view")]
     [HttpGet("city/{id}")]
     [HttpGet("cities/{id}")]
     public async Task<IActionResult> GetCityById(ulong id, CancellationToken cancellationToken)
@@ -435,7 +435,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("city_create")]
+    [RequirePermission("city.create")]
     [HttpPost("city")]
     [HttpPost("cities")]
     public async Task<IActionResult> CreateCity([FromBody] CityRequestDto request, CancellationToken cancellationToken)
@@ -445,7 +445,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("city_edit")]
+    [RequirePermission("city.edit")]
     [HttpPut("city/{id}")]
     [HttpPut("cities/{id}")]
     [HttpPatch("city/{id}")]
@@ -457,7 +457,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("city_active")]
+    [RequirePermission("city.active")]
     [HttpPatch("city/{id}/status")]
     [HttpPatch("cities/{id}/status")]
     public async Task<IActionResult> SetCityActive(ulong id, [FromBody] ActiveStatusRequestDto request, CancellationToken cancellationToken)
@@ -467,7 +467,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("city_delete")]
+    [RequirePermission("city.delete")]
     [HttpDelete("city/{id}")]
     [HttpDelete("cities/{id}")]
     public async Task<IActionResult> DeleteCity(ulong id, CancellationToken cancellationToken)
@@ -477,7 +477,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("pincode_access")]
+    [RequirePermission("pincode.view")]
     [HttpGet("pincode/{id}")]
     [HttpGet("pincodes/{id}")]
     public async Task<IActionResult> GetPincodeById(ulong id, CancellationToken cancellationToken)
@@ -487,7 +487,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("pincode_create")]
+    [RequirePermission("pincode.create")]
     [HttpPost("pincode")]
     [HttpPost("pincodes")]
     public async Task<IActionResult> CreatePincode([FromBody] PincodeRequestDto request, CancellationToken cancellationToken)
@@ -497,7 +497,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("pincode_edit")]
+    [RequirePermission("pincode.edit")]
     [HttpPut("pincode/{id}")]
     [HttpPut("pincodes/{id}")]
     [HttpPatch("pincode/{id}")]
@@ -509,7 +509,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("pincode_active")]
+    [RequirePermission("pincode.active")]
     [HttpPatch("pincode/{id}/status")]
     [HttpPatch("pincodes/{id}/status")]
     public async Task<IActionResult> SetPincodeActive(ulong id, [FromBody] ActiveStatusRequestDto request, CancellationToken cancellationToken)
@@ -519,7 +519,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("pincode_delete")]
+    [RequirePermission("pincode.delete")]
     [HttpDelete("pincode/{id}")]
     [HttpDelete("pincodes/{id}")]
     public async Task<IActionResult> DeletePincode(ulong id, CancellationToken cancellationToken)
@@ -539,7 +539,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("branch")]
+    [RequirePermission("branch.view")]
     [HttpGet("branches")]
     public async Task<IActionResult> GetBranches([FromQuery] string? search, CancellationToken cancellationToken)
     {
@@ -548,7 +548,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("branch_report_download", "branch")]
+    [RequirePermission("branch.export")]
     [HttpGet("branch_report/download")]
     [HttpGet("branches/export")]
     public async Task<IActionResult> ExportBranches(CancellationToken cancellationToken)
@@ -558,7 +558,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("branch")]
+    [RequirePermission("branch.view")]
     [HttpGet("branches/{id}")]
     public async Task<IActionResult> GetBranch(ulong id, CancellationToken cancellationToken)
     {
@@ -567,7 +567,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("branch")]
+    [RequirePermission("branch.create")]
     [HttpPost("branches")]
     public async Task<IActionResult> CreateBranch([FromBody] BranchRequestDto request, CancellationToken cancellationToken)
     {
@@ -576,7 +576,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("branch")]
+    [RequirePermission("branch.edit")]
     [HttpPut("branches/{id}")]
     [HttpPatch("branches/{id}")]
     public async Task<IActionResult> UpdateBranch(ulong id, [FromBody] BranchRequestDto request, CancellationToken cancellationToken)
@@ -586,7 +586,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("branch")]
+    [RequirePermission("branch.active")]
     [HttpPatch("branches/{id}/status")]
     public async Task<IActionResult> SetBranchActive(ulong id, [FromBody] ActiveStatusRequestDto request, CancellationToken cancellationToken)
     {
@@ -595,7 +595,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("branch")]
+    [RequirePermission("branch.delete")]
     [HttpDelete("branches/{id}")]
     public async Task<IActionResult> DeleteBranch(ulong id, CancellationToken cancellationToken)
     {
@@ -614,7 +614,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("division")]
+    [RequirePermission("zone.view")]
     [HttpGet("division")]
     [HttpGet("divisions")]
     public async Task<IActionResult> GetDivisions([FromQuery] string? search, CancellationToken cancellationToken)
@@ -624,7 +624,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("division_report_download", "division")]
+    [RequirePermission("zone.export")]
     [HttpGet("division_report/download")]
     [HttpGet("divisions/export")]
     public async Task<IActionResult> ExportDivisions(CancellationToken cancellationToken)
@@ -634,7 +634,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("division")]
+    [RequirePermission("zone.view")]
     [HttpGet("division/{id}")]
     [HttpGet("divisions/{id}")]
     public async Task<IActionResult> GetDivision(ulong id, CancellationToken cancellationToken)
@@ -644,7 +644,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("division")]
+    [RequirePermission("zone.create")]
     [HttpPost("division")]
     [HttpPost("divisions")]
     public async Task<IActionResult> CreateDivision([FromBody] DivisionRequestDto request, CancellationToken cancellationToken)
@@ -654,7 +654,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("division")]
+    [RequirePermission("zone.edit")]
     [HttpPut("division/{id}")]
     [HttpPut("divisions/{id}")]
     [HttpPatch("division/{id}")]
@@ -666,7 +666,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("division")]
+    [RequirePermission("zone.active")]
     [HttpPatch("division/{id}/status")]
     [HttpPatch("divisions/{id}/status")]
     public async Task<IActionResult> SetDivisionActive(ulong id, [FromBody] ActiveStatusRequestDto request, CancellationToken cancellationToken)
@@ -676,7 +676,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("division")]
+    [RequirePermission("zone.delete")]
     [HttpDelete("division/{id}")]
     [HttpDelete("divisions/{id}")]
     public async Task<IActionResult> DeleteDivision(ulong id, CancellationToken cancellationToken)
@@ -685,8 +685,17 @@ public sealed class MasterDataController : ControllerBase
         return Ok(response);
     }
 
+    // Dropdown feed - see BranchOptions above. The listing route below stays gated.
     [Authorize]
     [HttpGet("getdesignations")]
+    public async Task<IActionResult> DesignationOptions([FromQuery] string? search, CancellationToken cancellationToken)
+    {
+        var response = await _masterDataService.GetDesignationsAsync(search, cancellationToken);
+        return Ok(response);
+    }
+
+    [Authorize]
+    [RequirePermission("designation.view")]
     [HttpGet("designation")]
     [HttpGet("designations")]
     public async Task<IActionResult> GetDesignations([FromQuery] string? search, CancellationToken cancellationToken)
@@ -705,7 +714,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("designation")]
+    [RequirePermission("designation.export")]
     [HttpGet("designations/export")]
     public async Task<IActionResult> ExportDesignations(CancellationToken cancellationToken)
     {
@@ -714,7 +723,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("designation")]
+    [RequirePermission("designation.view")]
     [HttpGet("designation/{id}")]
     [HttpGet("designations/{id}")]
     public async Task<IActionResult> GetDesignation(ulong id, CancellationToken cancellationToken)
@@ -724,7 +733,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("designation")]
+    [RequirePermission("designation.create")]
     [HttpPost("designation")]
     [HttpPost("designations")]
     public async Task<IActionResult> CreateDesignation([FromBody] DesignationRequestDto request, CancellationToken cancellationToken)
@@ -734,7 +743,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("designation")]
+    [RequirePermission("designation.edit")]
     [HttpPut("designation/{id}")]
     [HttpPut("designations/{id}")]
     [HttpPatch("designation/{id}")]
@@ -746,7 +755,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("designation")]
+    [RequirePermission("designation.active")]
     [HttpPatch("designation/{id}/status")]
     [HttpPatch("designations/{id}/status")]
     public async Task<IActionResult> SetDesignationActive(ulong id, [FromBody] ActiveStatusRequestDto request, CancellationToken cancellationToken)
@@ -756,7 +765,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("designation")]
+    [RequirePermission("designation.delete")]
     [HttpDelete("designation/{id}")]
     [HttpDelete("designations/{id}")]
     public async Task<IActionResult> DeleteDesignation(ulong id, CancellationToken cancellationToken)
@@ -775,7 +784,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("departments")]
+    [RequirePermission("department.view")]
     [HttpGet("departments")]
     public async Task<IActionResult> GetDepartments([FromQuery] string? search, CancellationToken cancellationToken)
     {
@@ -784,7 +793,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("department_report_download", "departments")]
+    [RequirePermission("department.export")]
     [HttpGet("department_report/download")]
     [HttpGet("departments/export")]
     public async Task<IActionResult> ExportDepartments(CancellationToken cancellationToken)
@@ -794,7 +803,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("departments")]
+    [RequirePermission("department.view")]
     [HttpGet("departments/{id}")]
     public async Task<IActionResult> GetDepartment(ulong id, CancellationToken cancellationToken)
     {
@@ -803,7 +812,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("departments")]
+    [RequirePermission("department.create")]
     [HttpPost("departments")]
     public async Task<IActionResult> CreateDepartment([FromBody] DepartmentRequestDto request, CancellationToken cancellationToken)
     {
@@ -812,7 +821,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("departments")]
+    [RequirePermission("department.edit")]
     [HttpPut("departments/{id}")]
     [HttpPatch("departments/{id}")]
     public async Task<IActionResult> UpdateDepartment(ulong id, [FromBody] DepartmentRequestDto request, CancellationToken cancellationToken)
@@ -822,7 +831,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("departments")]
+    [RequirePermission("department.active")]
     [HttpPatch("departments/{id}/status")]
     public async Task<IActionResult> SetDepartmentActive(ulong id, [FromBody] ActiveStatusRequestDto request, CancellationToken cancellationToken)
     {
@@ -831,7 +840,7 @@ public sealed class MasterDataController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("departments")]
+    [RequirePermission("department.delete")]
     [HttpDelete("departments/{id}")]
     public async Task<IActionResult> DeleteDepartment(ulong id, CancellationToken cancellationToken)
     {

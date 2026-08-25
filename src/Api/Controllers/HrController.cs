@@ -40,25 +40,25 @@ public sealed class HrController : ControllerBase
         return Ok(await _hrService.GetUserCitiesAsync(userId, districtId, cancellationToken));
     }
 
-    [RequirePermission("holiday_access")]
+    [RequirePermission("holiday.view")]
     [HttpGet("holidays")]
     [HttpGet("holiday")]
     public async Task<IActionResult> Holidays([FromQuery] string? search, [FromQuery(Name = "holiday_for")] string? holidayFor, [FromQuery(Name = "branch_id")] ulong? branchId, [FromQuery(Name = "division_id")] ulong? divisionId, CancellationToken cancellationToken) =>
         Ok(await _hrService.GetHolidaysAsync(new HolidayListFilterDto { Search = search, HolidayFor = holidayFor, BranchId = branchId, DivisionId = divisionId }, cancellationToken));
 
-    [RequirePermission("holiday_access")]
+    [RequirePermission("holiday.view")]
     [HttpGet("holidays/{id}")]
     [HttpGet("holiday/{id}")]
     public async Task<IActionResult> Holiday(ulong id, CancellationToken cancellationToken) =>
         Ok(await _hrService.GetHolidayAsync(id, cancellationToken));
 
-    [RequirePermission("holiday_access")]
+    [RequirePermission("holiday.create")]
     [HttpPost("holidays")]
     [HttpPost("holiday")]
     public async Task<IActionResult> CreateHoliday([FromBody] HolidayRequestDto request, CancellationToken cancellationToken) =>
         StatusCode(StatusCodes.Status201Created, await _hrService.CreateHolidayAsync(request, CurrentUserId(), cancellationToken));
 
-    [RequirePermission("holiday_access")]
+    [RequirePermission("holiday.edit")]
     [HttpPut("holidays/{id}")]
     [HttpPatch("holidays/{id}")]
     [HttpPut("holiday/{id}")]
@@ -66,13 +66,13 @@ public sealed class HrController : ControllerBase
     public async Task<IActionResult> UpdateHoliday(ulong id, [FromBody] HolidayRequestDto request, CancellationToken cancellationToken) =>
         Ok(await _hrService.UpdateHolidayAsync(id, request, CurrentUserId(), cancellationToken));
 
-    [RequirePermission("holiday_access")]
+    [RequirePermission("holiday.delete")]
     [HttpDelete("holidays/{id}")]
     [HttpDelete("holiday/{id}")]
     public async Task<IActionResult> DeleteHoliday(ulong id, CancellationToken cancellationToken) =>
         Ok(await _hrService.DeleteHolidayAsync(id, CurrentUserId(), cancellationToken));
 
-    [RequirePermission("holiday_access")]
+    [RequirePermission("holiday.export")]
     [HttpGet("holidays/export")]
     public async Task<IActionResult> ExportHolidays([FromQuery] string? search, [FromQuery(Name = "holiday_for")] string? holidayFor, [FromQuery(Name = "branch_id")] ulong? branchId, [FromQuery(Name = "division_id")] ulong? divisionId, CancellationToken cancellationToken)
     {
@@ -80,39 +80,39 @@ public sealed class HrController : ControllerBase
         return File(file.Content, file.ContentType, file.FileName);
     }
 
-    [RequirePermission("leave_access")]
+    [RequirePermission("leave.view")]
     [HttpGet("leaves")]
     public async Task<IActionResult> Leaves([FromQuery(Name = "executive_id")] ulong? executiveId, [FromQuery(Name = "start_date")] DateTime? startDate, [FromQuery(Name = "end_date")] DateTime? endDate, [FromQuery] string? status, [FromQuery] string? search, CancellationToken cancellationToken) =>
         Ok(await _hrService.GetLeavesAsync(new LeaveListFilterDto { ActorUserId = CurrentUserId(), ExecutiveId = executiveId, StartDate = startDate, EndDate = endDate, Status = status, Search = search }, cancellationToken));
 
-    [RequirePermission("leave_access")]
+    [RequirePermission("leave.create")]
     [HttpPost("leaves")]
     public async Task<IActionResult> CreateLeave([FromBody] LeaveRequestDto request, CancellationToken cancellationToken) =>
         StatusCode(StatusCodes.Status201Created, await _hrService.CreateLeaveAsync(request, CurrentUserId(), cancellationToken));
 
-    [RequirePermission("leave_access")]
+    [RequirePermission("leave.delete")]
     [HttpDelete("leaves/{id}")]
     public async Task<IActionResult> DeleteLeave(ulong id, CancellationToken cancellationToken) =>
         Ok(await _hrService.DeleteLeaveAsync(id, cancellationToken));
 
-    [RequirePermission("leave_access")]
+    [RequirePermission("leave.approve")]
     [HttpPost("leaves-approved")]
     [HttpPost("leaves/{id}/approve")]
     public async Task<IActionResult> ApproveLeave([FromRoute] ulong? id, [FromBody] IdRequest? request, CancellationToken cancellationToken) =>
         Ok(await _hrService.ApproveLeaveAsync(id ?? request?.Id ?? 0, CurrentUserId(), cancellationToken));
 
-    [RequirePermission("leave_access")]
+    [RequirePermission("leave.reject")]
     [HttpPost("leaverejected")]
     [HttpPost("leaves/{id}/reject")]
     public async Task<IActionResult> RejectLeave([FromRoute] ulong? id, [FromBody] LeaveStatusBody request, CancellationToken cancellationToken) =>
         Ok(await _hrService.RejectLeaveAsync(id ?? request.LeaveId ?? 0, new LeaveStatusRequestDto { RemarkStatus = request.RemarkStatus }, cancellationToken));
 
-    [RequirePermission("leave_access")]
+    [RequirePermission("leave.comp_off")]
     [HttpPost("combo-off-leave")]
     public async Task<IActionResult> CompOff([FromBody] CompOffRequestDto request, CancellationToken cancellationToken) =>
         Ok(await _hrService.CreateCompOffAsync(request, cancellationToken));
 
-    [RequirePermission("leave_access")]
+    [RequirePermission("leave.export")]
     [HttpGet("leaves-export")]
     [HttpGet("leaves/export")]
     public async Task<IActionResult> ExportLeaves([FromQuery(Name = "executive_id")] ulong? executiveId, [FromQuery(Name = "start_date")] DateTime? startDate, [FromQuery(Name = "end_date")] DateTime? endDate, [FromQuery] string? status, [FromQuery] string? search, CancellationToken cancellationToken)
@@ -121,12 +121,12 @@ public sealed class HrController : ControllerBase
         return File(file.Content, file.ContentType, file.FileName);
     }
 
-    [RequirePermission("tours")]
+    [RequirePermission("tour.view")]
     [HttpGet("tours")]
     public async Task<IActionResult> Tours([FromQuery(Name = "executive_id")] ulong? executiveId, [FromQuery(Name = "division_id")] ulong? divisionId, [FromQuery(Name = "designation_id")] ulong? designationId, [FromQuery(Name = "start_date")] DateTime? startDate, [FromQuery(Name = "end_date")] DateTime? endDate, [FromQuery] string? search, CancellationToken cancellationToken) =>
         Ok(await _hrService.GetToursAsync(new TourListFilterDto { ExecutiveId = executiveId, DivisionId = divisionId, DesignationId = designationId, StartDate = startDate, EndDate = endDate, Search = search }, CurrentUserId(), cancellationToken));
 
-    [RequirePermission("tours")]
+    [RequirePermission("tour.view")]
     [HttpGet("tours/{id}")]
     public async Task<IActionResult> Tour(ulong id, CancellationToken cancellationToken)
     {
@@ -134,7 +134,7 @@ public sealed class HrController : ControllerBase
         return Ok(await _hrService.GetTourAsync(id, cancellationToken));
     }
 
-    [RequirePermission("tours")]
+    [RequirePermission("tour.create")]
     [HttpPost("tours")]
     public async Task<IActionResult> CreateTour([FromBody] TourRequestDto request, CancellationToken cancellationToken)
     {
@@ -142,7 +142,7 @@ public sealed class HrController : ControllerBase
         return StatusCode(StatusCodes.Status201Created, await _hrService.CreateTourAsync(request, CurrentUserId(), cancellationToken));
     }
 
-    [RequirePermission("tours")]
+    [RequirePermission("tour.edit")]
     [HttpPut("tours/{id}")]
     [HttpPatch("tours/{id}")]
     public async Task<IActionResult> UpdateTour(ulong id, [FromBody] TourRequestDto request, CancellationToken cancellationToken)
@@ -152,7 +152,7 @@ public sealed class HrController : ControllerBase
         return Ok(await _hrService.UpdateTourAsync(id, request, CurrentUserId(), cancellationToken));
     }
 
-    [RequirePermission("tours")]
+    [RequirePermission("tour.delete")]
     [HttpDelete("tours/{id}")]
     public async Task<IActionResult> DeleteTour(ulong id, CancellationToken cancellationToken)
     {
@@ -160,7 +160,7 @@ public sealed class HrController : ControllerBase
         return Ok(await _hrService.DeleteTourAsync(id, cancellationToken));
     }
 
-    [RequirePermission("tours")]
+    [RequirePermission("tour.status")]
     [HttpPost("tours-changeStatus")]
     [HttpPost("tours/change-status")]
     public async Task<IActionResult> ChangeTourStatus([FromBody] TourStatusRequestDto request, CancellationToken cancellationToken)
@@ -173,7 +173,7 @@ public sealed class HrController : ControllerBase
         return Ok(await _hrService.ChangeTourStatusAsync(request, CurrentUserId(), cancellationToken));
     }
 
-    [RequirePermission("tours")]
+    [RequirePermission("tour.export")]
     [HttpGet("tours-download")]
     [HttpGet("tours/export")]
     public async Task<IActionResult> ExportTours([FromQuery(Name = "executive_id")] ulong? executiveId, [FromQuery(Name = "division_id")] ulong? divisionId, [FromQuery(Name = "designation_id")] ulong? designationId, [FromQuery(Name = "start_date")] DateTime? startDate, [FromQuery(Name = "end_date")] DateTime? endDate, [FromQuery] string? search, CancellationToken cancellationToken)
@@ -182,7 +182,7 @@ public sealed class HrController : ControllerBase
         return File(file.Content, file.ContentType, file.FileName);
     }
 
-    [RequirePermission("tours")]
+    [RequirePermission("tour.template")]
     [HttpGet("tours-template")]
     [HttpGet("tours/template")]
     public async Task<IActionResult> TourTemplate(CancellationToken cancellationToken)
@@ -191,7 +191,7 @@ public sealed class HrController : ControllerBase
         return File(file.Content, file.ContentType, file.FileName);
     }
 
-    [RequirePermission("tours")]
+    [RequirePermission("tour.import")]
     [HttpPost("tours-upload")]
     [HttpPost("tours/upload")]
     [Consumes("multipart/form-data")]
@@ -201,13 +201,13 @@ public sealed class HrController : ControllerBase
         return Ok(await _hrService.UploadToursAsync(stream, CurrentUserId(), cancellationToken));
     }
 
-    [RequirePermission("attendance_report")]
+    [RequirePermission("attendance.view")]
     [HttpGet("attendances")]
     [HttpGet("attendancesInfo")]
     public async Task<IActionResult> Attendances([FromQuery(Name = "executive_id")] ulong? executiveId, [FromQuery(Name = "branch_id")] ulong? branchId, [FromQuery(Name = "division_id")] ulong? divisionId, [FromQuery(Name = "designation_id")] ulong? designationId, [FromQuery(Name = "start_date")] DateTime? startDate, [FromQuery(Name = "end_date")] DateTime? endDate, [FromQuery] string? active, [FromQuery] string? status, [FromQuery] string? type, [FromQuery] string? search, [FromQuery] int page = 1, [FromQuery(Name = "page_size")] int pageSize = 10, CancellationToken cancellationToken = default) =>
         Ok(await _hrService.GetAttendancesAsync(new AttendanceListFilterDto { ActorUserId = CurrentUserId(), ExecutiveId = executiveId, BranchId = branchId, DivisionId = divisionId, DesignationId = designationId, StartDate = startDate, EndDate = endDate, Active = active, Status = status, Type = type, Search = search, Page = page, PageSize = pageSize }, cancellationToken));
 
-    [RequirePermission("attendance_report")]
+    [RequirePermission("attendance.view")]
     [HttpGet("attendance-plan")]
     public async Task<IActionResult> AttendancePlan([FromQuery(Name = "user_id")] ulong? userId, [FromQuery] DateTime? date, CancellationToken cancellationToken)
     {
@@ -215,12 +215,12 @@ public sealed class HrController : ControllerBase
         return Ok(await _hrService.GetAttendancePlanAsync(new AttendancePlanLookupDto { UserId = userId, Date = date }, cancellationToken));
     }
 
-    [RequirePermission("attendance_delete")]
+    [RequirePermission("attendance.delete")]
     [HttpDelete("attendances/{id}")]
     public async Task<IActionResult> DeleteAttendance(ulong id, CancellationToken cancellationToken) =>
         Ok(await _hrService.DeleteAttendanceAsync(id, cancellationToken));
 
-    [RequirePermission("attendance_report")]
+    [RequirePermission("attendance.view")]
     [HttpPost("get-tour-and-beat-plan")]
     public async Task<IActionResult> AttendancePlanPost([FromBody] AttendancePlanLookupDto request, CancellationToken cancellationToken)
     {
@@ -228,37 +228,37 @@ public sealed class HrController : ControllerBase
         return Ok(await _hrService.GetAttendancePlanAsync(request, cancellationToken));
     }
 
-    [RequirePermission("attendance_report")]
+    [RequirePermission("attendance.punch_in")]
     [HttpPost("attendances")]
     [HttpPost("submitAttendances")]
     [HttpPost("attendances/punch-in")]
     public async Task<IActionResult> PunchIn([FromBody] AttendancePunchInRequestDto request, CancellationToken cancellationToken) =>
         Ok(await _hrService.PunchInAsync(request, CurrentUserId(), cancellationToken));
 
-    [RequirePermission("attendance_report")]
+    [RequirePermission("attendance.punch_out")]
     [HttpPost("punchoutnow")]
     [HttpPost("attendances/punch-out")]
     public async Task<IActionResult> PunchOut([FromBody] AttendancePunchOutRequestDto request, CancellationToken cancellationToken) =>
         Ok(await _hrService.PunchOutAsync(request, cancellationToken));
 
-    [RequirePermission("attendance_report")]
+    [RequirePermission("attendance.punch_out")]
     [HttpPost("removePunchout")]
     public async Task<IActionResult> RemovePunchOut([FromBody] IdRequest request, CancellationToken cancellationToken) =>
         Ok(await _hrService.RemovePunchOutAsync(request.Id, cancellationToken));
 
-    [RequirePermission("attendance_report")]
+    [RequirePermission("attendance.approve")]
     [HttpPost("approveAttendance")]
     [HttpPost("attendances/approve")]
     public async Task<IActionResult> ApproveAttendance([FromBody] IdsRequest request, CancellationToken cancellationToken) =>
         Ok(await _hrService.ApproveAttendanceAsync(request.Ids(), CurrentUserId(), cancellationToken));
 
-    [RequirePermission("attendance_report")]
+    [RequirePermission("attendance.reject")]
     [HttpPost("rejectAttendance")]
     [HttpPost("attendances/reject")]
     public async Task<IActionResult> RejectAttendance([FromBody] AttendanceRejectRequestDto request, CancellationToken cancellationToken) =>
         Ok(await _hrService.RejectAttendanceAsync(request, CurrentUserId(), cancellationToken));
 
-    [RequirePermission("attendance_report")]
+    [RequirePermission("attendance.export")]
     [HttpGet("attendance-download")]
     [HttpGet("attendances/export")]
     public async Task<IActionResult> ExportAttendances([FromQuery(Name = "executive_id")] ulong? executiveId, [FromQuery(Name = "branch_id")] ulong? branchId, [FromQuery(Name = "division_id")] ulong? divisionId, [FromQuery(Name = "designation_id")] ulong? designationId, [FromQuery(Name = "start_date")] DateTime? startDate, [FromQuery(Name = "end_date")] DateTime? endDate, [FromQuery] string? active, [FromQuery] string? status, [FromQuery] string? type, [FromQuery] string? search, CancellationToken cancellationToken)
@@ -267,12 +267,12 @@ public sealed class HrController : ControllerBase
         return File(file.Content, file.ContentType, file.FileName);
     }
 
-    [RequirePermission("attendance_summary_report")]
+    [RequirePermission("attendance_summary.view")]
     [HttpGet("attendance-summary")]
     public async Task<IActionResult> AttendanceSummary([FromQuery(Name = "executive_id")] ulong? executiveId, [FromQuery(Name = "branch_id")] ulong? branchId, [FromQuery(Name = "division_id")] ulong? divisionId, [FromQuery(Name = "designation_id")] ulong? designationId, [FromQuery(Name = "start_date")] DateTime? startDate, [FromQuery(Name = "end_date")] DateTime? endDate, CancellationToken cancellationToken) =>
         Ok(await _hrService.GetAttendanceSummaryAsync(new AttendanceListFilterDto { ActorUserId = CurrentUserId(), ExecutiveId = executiveId, BranchId = branchId, DivisionId = divisionId, DesignationId = designationId, StartDate = startDate, EndDate = endDate }, cancellationToken));
 
-    [RequirePermission("attendance_summary_report")]
+    [RequirePermission("attendance_summary.export")]
     [HttpGet("attendancesummary-download")]
     [HttpGet("attendance-summary/export")]
     public async Task<IActionResult> ExportAttendanceSummary([FromQuery(Name = "executive_id")] ulong? executiveId, [FromQuery(Name = "branch_id")] ulong? branchId, [FromQuery(Name = "division_id")] ulong? divisionId, [FromQuery(Name = "designation_id")] ulong? designationId, [FromQuery(Name = "start_date")] DateTime? startDate, [FromQuery(Name = "end_date")] DateTime? endDate, CancellationToken cancellationToken)

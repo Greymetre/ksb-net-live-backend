@@ -20,10 +20,10 @@ public sealed class CustomerRepository : ICustomerRepository
     private const string GuardName = "users";
     private static readonly string[] DistributorPermissions =
     [
-        "dashboard_access",
-        "scheme_access",
-        "new_invoice_access",
-        "new_invoice_create"
+        "dashboard.view",
+        "scheme.view",
+        "invoice_transaction.view",
+        "invoice_transaction.create"
     ];
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly AppDbContext _dbContext;
