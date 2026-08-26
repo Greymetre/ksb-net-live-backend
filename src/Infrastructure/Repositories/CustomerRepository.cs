@@ -51,6 +51,8 @@ public sealed class CustomerRepository : ICustomerRepository
                   EF.Functions.Like(x.CustomFields, $"%\"agri_distributor\":{id}%"))));
         }
 
+        query = await ApplyReportingScopeAsync(query, filter.ActorUserId, cancellationToken);
+
         if (filter.CustomerType.HasValue) query = query.Where(x => x.CustomerType == filter.CustomerType);
         if (!string.IsNullOrWhiteSpace(filter.Active)) query = query.Where(x => x.Active == NormalizeActive(filter.Active));
         if (!string.IsNullOrWhiteSpace(filter.Search))
@@ -181,6 +183,51 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
         return new PagedResult<CustomerDto>(customers, total, page, filter.Unpaged ? customers.Count : pageSize);
     }
 
+    /// <summary>Narrows the customers to the ones the actor is allowed to see. A dealer login
+    /// is already pinned to its own retailers by the caller, and an admin-named or privileged
+    /// role sees everything; everyone else sees the customers assigned to themselves and to
+    /// their reporting descendants, to the end of the chain. Assignment is read from
+    /// employee_details, from executive_id, and from the employee_id / sales_executive_id
+    /// custom fields, because live data carries it in all three.</summary>
+    private async Task<IQueryable<Customer>> ApplyReportingScopeAsync(
+        IQueryable<Customer> query,
+        ulong? actorUserId,
+        CancellationToken cancellationToken)
+    {
+        if (await ReportingVisibility.HasUnrestrictedDataScopeAsync(_dbContext, actorUserId, cancellationToken)) return query;
+
+        var visibleUserIds = await ReportingVisibility.GetVisibleUserIdsAsync(_dbContext, actorUserId, cancellationToken);
+        if (visibleUserIds.Count == 0) return query.Where(_ => false);
+
+        var idList = visibleUserIds.ToArray();
+        var assignedCustomerIds = await QueryULongListAsync(
+            $@"SELECT DISTINCT customer_id
+FROM employee_details
+WHERE user_id IN ({string.Join(',', idList)})
+  AND customer_id IS NOT NULL
+  AND deleted_at IS NULL
+  AND (active = 'Y' OR active IS NULL)",
+            [], cancellationToken);
+
+        var employeeIds = _dbContext.Users.AsNoTracking()
+            .Where(x => visibleUserIds.Contains(x.Id))
+            .Select(x => x.Id);
+
+        return query.Where(x => assignedCustomerIds.Contains(x.Id)
+            || (x.ExecutiveId.HasValue && visibleUserIds.Contains(x.ExecutiveId.Value))
+            || (x.CreatedBy.HasValue && visibleUserIds.Contains(x.CreatedBy.Value))
+            || employeeIds.Any(employeeId => x.CustomFields != null
+                && (EF.Functions.Like(x.CustomFields, "%\"employee_id\":\"" + employeeId + "\"%")
+                    || EF.Functions.Like(x.CustomFields, "%\"employee_id\": \"" + employeeId + "\"%")
+                    || EF.Functions.Like(x.CustomFields, "%\"employee_id\":" + employeeId + ",%")
+                    || EF.Functions.Like(x.CustomFields, "%\"employee_id\":" + employeeId + "}%")
+                    || EF.Functions.Like(x.CustomFields, "%\"employee_id\":[%" + employeeId + "%]%")
+                    || EF.Functions.Like(x.CustomFields, "%\"sales_executive_id\":\"" + employeeId + "\"%")
+                    || EF.Functions.Like(x.CustomFields, "%\"sales_executive_id\": \"" + employeeId + "\"%")
+                    || EF.Functions.Like(x.CustomFields, "%\"sales_executive_id\":" + employeeId + ",%")
+                    || EF.Functions.Like(x.CustomFields, "%\"sales_executive_id\":" + employeeId + "}%"))));
+    }
+
     private async Task<ulong?> DealerCustomerIdAsync(ulong? actorUserId, CancellationToken cancellationToken)
     {
         if (!actorUserId.HasValue) return null;
@@ -206,6 +253,8 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
                   EF.Functions.Like(x.CustomFields, $"%\"agri_distributor\":\"{dealerId}\"%") ||
                   EF.Functions.Like(x.CustomFields, $"%\"agri_distributor\":{dealerId}%"))));
         }
+
+        query = await ApplyReportingScopeAsync(query, actorUserId, cancellationToken);
 
         var row = await query
             .Select(x => new

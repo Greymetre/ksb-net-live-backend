@@ -36,6 +36,28 @@ internal static class ReportingVisibility
                 .AnyAsync(roleName => roleName == DistributorRoleName, cancellationToken)
             : Task.FromResult(false);
 
+    /// <summary>True when the actor's roles put them above the reporting scope entirely:
+    /// an admin-named role, or one of the privileged reporting roles. Callers use this to
+    /// skip data scoping altogether rather than to narrow it, so rows that carry no
+    /// assignment at all - a customer with no executive, an invoice with no creator -
+    /// stay visible to the people who are meant to see everything.</summary>
+    public static async Task<bool> HasUnrestrictedDataScopeAsync(AppDbContext db, ulong? actorUserId, CancellationToken cancellationToken)
+    {
+        if (!actorUserId.HasValue) return true;
+
+        var roleNames = await db.ModelHasRoles.AsNoTracking()
+            .Where(modelRole => modelRole.ModelId == actorUserId.Value && modelRole.ModelType == LaravelModelTypes.User)
+            .Join(db.Roles.AsNoTracking(), modelRole => modelRole.RoleId, role => role.Id, (_, role) => role.Name)
+            .ToListAsync(cancellationToken);
+
+        if (roleNames.Any(name => string.Equals(name, DistributorRoleName, StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        return roleNames.Any(IsAdminRole) || roleNames.Any(PrivilegedReportingRoles.Contains);
+    }
+
     public static async Task<IReadOnlyCollection<ulong>> GetVisibleUserIdsAsync(AppDbContext db, ulong? actorUserId, CancellationToken cancellationToken)
     {
         var internalUsers = await InternalUsersQuery(db, db.Users.AsNoTracking())
