@@ -159,6 +159,85 @@ internal static class ReportingVisibility
         return visible.ToArray();
     }
 
+    /// <summary>The customers assigned to any of <paramref name="visibleUserIds"/>, resolved once.
+    ///
+    /// The obvious shape - "does this customer belong to any visible user" evaluated per row -
+    /// costs rows x users x LIKE and does not finish on live data. This resolves the customer
+    /// set a single time instead, so the caller filters on an id set: employee_details and
+    /// executive_id are read relationally, and the custom-fields assignment is parsed in one
+    /// streamed pass over only the rows that carry it.</summary>
+    public static async Task<HashSet<ulong>> GetVisibleCustomerIdsAsync(
+        AppDbContext db,
+        IReadOnlyCollection<ulong> visibleUserIds,
+        CancellationToken cancellationToken)
+    {
+        var result = new HashSet<ulong>();
+        if (visibleUserIds.Count == 0) return result;
+
+        var visible = visibleUserIds.ToHashSet();
+
+        // 1. The relational assignment table.
+        var connection = db.Database.GetDbConnection();
+        var closeConnection = connection.State != ConnectionState.Open;
+        if (closeConnection) await connection.OpenAsync(cancellationToken);
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = $@"SELECT DISTINCT customer_id
+FROM employee_details
+WHERE user_id IN ({string.Join(',', visible)})
+  AND customer_id IS NOT NULL
+  AND deleted_at IS NULL
+  AND (active = 'Y' OR active IS NULL)";
+            command.CommandTimeout = 120;
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                if (!reader.IsDBNull(0)) result.Add(Convert.ToUInt64(reader.GetValue(0)));
+            }
+        }
+        finally
+        {
+            if (closeConnection) await connection.CloseAsync();
+        }
+
+        // 2. executive_id, which the invoice screen honours only where the custom fields
+        //    carry no assignment of their own.
+        var byExecutive = await db.Customers.AsNoTracking()
+            .Where(x => x.DeletedAt == null
+                && x.ExecutiveId.HasValue
+                && visibleUserIds.Contains(x.ExecutiveId.Value)
+                && (x.CustomFields == null
+                    || (!EF.Functions.Like(x.CustomFields, "%\"employee_id\":%")
+                        && !EF.Functions.Like(x.CustomFields, "%\"sales_executive_id\":%"))))
+            .Select(x => x.Id)
+            .ToListAsync(cancellationToken);
+        foreach (var id in byExecutive) result.Add(id);
+
+        // 3. The custom-fields assignment. One pass, streamed, over only the rows that
+        //    actually carry one of the two keys; the ids inside are matched in memory.
+        var stream = db.Customers.AsNoTracking()
+            .Where(x => x.DeletedAt == null
+                && x.CustomFields != null
+                && (EF.Functions.Like(x.CustomFields, "%\"employee_id\":%")
+                    || EF.Functions.Like(x.CustomFields, "%\"sales_executive_id\":%")))
+            .Select(x => new { x.Id, x.CustomFields })
+            .AsAsyncEnumerable();
+
+        await foreach (var row in stream.WithCancellation(cancellationToken))
+        {
+            if (result.Contains(row.Id)) continue;
+            foreach (var userId in ReadLegacyAssignedUserIds(row.CustomFields))
+            {
+                if (!visible.Contains(userId)) continue;
+                result.Add(row.Id);
+                break;
+            }
+        }
+
+        return result;
+    }
+
     private static string[] SplitCsv(string? value) =>
         string.IsNullOrWhiteSpace(value) ? [] : value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 

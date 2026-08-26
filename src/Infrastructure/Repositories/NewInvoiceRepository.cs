@@ -436,14 +436,30 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         if (distributorCustomerId.HasValue) return query;
         if (await ReportingVisibility.HasUnrestrictedDataScopeAsync(_dbContext, actorUserId, cancellationToken)) return query;
 
+        // One invoice page asks for the rows, the totals and the stage counts, so this
+        // runs three times per request. The repository is scoped to the request, so the
+        // set is resolved once and reused.
+        if (_scopedCustomerIds is null || _scopedFor != actorUserId)
+        {
+            _scopedCustomerIds = await ResolveScopedCustomerIdsAsync(actorUserId, cancellationToken);
+            _scopedFor = actorUserId;
+        }
+
+        if (_scopedCustomerIds.Count == 0) return query.Where(_ => false);
+
+        var customerIds = _scopedCustomerIds;
+        return query.Where(x => customerIds.Contains(x.Invoice.SecondaryCustomerId));
+    }
+
+    private HashSet<ulong>? _scopedCustomerIds;
+    private ulong? _scopedFor;
+
+    private async Task<HashSet<ulong>> ResolveScopedCustomerIdsAsync(ulong? actorUserId, CancellationToken cancellationToken)
+    {
         var visibleUserIds = await ReportingVisibility.GetVisibleUserIdsAsync(_dbContext, actorUserId, cancellationToken);
-        if (visibleUserIds.Count == 0) return query.Where(_ => false);
-
-        var employeeIds = _dbContext.Users.AsNoTracking()
-            .Where(x => visibleUserIds.Contains(x.Id))
-            .Select(x => x.Id);
-
-        return ApplyAssignedEmployeeFilter(query, employeeIds);
+        return visibleUserIds.Count == 0
+            ? []
+            : await ReportingVisibility.GetVisibleCustomerIdsAsync(_dbContext, visibleUserIds, cancellationToken);
     }
 
     private async Task<ulong?> GetDistributorCustomerIdAsync(ulong? actorUserId, CancellationToken cancellationToken)

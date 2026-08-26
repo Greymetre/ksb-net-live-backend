@@ -196,36 +196,28 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
     {
         if (await ReportingVisibility.HasUnrestrictedDataScopeAsync(_dbContext, actorUserId, cancellationToken)) return query;
 
-        var visibleUserIds = await ReportingVisibility.GetVisibleUserIdsAsync(_dbContext, actorUserId, cancellationToken);
+        // Resolved once per request; the repository is scoped to the request.
+        if (_scope is null || _scopedFor != actorUserId)
+        {
+            _scope = await ResolveScopeAsync(actorUserId, cancellationToken);
+            _scopedFor = actorUserId;
+        }
+
+        var (visibleUserIds, customerIds) = _scope.Value;
         if (visibleUserIds.Count == 0) return query.Where(_ => false);
 
-        var idList = visibleUserIds.ToArray();
-        var assignedCustomerIds = await QueryULongListAsync(
-            $@"SELECT DISTINCT customer_id
-FROM employee_details
-WHERE user_id IN ({string.Join(',', idList)})
-  AND customer_id IS NOT NULL
-  AND deleted_at IS NULL
-  AND (active = 'Y' OR active IS NULL)",
-            [], cancellationToken);
+        return query.Where(x => customerIds.Contains(x.Id)
+            || (x.CreatedBy.HasValue && visibleUserIds.Contains(x.CreatedBy.Value)));
+    }
 
-        var employeeIds = _dbContext.Users.AsNoTracking()
-            .Where(x => visibleUserIds.Contains(x.Id))
-            .Select(x => x.Id);
+    private (HashSet<ulong> VisibleUserIds, HashSet<ulong> CustomerIds)? _scope;
+    private ulong? _scopedFor;
 
-        return query.Where(x => assignedCustomerIds.Contains(x.Id)
-            || (x.ExecutiveId.HasValue && visibleUserIds.Contains(x.ExecutiveId.Value))
-            || (x.CreatedBy.HasValue && visibleUserIds.Contains(x.CreatedBy.Value))
-            || employeeIds.Any(employeeId => x.CustomFields != null
-                && (EF.Functions.Like(x.CustomFields, "%\"employee_id\":\"" + employeeId + "\"%")
-                    || EF.Functions.Like(x.CustomFields, "%\"employee_id\": \"" + employeeId + "\"%")
-                    || EF.Functions.Like(x.CustomFields, "%\"employee_id\":" + employeeId + ",%")
-                    || EF.Functions.Like(x.CustomFields, "%\"employee_id\":" + employeeId + "}%")
-                    || EF.Functions.Like(x.CustomFields, "%\"employee_id\":[%" + employeeId + "%]%")
-                    || EF.Functions.Like(x.CustomFields, "%\"sales_executive_id\":\"" + employeeId + "\"%")
-                    || EF.Functions.Like(x.CustomFields, "%\"sales_executive_id\": \"" + employeeId + "\"%")
-                    || EF.Functions.Like(x.CustomFields, "%\"sales_executive_id\":" + employeeId + ",%")
-                    || EF.Functions.Like(x.CustomFields, "%\"sales_executive_id\":" + employeeId + "}%"))));
+    private async Task<(HashSet<ulong>, HashSet<ulong>)> ResolveScopeAsync(ulong? actorUserId, CancellationToken cancellationToken)
+    {
+        var visibleUserIds = (await ReportingVisibility.GetVisibleUserIdsAsync(_dbContext, actorUserId, cancellationToken)).ToHashSet();
+        if (visibleUserIds.Count == 0) return ([], []);
+        return (visibleUserIds, await ReportingVisibility.GetVisibleCustomerIdsAsync(_dbContext, visibleUserIds, cancellationToken));
     }
 
     private async Task<ulong?> DealerCustomerIdAsync(ulong? actorUserId, CancellationToken cancellationToken)
