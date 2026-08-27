@@ -7,6 +7,8 @@ namespace Application.Interfaces.Services;
 public interface ICustomerService
 {
     Task<LaravelApiResponse> GetCustomersAsync(CustomerListFilterDto filter, CancellationToken cancellationToken);
+    Task<LaravelApiResponse> GetKycListAsync(CustomerKycFilterDto filter, CancellationToken cancellationToken);
+    Task<LaravelApiResponse> GetKycDealerOptionsAsync(ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> GetCustomerAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> CreateCustomerAsync(CustomerRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> UpdateCustomerAsync(ulong id, CustomerRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);

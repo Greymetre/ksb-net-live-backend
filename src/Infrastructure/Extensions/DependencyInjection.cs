@@ -25,6 +25,9 @@ public static class DependencyInjection
 
         services.AddScoped<IAuthRepository, AuthRepository>();
         services.AddScoped<IMasterDataRepository, MasterDataRepository>();
+        // Held for the whole process, not per request: it is a read model of the customer
+        // table that every KYC request shares.
+        services.AddSingleton<Infrastructure.Caching.CustomerKycIndex>();
         services.AddScoped<ICustomerRepository, CustomerRepository>();
         services.AddScoped<ILoyaltySchemeRepository, LoyaltySchemeRepository>();
         services.AddScoped<INewInvoiceRepository, NewInvoiceRepository>();

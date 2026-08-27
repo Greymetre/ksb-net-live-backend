@@ -104,6 +104,22 @@ public sealed class CustomerService : ICustomerService
         return response;
     }
 
+    /// <summary>The KYC screen's listing. The rows carry the per-document state; the tiles
+    /// above them count the whole scoped set, not just the page.</summary>
+    public async Task<LaravelApiResponse> GetKycListAsync(CustomerKycFilterDto filter, CancellationToken cancellationToken)
+    {
+        var result = await _repository.GetKycListAsync(filter, cancellationToken);
+        var response = LaravelApiResponse.Success("customers", result.Page.Items);
+        response.Extra["summary"] = result.Summary;
+        response.Extra["total"] = result.Page.Total;
+        response.Extra["page"] = result.Page.Page;
+        response.Extra["page_size"] = result.Page.PageSize;
+        return response;
+    }
+
+    public async Task<LaravelApiResponse> GetKycDealerOptionsAsync(ulong? actorUserId, CancellationToken cancellationToken) =>
+        LaravelApiResponse.Success("dealers", await _repository.GetKycDealerOptionsAsync(actorUserId, cancellationToken));
+
     public async Task<LaravelApiResponse> GetCustomerAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken) =>
         LaravelApiResponse.Success("customer", await GetOrThrowAsync(_repository.GetCustomerAsync(id, actorUserId, cancellationToken), "Customer not found"));
 

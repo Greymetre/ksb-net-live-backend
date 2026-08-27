@@ -4,6 +4,7 @@ using System.Text.Json;
 using Application.DTOs.Customers;
 using Application.Common;
 using Application.Interfaces.Repositories;
+using Infrastructure.Caching;
 using Domain.Constants;
 using Domain.Entities;
 using Domain.Services;
@@ -28,9 +29,12 @@ public sealed class CustomerRepository : ICustomerRepository
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly AppDbContext _dbContext;
 
-    public CustomerRepository(AppDbContext dbContext)
+    private readonly CustomerKycIndex _kycIndex;
+
+    public CustomerRepository(AppDbContext dbContext, CustomerKycIndex kycIndex)
     {
         _dbContext = dbContext;
+        _kycIndex = kycIndex;
     }
 
     public async Task<PagedResult<CustomerDto>> GetCustomersAsync(CustomerListFilterDto filter, CancellationToken cancellationToken)
@@ -183,6 +187,167 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
         return new PagedResult<CustomerDto>(customers, total, page, filter.Unpaged ? customers.Count : pageSize);
     }
 
+    /// <summary>The KYC screen's listing: the same customers, read for their paperwork.
+    ///
+    /// Every question this screen asks - is the file in, are the details in, has it been
+    /// signed off, which dealer is it under - is answered from <see cref="CustomerKycIndex"/>
+    /// rather than from SQL. Asking the database instead would mean a LIKE pattern per field
+    /// spelling per document against an nvarchar(max) column, which is where the seconds went
+    /// before. The index is read once and reused, so the listing, the tiles and the filters
+    /// all come back together.
+    ///
+    /// The tiles are counted after every filter except the KYC stage itself - a tile is a
+    /// filter, and picking one must not empty the others.</summary>
+    public async Task<CustomerKycListResultDto> GetKycListAsync(CustomerKycFilterDto filter, CancellationToken cancellationToken)
+    {
+        var snapshot = await _kycIndex.GetAsync(cancellationToken);
+        IEnumerable<CustomerKycEntry> entries = snapshot.Entries;
+
+        // A dealer login sees its own record and the retailers mapped to it, nothing else.
+        var dealerLoginCustomerId = await DealerCustomerIdAsync(filter.ActorUserId, cancellationToken);
+        if (dealerLoginCustomerId.HasValue)
+        {
+            var dealerId = dealerLoginCustomerId.Value;
+            entries = entries.Where(entry => entry.Id == dealerId || entry.DealerIds.Contains(dealerId));
+        }
+        else if (!await ReportingVisibility.HasUnrestrictedDataScopeAsync(_dbContext, filter.ActorUserId, cancellationToken))
+        {
+            if (_scope is null || _scopedFor != filter.ActorUserId)
+            {
+                _scope = await ResolveScopeAsync(filter.ActorUserId, cancellationToken);
+                _scopedFor = filter.ActorUserId;
+            }
+
+            var (visibleUserIds, customerIds) = _scope.Value;
+            entries = visibleUserIds.Count == 0
+                ? []
+                : entries.Where(entry => customerIds.Contains(entry.Id)
+                    || (entry.CreatedBy.HasValue && visibleUserIds.Contains(entry.CreatedBy.Value)));
+        }
+
+        if (filter.CustomerType.HasValue) entries = entries.Where(entry => entry.CustomerType == filter.CustomerType);
+        if (!string.IsNullOrWhiteSpace(filter.Active))
+        {
+            var active = NormalizeActive(filter.Active);
+            entries = entries.Where(entry => entry.Active == active);
+        }
+
+        // The dealer filter answers "show me this dealer's retailers", so the dealer's own
+        // record is not one of them.
+        if (filter.DealerCustomerId is > 0)
+        {
+            var dealerId = filter.DealerCustomerId.Value;
+            entries = entries.Where(entry => entry.DealerIds.Contains(dealerId));
+        }
+
+        if (!string.IsNullOrWhiteSpace(filter.Search))
+        {
+            var search = filter.Search.Trim().ToLowerInvariant();
+            entries = entries.Where(entry => entry.SearchText.Contains(search, StringComparison.Ordinal));
+        }
+
+        var filtered = entries as IList<CustomerKycEntry> ?? entries.ToList();
+
+        var summary = new CustomerKycSummaryDto
+        {
+            TotalCustomers = filtered.Count,
+            Approved = filtered.Count(entry => entry.Stage == CustomerKycEntry.StageApproved),
+            CompletePending = filtered.Count(entry => entry.Stage == CustomerKycEntry.StageCompletePending),
+            Partial = filtered.Count(entry => entry.Stage == CustomerKycEntry.StagePartial),
+            NotStarted = filtered.Count(entry => entry.Stage == CustomerKycEntry.StageNone),
+            Rejected = filtered.Count(entry => entry.RejectedCount > 0)
+        };
+
+        var stage = filter.KycStatus?.Trim().ToLowerInvariant();
+        IEnumerable<CustomerKycEntry> rows = filtered;
+        if (!string.IsNullOrWhiteSpace(stage) && stage != "all")
+        {
+            rows = stage == CustomerKycEntry.StatusRejected
+                ? filtered.Where(entry => entry.RejectedCount > 0)
+                : filtered.Where(entry => entry.Stage == stage);
+        }
+
+        var ordered = rows as IList<CustomerKycEntry> ?? rows.ToList();
+        var total = ordered.Count;
+        var page = Pagination.Page(filter.Page);
+        var pageSize = Pagination.PageSize(filter.PageSize);
+        // The index is built newest customer first, which is the order the listing wants.
+        var pageEntries = (filter.Unpaged ? ordered.Take(MaxRows) : ordered.Skip((page - 1) * pageSize).Take(pageSize))
+            .ToList();
+
+        // The dealer a customer is mapped to is held as an id, and its name is another row in
+        // the same index. The dealers are a few hundred rows, so they are turned into a lookup
+        // once rather than scanned per customer.
+        var dealerNames = snapshot.Entries
+            .Where(entry => entry.CustomerType == DistributorCustomerType)
+            .GroupBy(entry => entry.Id)
+            .ToDictionary(group => group.Key, group => group.First().FirmName);
+
+        var items = pageEntries.Select(entry => ToKycListItem(entry, dealerNames)).ToList();
+
+        return new CustomerKycListResultDto(
+            new PagedResult<CustomerKycListItemDto>(items, total, page, filter.Unpaged ? items.Count : pageSize),
+            summary);
+    }
+
+    /// <summary>The dealers offered in the KYC filter. A dealer login gets only itself, so the
+    /// dropdown can never be used to look at another dealer's retailers.</summary>
+    public async Task<IReadOnlyCollection<CustomerKycDealerOptionDto>> GetKycDealerOptionsAsync(ulong? actorUserId, CancellationToken cancellationToken)
+    {
+        var snapshot = await _kycIndex.GetAsync(cancellationToken);
+        var dealerLoginCustomerId = await DealerCustomerIdAsync(actorUserId, cancellationToken);
+
+        return snapshot.Entries
+            .Where(entry => entry.CustomerType == DistributorCustomerType
+                && entry.Active == "Y"
+                && (!dealerLoginCustomerId.HasValue || entry.Id == dealerLoginCustomerId.Value))
+            .Select(entry => new CustomerKycDealerOptionDto { Id = entry.Id, Name = entry.FirmName })
+            .OrderBy(option => option.Name)
+            .ToList();
+    }
+
+    private static CustomerKycListItemDto ToKycListItem(
+        CustomerKycEntry entry,
+        IReadOnlyDictionary<ulong, string> dealerNames) => new()
+    {
+        Id = entry.Id,
+        OwnerName = entry.OwnerName,
+        FirmName = entry.FirmName,
+        Mobile = entry.Mobile,
+        CustomerCode = entry.CustomerCode,
+        DealerName = entry.DealerIds
+            .Select(dealerId => dealerNames.GetValueOrDefault(dealerId))
+            .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name)),
+        CustomerTypeName = CustomerTypeName(entry.CustomerType),
+        Active = entry.Active,
+        Documents = entry.Documents.Select(document => new CustomerKycDocumentStateDto
+        {
+            Key = document.Key,
+            Label = document.Label,
+            Uploaded = document.Uploaded,
+            AttachmentPath = document.AttachmentPath,
+            DetailsFilled = document.DetailsFilled,
+            DetailSummary = document.DetailSummary,
+            Details = document.Details
+                .Select(detail => new CustomerKycDetailDto { Label = detail.Label, Value = detail.Value })
+                .ToList(),
+            Status = document.Status,
+            Remark = document.Remark,
+            ActionByName = document.ActionByName,
+            ActionAt = document.ActionAt
+        }).ToList(),
+        DocumentCount = entry.Documents.Count,
+        UploadedCount = entry.UploadedCount,
+        DetailsCount = entry.DetailsCount,
+        ApprovedCount = entry.ApprovedCount,
+        RejectedCount = entry.RejectedCount,
+        Stage = entry.Stage,
+        OverallStatus = entry.ApprovedCount == entry.Documents.Count && entry.Documents.Count > 0
+            ? CustomerKycEntry.StatusApproved
+            : entry.RejectedCount > 0 ? CustomerKycEntry.StatusRejected : CustomerKycEntry.StatusPending,
+        LastActionAt = entry.LastActionAt
+    };
+
     /// <summary>Narrows the customers to the ones the actor is allowed to see. A dealer login
     /// is already pinned to its own retailers by the caller, and an admin-named or privileged
     /// role sees everything; everyone else sees the customers assigned to themselves and to
@@ -298,6 +463,7 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
 
         await _dbContext.Customers.AddAsync(customer, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        _kycIndex.Invalidate();
         await SyncCustomerRelatedTablesAsync(customer.Id, request.CustomFields, actorUserId, cancellationToken);
         await SyncCustomerAssignmentsAsync(customer.Id, assignedUserIds, actorUserId, cancellationToken);
         return ToCustomerDto(customer, null, null);
@@ -332,6 +498,7 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
         customer.UpdatedAt = DateTime.UtcNow;
 
         await _dbContext.SaveChangesAsync(cancellationToken);
+        _kycIndex.Invalidate();
         await SyncCustomerRelatedTablesAsync(customer.Id, request.CustomFields, actorUserId, cancellationToken);
         await SyncCustomerAssignmentsAsync(customer.Id, request.AssignedUserIds, actorUserId, cancellationToken);
         return ToCustomerDto(customer, null, null);
@@ -365,6 +532,7 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
         customer.UpdatedBy = actorUserId;
         customer.UpdatedAt = DateTime.UtcNow;
         await _dbContext.SaveChangesAsync(cancellationToken);
+        _kycIndex.Invalidate();
 
         var dto = ToCustomerDto(customer, null, null);
         await AttachAddressNamesAsync([dto], cancellationToken);
@@ -387,6 +555,7 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
         customer.UpdatedBy = actorUserId;
         customer.UpdatedAt = DateTime.UtcNow;
         await _dbContext.SaveChangesAsync(cancellationToken);
+        _kycIndex.Invalidate();
         await UpsertRetailerApprovalStatusAsync(customer.Id, status, cancellationToken);
 
         var dto = ToCustomerDto(customer, null, null);
@@ -407,6 +576,7 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
         customer.UpdatedAt = DateTime.UtcNow;
         await SyncLinkedUserActiveAsync(customer.Id, customer.Active, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        _kycIndex.Invalidate();
         return ToCustomerDto(customer, null, null);
     }
 
@@ -421,6 +591,7 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
         customer.UpdatedAt = DateTime.UtcNow;
         await SyncLinkedUserActiveAsync(customer.Id, "N", cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        _kycIndex.Invalidate();
         return true;
     }
 

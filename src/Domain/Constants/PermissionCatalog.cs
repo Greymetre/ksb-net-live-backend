@@ -32,19 +32,22 @@ public static class PermissionCatalog
         new("dashboard.activity", "Activity Tab", "dashboard", "Dashboard", "dashboard", "Dashboard", "activity", 40, ["dashboard_activity"], []),
         // ---------- Customers Management ----------
         // Customers
-        new("customer.view", "View Listing", "customer", "Customers", "customers", "Customers Management", "view", 50, ["customer_access"], []),
-        new("customer.detail", "View Detail", "customer", "Customers", "customers", "Customers Management", "detail", 60, ["customer_show"], []),
-        new("customer.create", "Create", "customer", "Customers", "customers", "Customers Management", "create", 70, ["customer_create"], []),
-        new("customer.edit", "Edit", "customer", "Customers", "customers", "Customers Management", "edit", 80, ["customer_edit"], []),
-        new("customer.delete", "Delete", "customer", "Customers", "customers", "Customers Management", "delete", 90, ["customer_delete"], []),
-        new("customer.active", "Activate / Deactivate", "customer", "Customers", "customers", "Customers Management", "active", 100, ["customer_active"], []),
-        new("customer.export", "Export", "customer", "Customers", "customers", "Customers Management", "export", 110, ["customer_download", "customers_report"], []),
-        new("customer.import", "Import", "customer", "Customers", "customers", "Customers Management", "import", 120, ["customer_upload"], []),
-        new("customer.template", "Download Template", "customer", "Customers", "customers", "Customers Management", "template", 130, ["customer_template"], []),
-        new("customer.approve", "Approve Retailer", "customer", "Customers", "customers", "Customers Management", "approve", 140, ["retailer_approve"], []),
-        new("customer.reject", "Reject Retailer", "customer", "Customers", "customers", "Customers Management", "reject", 150, ["retailer_reject"], []),
-        new("customer.pending", "Mark Retailer Pending", "customer", "Customers", "customers", "Customers Management", "pending", 160, ["retailer_pending"], []),
-        new("customer.kyc_review", "Approve / Reject KYC", "customer", "Customers", "customers", "Customers Management", "kyc_review", 170, ["customer_kyc_access"], []),
+        new("customer.view", "View Listing", "customer", "Master", "customers", "Customers Management", "view", 50, ["customer_access"], []),
+        new("customer.detail", "View Detail", "customer", "Master", "customers", "Customers Management", "detail", 60, ["customer_show"], []),
+        new("customer.create", "Create", "customer", "Master", "customers", "Customers Management", "create", 70, ["customer_create"], []),
+        new("customer.edit", "Edit", "customer", "Master", "customers", "Customers Management", "edit", 80, ["customer_edit"], []),
+        new("customer.delete", "Delete", "customer", "Master", "customers", "Customers Management", "delete", 90, ["customer_delete"], []),
+        new("customer.active", "Activate / Deactivate", "customer", "Master", "customers", "Customers Management", "active", 100, ["customer_active"], []),
+        new("customer.export", "Export", "customer", "Master", "customers", "Customers Management", "export", 110, ["customer_download", "customers_report"], []),
+        new("customer.import", "Import", "customer", "Master", "customers", "Customers Management", "import", 120, ["customer_upload"], []),
+        new("customer.template", "Download Template", "customer", "Master", "customers", "Customers Management", "template", 130, ["customer_template"], []),
+        new("customer.approve", "Approve Retailer", "customer", "Master", "customers", "Customers Management", "approve", 140, ["retailer_approve"], []),
+        new("customer.reject", "Reject Retailer", "customer", "Master", "customers", "Customers Management", "reject", 150, ["retailer_reject"], []),
+        new("customer.pending", "Mark Retailer Pending", "customer", "Master", "customers", "Customers Management", "pending", 160, ["retailer_pending"], []),
+        new("customer.kyc_review", "Approve / Reject KYC", "customer", "Master", "customers", "Customers Management", "kyc_review", 170, ["customer_kyc_access"], []),
+        // KYC - its own menu under Customers Management. Whoever already reviews KYC on the
+        // customer screen gets the new screen too, so the split does not take anything away.
+        new("customer_kyc.view", "View Listing", "customer_kyc", "KYC", "customers", "Customers Management", "view", 175, [], ["customer.kyc_review"]),
         // ---------- Address Management ----------
         // Country
         new("country.view", "View Listing", "country", "Country", "address", "Address Management", "view", 180, ["country_access"], []),

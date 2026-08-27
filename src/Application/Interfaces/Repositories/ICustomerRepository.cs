@@ -5,6 +5,8 @@ namespace Application.Interfaces.Repositories;
 public interface ICustomerRepository
 {
     Task<Application.Common.PagedResult<CustomerDto>> GetCustomersAsync(CustomerListFilterDto filter, CancellationToken cancellationToken);
+    Task<CustomerKycListResultDto> GetKycListAsync(CustomerKycFilterDto filter, CancellationToken cancellationToken);
+    Task<IReadOnlyCollection<CustomerKycDealerOptionDto>> GetKycDealerOptionsAsync(ulong? actorUserId, CancellationToken cancellationToken);
     Task<CustomerDto?> GetCustomerAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
     Task<CustomerDto> CreateCustomerAsync(CustomerRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
     Task<CustomerDto?> UpdateCustomerAsync(ulong id, CustomerRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
