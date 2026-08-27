@@ -150,7 +150,7 @@ public sealed class NewInvoicesController : ControllerBase
     [HttpDelete("{id}")]
     public async Task<IActionResult> DeleteInvoice(ulong id, CancellationToken cancellationToken)
     {
-        var response = await _newInvoiceService.DeleteInvoiceAsync(id, IsSuperAdmin(), cancellationToken);
+        var response = await _newInvoiceService.DeleteInvoiceAsync(id, IsSuperAdmin(), CurrentUserId(), cancellationToken);
 
         if (response.Extra.TryGetValue("removed_files", out var removed) && removed is IEnumerable<string> files)
         {

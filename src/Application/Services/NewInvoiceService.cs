@@ -144,7 +144,10 @@ public sealed class NewInvoiceService : INewInvoiceService
         };
 
         var created = await _repository.CreateInvoiceAsync(invoice, cancellationToken);
-        var entity = await _repository.FindInvoiceEntityAsync(created.Id, cancellationToken);
+        // The row was just written by this actor against a retailer already checked
+        // against their scope, so it is re-read without one - a scope lookup that came
+        // back empty here would cost the invoice its "generated" history entry.
+        var entity = await _repository.FindInvoiceEntityAsync(created.Id, null, cancellationToken);
         if (entity is not null)
         {
             await _repository.SaveInvoiceAsync(entity, "generated", null, NewInvoice.StatusPending, actorUserId.Value, null, null, cancellationToken);
@@ -160,7 +163,7 @@ public sealed class NewInvoiceService : INewInvoiceService
     public async Task<LaravelApiResponse> UpdateInvoiceAsync(ulong id, NewInvoiceRequestDto request, ulong? actorUserId, CancellationToken cancellationToken)
     {
         if (!actorUserId.HasValue) throw Http(LaravelStatusCodes.Unauthorized, "Unauthenticated.");
-        var invoice = await FindOrThrowAsync(id, cancellationToken);
+        var invoice = await FindOrThrowAsync(id, actorUserId, cancellationToken);
         if (invoice.ApprovalStatus is not (NewInvoice.StatusPending or NewInvoice.StatusHold))
         {
             throw Http(403, "Only a pending or held invoice can be edited.");
@@ -242,9 +245,9 @@ public sealed class NewInvoiceService : INewInvoiceService
     /// can remove one at any stage, which is why <paramref name="allowAnyStatus"/>
     /// is decided by the caller from the signed-in user's role.
     /// </summary>
-    public async Task<LaravelApiResponse> DeleteInvoiceAsync(ulong id, bool allowAnyStatus, CancellationToken cancellationToken)
+    public async Task<LaravelApiResponse> DeleteInvoiceAsync(ulong id, bool allowAnyStatus, ulong? actorUserId, CancellationToken cancellationToken)
     {
-        var invoice = await FindOrThrowAsync(id, cancellationToken);
+        var invoice = await FindOrThrowAsync(id, actorUserId, cancellationToken);
         if (!allowAnyStatus && invoice.ApprovalStatus != NewInvoice.StatusPending)
         {
             throw Http(403, "Only pending invoices can be deleted.");
@@ -259,7 +262,7 @@ public sealed class NewInvoiceService : INewInvoiceService
     public async Task<LaravelApiResponse> ApproveInvoiceAsync(ulong id, string level, string? remark, decimal? approvedAmount, ulong? actorUserId, CancellationToken cancellationToken)
     {
         if (!actorUserId.HasValue) throw Http(LaravelStatusCodes.Unauthorized, "Unauthenticated.");
-        var invoice = await FindOrThrowAsync(id, cancellationToken);
+        var invoice = await FindOrThrowAsync(id, actorUserId, cancellationToken);
         var fromStatus = invoice.ApprovalStatus;
         var (toStatus, statusType) = level.ToLowerInvariant() switch
         {
@@ -315,7 +318,7 @@ public sealed class NewInvoiceService : INewInvoiceService
         // is the whole point of holding rather than rejecting.
         if (string.IsNullOrWhiteSpace(remark)) throw Http(LaravelStatusCodes.NoContentLikeValidation, "Remark is required to put an invoice on hold.");
 
-        var invoice = await FindOrThrowAsync(id, cancellationToken);
+        var invoice = await FindOrThrowAsync(id, actorUserId, cancellationToken);
         if (!CanHold(invoice.ApprovalStatus))
         {
             throw Http(LaravelStatusCodes.NoContentLikeValidation, invoice.ApprovalStatus == NewInvoice.StatusHold
@@ -337,7 +340,7 @@ public sealed class NewInvoiceService : INewInvoiceService
         if (!actorUserId.HasValue) throw Http(LaravelStatusCodes.Unauthorized, "Unauthenticated.");
         if (string.IsNullOrWhiteSpace(remark)) throw Http(LaravelStatusCodes.NoContentLikeValidation, "Remark is required.");
 
-        var invoice = await FindOrThrowAsync(id, cancellationToken);
+        var invoice = await FindOrThrowAsync(id, actorUserId, cancellationToken);
         if (!CanMoveToStatus(invoice, NewInvoice.StatusRejected))
         {
             throw Http(LaravelStatusCodes.NoContentLikeValidation, "Invoice cannot be rejected from the current status.");
@@ -388,8 +391,8 @@ public sealed class NewInvoiceService : INewInvoiceService
     private async Task<NewInvoiceDto> GetOrThrowAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken) =>
         await _repository.GetInvoiceAsync(id, actorUserId, cancellationToken) ?? throw Http(LaravelStatusCodes.NotFound, "Invoice not found");
 
-    private async Task<NewInvoice> FindOrThrowAsync(ulong id, CancellationToken cancellationToken) =>
-        await _repository.FindInvoiceEntityAsync(id, cancellationToken) ?? throw Http(LaravelStatusCodes.NotFound, "Invoice not found");
+    private async Task<NewInvoice> FindOrThrowAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken) =>
+        await _repository.FindInvoiceEntityAsync(id, actorUserId, cancellationToken) ?? throw Http(LaravelStatusCodes.NotFound, "Invoice not found");
 
     private static NewInvoiceSummaryDto BuildSummary(IReadOnlyCollection<NewInvoiceDto> invoices)
     {

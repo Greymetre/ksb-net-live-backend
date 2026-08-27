@@ -29,10 +29,12 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
     public async Task<PagedResult<NewInvoiceDto>> GetInvoicesAsync(NewInvoiceFilterDto filter, ulong? actorUserId, CancellationToken cancellationToken)
     {
         // A dealer login stays pinned to its own retailers; the dealer filter is for
-        // internal users, who have no dealer scope of their own.
-        var distributorCustomerId = await GetDistributorCustomerIdAsync(actorUserId, cancellationToken)
-            ?? filter.DistributorCustomerId;
-        var scoped = await ApplyReportingScopeAsync(BaseQuery(distributorCustomerId), actorUserId, distributorCustomerId, cancellationToken);
+        // internal users, who have no dealer scope of their own. Only the actor's own
+        // dealer identity stands in for the reporting scope - a dealer picked in the
+        // filter narrows the rows but must never widen them.
+        var actorDistributorCustomerId = await GetDistributorCustomerIdAsync(actorUserId, cancellationToken);
+        var distributorCustomerId = actorDistributorCustomerId ?? filter.DistributorCustomerId;
+        var scoped = await ApplyReportingScopeAsync(BaseQuery(distributorCustomerId), actorUserId, actorDistributorCustomerId, cancellationToken);
         var query = ApplyFilters(scoped, filter);
         var page = Pagination.Page(filter.Page);
         var pageSize = Pagination.PageSize(filter.PageSize);
@@ -69,9 +71,9 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
 
     public async Task<NewInvoiceSummaryDto> GetInvoiceSummaryAsync(NewInvoiceFilterDto filter, ulong? actorUserId, CancellationToken cancellationToken)
     {
-        var distributorCustomerId = await GetDistributorCustomerIdAsync(actorUserId, cancellationToken)
-            ?? filter.DistributorCustomerId;
-        var scoped = await ApplyReportingScopeAsync(BaseQuery(distributorCustomerId), actorUserId, distributorCustomerId, cancellationToken);
+        var actorDistributorCustomerId = await GetDistributorCustomerIdAsync(actorUserId, cancellationToken);
+        var distributorCustomerId = actorDistributorCustomerId ?? filter.DistributorCustomerId;
+        var scoped = await ApplyReportingScopeAsync(BaseQuery(distributorCustomerId), actorUserId, actorDistributorCustomerId, cancellationToken);
         var rows = ApplyFilters(scoped, filter);
         return await rows.GroupBy(_ => 1).Select(group => new NewInvoiceSummaryDto
         {
@@ -115,6 +117,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         var query = _dbContext.Customers.AsNoTracking()
             .Where(x => x.Active == "Y" && (x.CustomerType == RetailerCustomerType || x.CustomerType == InfluencerCustomerType));
         query = ApplyDistributorRetailerScope(query, distributorCustomerId);
+        query = await ApplyRetailerReportingScopeAsync(query, actorUserId, distributorCustomerId, cancellationToken);
 
         if (!string.IsNullOrWhiteSpace(search))
         {
@@ -165,6 +168,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         var distributorCustomerId = await GetDistributorCustomerIdAsync(actorUserId, cancellationToken);
         var query = _dbContext.Customers.Where(x => x.Id == id && x.Active == "Y" && (x.CustomerType == RetailerCustomerType || x.CustomerType == InfluencerCustomerType));
         query = ApplyDistributorRetailerScope(query, distributorCustomerId);
+        query = await ApplyRetailerReportingScopeAsync(query, actorUserId, distributorCustomerId, cancellationToken);
         return await query.FirstOrDefaultAsync(cancellationToken);
     }
 
@@ -259,8 +263,19 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         return await GetInvoiceAsync(invoice.Id, null, cancellationToken) ?? throw new InvalidOperationException("Created invoice could not be loaded.");
     }
 
-    public async Task<NewInvoice?> FindInvoiceEntityAsync(ulong id, CancellationToken cancellationToken) =>
-        await _dbContext.NewInvoices.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+    /// <summary>The tracked invoice an action is about to change, resolved only when it is one
+    /// the actor is allowed to see. The listing and the detail screen are scoped already, so
+    /// without the same check here an id typed straight into an approve, edit or delete call
+    /// would still act on an invoice from outside the actor's hierarchy. Out of scope reads as
+    /// "not found", the same answer the detail endpoint gives.</summary>
+    public async Task<NewInvoice?> FindInvoiceEntityAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken)
+    {
+        var distributorCustomerId = await GetDistributorCustomerIdAsync(actorUserId, cancellationToken);
+        var scoped = await ApplyReportingScopeAsync(BaseQuery(distributorCustomerId), actorUserId, distributorCustomerId, cancellationToken);
+        if (!await scoped.AnyAsync(x => x.Invoice.Id == id, cancellationToken)) return null;
+
+        return await _dbContext.NewInvoices.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
+    }
 
     public async Task<NewInvoiceDto> SaveInvoiceAsync(NewInvoice invoice, string statusType, int? fromStatus, int toStatus, ulong actorUserId, string? remark, decimal? approvedAmount, CancellationToken cancellationToken)
     {
@@ -430,10 +445,10 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
     private async Task<IQueryable<InvoiceRow>> ApplyReportingScopeAsync(
         IQueryable<InvoiceRow> query,
         ulong? actorUserId,
-        ulong? distributorCustomerId,
+        ulong? actorDistributorCustomerId,
         CancellationToken cancellationToken)
     {
-        if (distributorCustomerId.HasValue) return query;
+        if (actorDistributorCustomerId.HasValue) return query;
         if (await ReportingVisibility.HasUnrestrictedDataScopeAsync(_dbContext, actorUserId, cancellationToken)) return query;
 
         // One invoice page asks for the rows, the totals and the stage counts, so this
@@ -451,6 +466,30 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         return query.Where(x => customerIds.Contains(x.Invoice.SecondaryCustomerId));
     }
 
+    /// <summary>The same scope, applied to the retailers themselves rather than to their
+    /// invoices, so the picker offers only retailers whose invoices the actor would go on to
+    /// see - and so an invoice cannot be raised against a retailer outside the hierarchy.</summary>
+    private async Task<IQueryable<Customer>> ApplyRetailerReportingScopeAsync(
+        IQueryable<Customer> query,
+        ulong? actorUserId,
+        ulong? actorDistributorCustomerId,
+        CancellationToken cancellationToken)
+    {
+        if (actorDistributorCustomerId.HasValue) return query;
+        if (await ReportingVisibility.HasUnrestrictedDataScopeAsync(_dbContext, actorUserId, cancellationToken)) return query;
+
+        if (_scopedCustomerIds is null || _scopedFor != actorUserId)
+        {
+            _scopedCustomerIds = await ResolveScopedCustomerIdsAsync(actorUserId, cancellationToken);
+            _scopedFor = actorUserId;
+        }
+
+        if (_scopedCustomerIds.Count == 0) return query.Where(_ => false);
+
+        var customerIds = _scopedCustomerIds;
+        return query.Where(x => customerIds.Contains(x.Id));
+    }
+
     private HashSet<ulong>? _scopedCustomerIds;
     private ulong? _scopedFor;
 
@@ -462,6 +501,11 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
             : await ReportingVisibility.GetVisibleCustomerIdsAsync(_dbContext, visibleUserIds, cancellationToken);
     }
 
+    /// <summary>The dealer a login belongs to, or null for an internal user. A login the CRM
+    /// provisions carries the Distributor role, but dealer logins that pre-date that only have
+    /// users.customer_id pointing at the dealer; both are dealer logins and both stay pinned to
+    /// that dealer's own retailers rather than falling through to a reporting scope they have
+    /// no place in.</summary>
     private async Task<ulong?> GetDistributorCustomerIdAsync(ulong? actorUserId, CancellationToken cancellationToken)
     {
         if (!actorUserId.HasValue) return null;
@@ -471,15 +515,19 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
             .Join(_dbContext.Roles.AsNoTracking(), modelRole => modelRole.RoleId, role => role.Id, (_, role) => role.Name)
             .AnyAsync(roleName => roleName == "Distributor", cancellationToken);
 
-        if (!isDistributor) return null;
-
         var customerId = await _dbContext.Users.AsNoTracking()
             .IgnoreQueryFilters()
             .Where(x => x.Id == actorUserId.Value)
             .Select(x => x.CustomerId)
             .FirstOrDefaultAsync(cancellationToken);
 
-        return customerId ?? 0;
+        if (isDistributor) return customerId ?? 0;
+        if (!customerId.HasValue) return null;
+
+        var linkedToDealer = await _dbContext.Customers.AsNoTracking()
+            .AnyAsync(x => x.Id == customerId.Value && x.CustomerType == DistributorCustomerType, cancellationToken);
+
+        return linkedToDealer ? customerId : null;
     }
 
     private static IQueryable<Customer> ApplyDistributorRetailerScope(IQueryable<Customer> query, ulong? distributorCustomerId)

@@ -909,7 +909,9 @@ public sealed class MobileAppController : ControllerBase
 
         // A dealer never deletes past pending, and the stored file paths are of no
         // use to the app, so they are dropped from the reply.
-        var response = await _newInvoiceService.DeleteInvoiceAsync(id, false, cancellationToken);
+        // No actor scope: a dealer login has no CRM reporting hierarchy, and this
+        // invoice has already been checked against the dealer's own retailers above.
+        var response = await _newInvoiceService.DeleteInvoiceAsync(id, false, null, cancellationToken);
         response.Extra.Remove("removed_files");
         return Ok(response);
     }
