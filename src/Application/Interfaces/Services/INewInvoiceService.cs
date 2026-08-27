@@ -10,12 +10,14 @@ public interface INewInvoiceService
     Task<MasterDataFileDto> ExportInvoicesAsync(NewInvoiceFilterDto filter, ulong? actorUserId, string baseUrl, CancellationToken cancellationToken);
     Task<LaravelApiResponse> GetInvoiceAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> GetRetailersAsync(string? search, ulong? actorUserId, CancellationToken cancellationToken);
+    Task<LaravelApiResponse> GetRetailersAsync(string? search, ulong? actorUserId, int page, int pageSize, CancellationToken cancellationToken);
     Task<LaravelApiResponse> GetDealersAsync(ulong? actorUserId, CancellationToken cancellationToken);
+    Task<LaravelApiResponse> GetRetailerDealersAsync(ulong customerId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> GetSchemeOptionsAsync(ulong customerId, DateTime? invoiceDate, CancellationToken cancellationToken);
     Task<LaravelApiResponse> GetSchemeFilterOptionsAsync(CancellationToken cancellationToken);
     Task<LaravelApiResponse> CreateInvoiceAsync(NewInvoiceRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> UpdateInvoiceAsync(ulong id, NewInvoiceRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
-    Task<LaravelApiResponse> DeleteInvoiceAsync(ulong id, bool allowAnyStatus, ulong? actorUserId, CancellationToken cancellationToken);
+    Task<LaravelApiResponse> DeleteInvoiceAsync(ulong id, InvoiceDeletePolicy policy, ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> ApproveInvoiceAsync(ulong id, string level, string? remark, decimal? approvedAmount, ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> HoldInvoiceAsync(ulong id, string? remark, ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> RejectInvoiceAsync(ulong id, string? remark, ulong? actorUserId, CancellationToken cancellationToken);

@@ -74,6 +74,9 @@ public sealed class NewInvoiceApprovalLogDto
 public sealed class NewInvoiceRequestDto
 {
     public ulong SecondaryCustomerId { get; set; }
+    /// <summary>Which of the retailer's dealers this invoice is for. Optional: the CRM does
+    /// not ask, and a retailer with a single dealer does not need to be asked either.</summary>
+    public ulong? DealerCustomerId { get; set; }
     public ulong? SchemeId { get; set; }
     public string? InvoiceNumber { get; set; }
     public DateTime? InvoiceDate { get; set; }
@@ -150,6 +153,27 @@ public sealed class DealerOptionDto
 {
     public ulong Id { get; set; }
     public string Name { get; set; } = string.Empty;
+}
+
+/// <summary>A dealer one retailer is mapped to. The form asks which one only when there is
+/// more than one; with a single dealer it just shows who it is.</summary>
+public sealed class RetailerDealerOptionDto
+{
+    public ulong Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string FirmName { get; set; } = string.Empty;
+    public string? Code { get; set; }
+}
+
+/// <summary>Which invoices a caller is allowed to delete. The CRM has always held that
+/// only a pending invoice can go; the field app also lets a held one go, because a hold is
+/// a correction asked for and the dealer may simply re-enter it. A superadmin deletes at
+/// any stage.</summary>
+public enum InvoiceDeletePolicy
+{
+    PendingOnly,
+    PendingOrHold,
+    AnyStatus
 }
 
 public sealed class NewInvoiceApprovalRequestDto

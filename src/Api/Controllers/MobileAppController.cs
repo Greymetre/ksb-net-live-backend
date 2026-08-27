@@ -911,7 +911,7 @@ public sealed class MobileAppController : ControllerBase
         // use to the app, so they are dropped from the reply.
         // No actor scope: a dealer login has no CRM reporting hierarchy, and this
         // invoice has already been checked against the dealer's own retailers above.
-        var response = await _newInvoiceService.DeleteInvoiceAsync(id, false, null, cancellationToken);
+        var response = await _newInvoiceService.DeleteInvoiceAsync(id, InvoiceDeletePolicy.PendingOnly, null, cancellationToken);
         response.Extra.Remove("removed_files");
         return Ok(response);
     }

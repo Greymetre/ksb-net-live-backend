@@ -15,6 +15,11 @@ public sealed class NewInvoice : BaseEntity
     public const int StatusHold = 5;
 
     public ulong SecondaryCustomerId { get; set; }
+    /// <summary>The dealer this invoice belongs to, when whoever raised it said which one.
+    /// A retailer can be mapped to more than one dealer, and then the mapping alone cannot
+    /// answer whose invoice this is. Null on every invoice raised before the field app asked
+    /// the question, and those still read their dealer from the retailer's mapping.</summary>
+    public ulong? DealerCustomerId { get; set; }
     public ulong? LoyaltySchemeId { get; set; }
     public string InvoiceNumber { get; set; } = string.Empty;
     public DateTime InvoiceDate { get; set; }

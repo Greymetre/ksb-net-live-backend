@@ -10,11 +10,15 @@ public interface INewInvoiceRepository
     Task<NewInvoiceSummaryDto> GetInvoiceSummaryAsync(NewInvoiceFilterDto filter, ulong? actorUserId, CancellationToken cancellationToken);
     Task<NewInvoiceDto?> GetInvoiceAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
     Task<IReadOnlyCollection<RetailerOptionDto>> GetRetailerOptionsAsync(string? search, ulong? actorUserId, CancellationToken cancellationToken);
+    Task<Application.Common.PagedResult<RetailerOptionDto>> GetRetailerOptionPageAsync(string? search, ulong? actorUserId, int page, int pageSize, CancellationToken cancellationToken);
     Task<IReadOnlyCollection<DealerOptionDto>> GetDealerOptionsAsync(ulong? actorUserId, CancellationToken cancellationToken);
+    Task<IReadOnlyCollection<RetailerDealerOptionDto>> GetRetailerDealerOptionsAsync(ulong customerId, CancellationToken cancellationToken);
+    Task<IReadOnlyCollection<FieldSchemeDto>> GetFieldSchemesAsync(ulong? actorUserId, DateOnly today, CancellationToken cancellationToken);
+    Task<FieldSchemeDetailDto?> GetFieldSchemeAsync(ulong id, ulong? actorUserId, DateOnly today, CancellationToken cancellationToken);
     Task<Customer?> GetRetailerAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
     Task<IReadOnlyCollection<InvoiceSchemeOptionDto>> GetEligibleSchemeOptionsAsync(ulong customerId, DateTime invoiceDate, CancellationToken cancellationToken);
     Task<IReadOnlyCollection<InvoiceSchemeOptionDto>> GetInvoiceSchemeFilterOptionsAsync(CancellationToken cancellationToken);
-    Task<bool> InvoiceNumberExistsAsync(string invoiceNumber, ulong secondaryCustomerId, ulong? exceptId, CancellationToken cancellationToken);
+    Task<bool> InvoiceNumberExistsAsync(string invoiceNumber, ulong secondaryCustomerId, ulong? dealerCustomerId, ulong? exceptId, CancellationToken cancellationToken);
     Task<NewInvoiceDto> CreateInvoiceAsync(NewInvoice invoice, CancellationToken cancellationToken);
     Task<NewInvoice?> FindInvoiceEntityAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
     Task<NewInvoiceDto> SaveInvoiceAsync(NewInvoice invoice, string statusType, int? fromStatus, int toStatus, ulong actorUserId, string? remark, decimal? approvedAmount, CancellationToken cancellationToken);

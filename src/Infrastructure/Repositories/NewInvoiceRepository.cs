@@ -59,12 +59,12 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         var cities = await LoadCitiesAsync(rows.Select(x => CityId(x.Customer)), cancellationToken);
         var assignedZones = await LoadAssignedZoneNamesAsync(rows.Select(x => x.Customer), cancellationToken);
         var assignedBranches = await LoadAssignedBranchNamesAsync(rows.Select(x => x.Customer), cancellationToken);
-        var assignedDistributors = await LoadAssignedDistributorNamesAsync(rows.Select(x => x.Customer), cancellationToken);
+        var assignedDistributors = await LoadDealerNamesAsync(rows, cancellationToken);
         var assignedEmployees = await LoadAssignedEmployeeNamesAsync(rows.Select(x => x.Customer), cancellationToken);
         var schemes = await LoadSchemesAsync(rows.Select(x => x.Invoice.InvoiceDate), cancellationToken);
         var schemeInvoices = await LoadSchemeInvoicesAsync(rows.Select(x => x.Customer.Id), schemes, cancellationToken);
         var approvals = await LoadApprovalStageSummariesAsync(rows.Select(x => x.Invoice.Id), cancellationToken);
-        var items = rows.SelectMany(x => ToSchemeDtos(x.Invoice, x.Customer, CityName(x.Customer, cities), AssignedZoneName(x.Customer, assignedZones), AssignedBranchName(x.Customer, assignedBranches) ?? x.Branch?.BranchName, AssignedDistributorName(x.Customer, assignedDistributors), AssignedEmployeeName(x.Customer, assignedEmployees), x.Creator, x.Branch, schemes, schemeInvoices, ApprovalSummary(x.Invoice.Id, approvals))).ToList();
+        var items = rows.SelectMany(x => ToSchemeDtos(x.Invoice, x.Customer, CityName(x.Customer, cities), AssignedZoneName(x.Customer, assignedZones), AssignedBranchName(x.Customer, assignedBranches) ?? x.Branch?.BranchName, DealerName(x.Invoice, x.Customer, assignedDistributors), AssignedEmployeeName(x.Customer, assignedEmployees), x.Creator, x.Branch, schemes, schemeInvoices, ApprovalSummary(x.Invoice.Id, approvals))).ToList();
         await ApplyCreatedByLabelsAsync(items, rows.Select(x => x.Creator), cancellationToken);
         return new PagedResult<NewInvoiceDto>(items, total, page, filter.Unpaged ? items.Count : pageSize);
     }
@@ -100,18 +100,32 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         var cities = await LoadCitiesAsync([CityId(row.Customer)], cancellationToken);
         var assignedZones = await LoadAssignedZoneNamesAsync([row.Customer], cancellationToken);
         var assignedBranches = await LoadAssignedBranchNamesAsync([row.Customer], cancellationToken);
-        var assignedDistributors = await LoadAssignedDistributorNamesAsync([row.Customer], cancellationToken);
+        var assignedDistributors = await LoadDealerNamesAsync([row], cancellationToken);
         var assignedEmployees = await LoadAssignedEmployeeNamesAsync([row.Customer], cancellationToken);
         var schemes = await LoadSchemesAsync([row.Invoice.InvoiceDate], cancellationToken);
         var schemeInvoices = await LoadSchemeInvoicesAsync([row.Customer.Id], schemes, cancellationToken);
         var approvals = await LoadApprovalStageSummariesAsync([row.Invoice.Id], cancellationToken);
-        var dto = ToSchemeDtos(row.Invoice, row.Customer, CityName(row.Customer, cities), AssignedZoneName(row.Customer, assignedZones), AssignedBranchName(row.Customer, assignedBranches) ?? row.Branch?.BranchName, AssignedDistributorName(row.Customer, assignedDistributors), AssignedEmployeeName(row.Customer, assignedEmployees), row.Creator, row.Branch, schemes, schemeInvoices, ApprovalSummary(row.Invoice.Id, approvals)).First();
+        var dto = ToSchemeDtos(row.Invoice, row.Customer, CityName(row.Customer, cities), AssignedZoneName(row.Customer, assignedZones), AssignedBranchName(row.Customer, assignedBranches) ?? row.Branch?.BranchName, DealerName(row.Invoice, row.Customer, assignedDistributors), AssignedEmployeeName(row.Customer, assignedEmployees), row.Creator, row.Branch, schemes, schemeInvoices, ApprovalSummary(row.Invoice.Id, approvals)).First();
         await ApplyCreatedByLabelsAsync([dto], [row.Creator], cancellationToken);
         dto.ApprovalLogs = await GetApprovalLogsAsync(id, cancellationToken);
         return dto;
     }
 
-    public async Task<IReadOnlyCollection<RetailerOptionDto>> GetRetailerOptionsAsync(string? search, ulong? actorUserId, CancellationToken cancellationToken)
+    public async Task<IReadOnlyCollection<RetailerOptionDto>> GetRetailerOptionsAsync(string? search, ulong? actorUserId, CancellationToken cancellationToken) =>
+        (await GetRetailerOptionPageAsync(search, actorUserId, 1, MaxRows, cancellationToken)).Items;
+
+    /// <summary>A page of the retailer picker.
+    ///
+    /// Unpaged, this answers with every retailer the actor can reach - about fourteen
+    /// thousand rows and two megabytes for an admin. A phone cannot draw that, and a
+    /// dropdown that has to be typed into anyway never needed it: the search runs in
+    /// SQL and the caller asks for the next page only if it scrolls that far.</summary>
+    public async Task<PagedResult<RetailerOptionDto>> GetRetailerOptionPageAsync(
+        string? search,
+        ulong? actorUserId,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken)
     {
         var distributorCustomerId = await GetDistributorCustomerIdAsync(actorUserId, cancellationToken);
         var query = _dbContext.Customers.AsNoTracking()
@@ -129,13 +143,17 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
                 || (x.CustomFields != null && EF.Functions.Like(x.CustomFields, likeTerm)));
         }
 
+        var currentPage = Pagination.Page(page);
+        var size = Math.Clamp(pageSize, 1, MaxRows);
+        var total = await query.LongCountAsync(cancellationToken);
         var retailers = await query
             .OrderBy(x => x.Name)
-            .Take(MaxRows)
+            .Skip((currentPage - 1) * size)
+            .Take(size)
             .ToListAsync(cancellationToken);
 
         var cities = await LoadCitiesAsync(retailers.Select(CityId), cancellationToken);
-        return retailers.Select(customer => new RetailerOptionDto
+        var items = retailers.Select(customer => new RetailerOptionDto
         {
             Id = customer.Id,
             OwnerName = OwnerName(customer),
@@ -144,6 +162,8 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
             CityName = CityName(customer, cities),
             Address = Address(customer)
         }).ToList();
+
+        return new PagedResult<RetailerOptionDto>(items, total, currentPage, size);
     }
 
     /// <summary>Dealer list for the listing filter. A dealer login gets only itself,
@@ -161,6 +181,234 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
             .Take(MaxRows)
             .Select(x => new DealerOptionDto { Id = x.Id, Name = x.Name })
             .ToListAsync(cancellationToken);
+    }
+
+    /// <summary>The schemes that apply to the retailers this user can reach.
+    ///
+    /// A scheme is targeted at a customer type and at one area - all of India, a branch, a
+    /// zone, a state, or named customers - so it belongs on this screen when any one of the
+    /// user's retailers would qualify for it. Branch and zone come from the retailer's
+    /// assigned employee, the state from the retailer's own address, which is exactly how
+    /// the CRM and the dealer app decide it.
+    ///
+    /// The audiences are collapsed before matching: for an area-targeted scheme only the
+    /// (type, branch, zone, state) combination matters, and a few hundred retailers reduce
+    /// to a handful of those. Named-customer schemes are the one case that needs the
+    /// retailers themselves, so those are matched separately.</summary>
+    public async Task<IReadOnlyCollection<FieldSchemeDto>> GetFieldSchemesAsync(ulong? actorUserId, DateOnly today, CancellationToken cancellationToken)
+    {
+        var schemes = await _dbContext.LoyaltySchemes.AsNoTracking()
+            .Where(x => x.DeletedAt == null
+                && x.Active == "Y"
+                && (x.Status == "Published" || x.Status == "Live")
+                && x.SchemeType == "Invoice")
+            .ToListAsync(cancellationToken);
+        if (schemes.Count == 0) return [];
+
+        var slabCounts = await _dbContext.LoyaltySchemeSlabs.AsNoTracking()
+            .GroupBy(x => x.LoyaltySchemeId)
+            .Select(group => new { SchemeId = group.Key, Count = group.Count() })
+            .ToDictionaryAsync(x => x.SchemeId, x => x.Count, cancellationToken);
+
+        var audiences = await ResolveFieldAudiencesAsync(actorUserId, cancellationToken);
+
+        return schemes
+            .Where(scheme => audiences.Any(audience => SchemeEligibility.Matches(scheme, EffectiveSchemeDate(scheme, today), audience)))
+            .Select(scheme => ToFieldScheme(scheme, today, slabCounts.GetValueOrDefault(scheme.Id)))
+            .OrderByDescending(scheme => scheme.IsLive)
+            .ThenByDescending(scheme => scheme.EndDate)
+            .ToList();
+    }
+
+    public async Task<FieldSchemeDetailDto?> GetFieldSchemeAsync(ulong id, ulong? actorUserId, DateOnly today, CancellationToken cancellationToken)
+    {
+        var scheme = await _dbContext.LoyaltySchemes.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.Id == id && x.DeletedAt == null && x.Active == "Y"
+                && (x.Status == "Published" || x.Status == "Live") && x.SchemeType == "Invoice", cancellationToken);
+        if (scheme is null) return null;
+
+        var audiences = await ResolveFieldAudiencesAsync(actorUserId, cancellationToken);
+        if (!audiences.Any(audience => SchemeEligibility.Matches(scheme, EffectiveSchemeDate(scheme, today), audience))) return null;
+
+        var slabs = await _dbContext.LoyaltySchemeSlabs.AsNoTracking()
+            .Where(x => x.LoyaltySchemeId == scheme.Id)
+            .OrderBy(x => x.SortOrder).ThenBy(x => x.ValueFrom)
+            .ToListAsync(cancellationToken);
+
+        // What this user's own retailers have done under the scheme, through the same scope
+        // the invoice list uses.
+        var invoices = (await GetInvoicesAsync(new NewInvoiceFilterDto { SchemeId = scheme.Id, Unpaged = true }, actorUserId, cancellationToken)).Items;
+        var distinct = invoices.GroupBy(x => x.Id).Select(group => group.First()).ToList();
+
+        return new FieldSchemeDetailDto
+        {
+            Scheme = ToFieldScheme(scheme, today, slabs.Count),
+            Slabs = slabs.Select(slab => new FieldSchemeSlabDto
+            {
+                FromAmount = slab.ValueFrom,
+                ToAmount = slab.ValueTo ?? 0,
+                Value = slab.RewardValue,
+                ValueType = scheme.BasedOn
+            }).ToList(),
+            InvoiceCount = distinct.Count,
+            RetailerCount = distinct.Select(x => x.SecondaryCustomerId).Distinct().Count(),
+            ApprovedAmount = distinct.Where(x => x.ApprovalStatus == NewInvoice.StatusApprovedHo)
+                .Sum(x => x.HoApprovedAmount ?? x.Amount),
+            PendingAmount = distinct
+                .Where(x => x.ApprovalStatus is not NewInvoice.StatusApprovedHo and not NewInvoice.StatusRejected)
+                .Sum(x => x.SalesApprovedAmount ?? x.SsApprovedAmount ?? x.Amount),
+            PointsEarned = invoices.Where(x => x.ApprovalStatus == NewInvoice.StatusApprovedHo).Sum(x => x.SchemePoints),
+            PointsExpected = invoices
+                .Where(x => x.ApprovalStatus is not NewInvoice.StatusApprovedHo and not NewInvoice.StatusRejected)
+                .Sum(x => x.ExpectedSchemePoints)
+        };
+    }
+
+    /// <summary>An expired scheme is still matched against its own period, so it can be shown
+    /// as "expired" rather than disappearing on the date check.</summary>
+    private static DateOnly EffectiveSchemeDate(LoyaltyScheme scheme, DateOnly today) =>
+        today < scheme.StartDate ? scheme.StartDate : today > scheme.EndDate ? scheme.EndDate : today;
+
+    private static FieldSchemeDto ToFieldScheme(LoyaltyScheme scheme, DateOnly today, int slabCount)
+    {
+        var expired = scheme.EndDate < today;
+        var upcoming = scheme.StartDate > today;
+        return new FieldSchemeDto
+        {
+            Id = scheme.Id,
+            Name = scheme.SchemeName,
+            Code = scheme.SchemeCode,
+            Tag = scheme.SchemeTag,
+            WalletType = scheme.SchemeTag?.Contains("booster", StringComparison.OrdinalIgnoreCase) == true ? "Booster" : "Regular",
+            BasedOn = scheme.BasedOn,
+            StartDate = scheme.StartDate,
+            EndDate = scheme.EndDate,
+            Status = expired ? "expired" : upcoming ? "upcoming" : "live",
+            StatusLabel = expired ? "Expired" : upcoming ? "Upcoming" : "Live",
+            IsLive = !expired && !upcoming,
+            DaysRemaining = expired || upcoming ? 0 : scheme.EndDate.DayNumber - today.DayNumber,
+            AreaScope = scheme.AreaScope,
+            AreaValues = SchemeEligibility.ReadAreaValues(scheme.AreaValues).ToList(),
+            CustomerType = scheme.CustomerType,
+            SlabCount = slabCount
+        };
+    }
+
+    /// <summary>Every audience the signed-in user's retailers add up to.</summary>
+    private async Task<IReadOnlyList<SchemeAudience>> ResolveFieldAudiencesAsync(ulong? actorUserId, CancellationToken cancellationToken)
+    {
+        var distributorCustomerId = await GetDistributorCustomerIdAsync(actorUserId, cancellationToken);
+        var query = _dbContext.Customers.AsNoTracking()
+            .Where(x => x.Active == "Y" && (x.CustomerType == RetailerCustomerType || x.CustomerType == InfluencerCustomerType));
+        query = ApplyDistributorRetailerScope(query, distributorCustomerId);
+        query = await ApplyRetailerReportingScopeAsync(query, actorUserId, distributorCustomerId, cancellationToken);
+
+        var customers = await query.Take(MaxRows).ToListAsync(cancellationToken);
+        if (customers.Count == 0) return [];
+
+        var employeeIds = customers
+            .Select(customer => FirstULong(ReadField(customer, "employee_id"))
+                ?? FirstULong(ReadField(customer, "sales_executive_id"))
+                ?? customer.ExecutiveId)
+            .Where(id => id.HasValue).Select(id => id!.Value).Distinct().ToArray();
+
+        var employees = employeeIds.Length == 0
+            ? []
+            : await _dbContext.Users.AsNoTracking().Where(x => employeeIds.Contains(x.Id))
+                .Select(x => new { x.Id, x.PrimaryBranchId, x.BranchId, x.DivisionId })
+                .ToListAsync(cancellationToken);
+
+        var branchIds = employees.Select(x => x.PrimaryBranchId ?? FirstULong(x.BranchId))
+            .Where(x => x.HasValue).Select(x => x!.Value).Distinct().ToArray();
+        var divisionIds = employees.Where(x => x.DivisionId.HasValue).Select(x => x.DivisionId!.Value).Distinct().ToArray();
+        var stateIds = customers.Select(SchemeEligibility.ReadStateId).Where(x => x.HasValue).Select(x => x!.Value).Distinct().ToArray();
+
+        var branches = branchIds.Length == 0 ? [] : await _dbContext.Branches.AsNoTracking()
+            .Where(x => branchIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.BranchName, cancellationToken);
+        var divisions = divisionIds.Length == 0 ? [] : await _dbContext.Divisions.AsNoTracking()
+            .Where(x => divisionIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.DivisionName, cancellationToken);
+        var states = stateIds.Length == 0 ? [] : await _dbContext.States.AsNoTracking()
+            .Where(x => stateIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.StateName, cancellationToken);
+        var employeeById = employees.ToDictionary(x => x.Id);
+
+        var audiences = new HashSet<SchemeAudience>();
+        foreach (var customer in customers)
+        {
+            var employeeId = FirstULong(ReadField(customer, "employee_id"))
+                ?? FirstULong(ReadField(customer, "sales_executive_id"))
+                ?? customer.ExecutiveId;
+
+            string? branchName = null;
+            string? zoneName = null;
+            if (employeeId.HasValue && employeeById.TryGetValue(employeeId.Value, out var employee))
+            {
+                var branchId = employee.PrimaryBranchId ?? FirstULong(employee.BranchId);
+                if (branchId.HasValue) branchName = branches.GetValueOrDefault(branchId.Value);
+                if (employee.DivisionId.HasValue) zoneName = divisions.GetValueOrDefault(employee.DivisionId.Value);
+            }
+
+            var stateId = SchemeEligibility.ReadStateId(customer);
+            var stateName = stateId.HasValue ? states.GetValueOrDefault(stateId.Value) : null;
+
+            // The area part of a scheme only ever looks at one of these, so retailers sharing
+            // a branch, zone and state collapse into a single audience.
+            audiences.Add(new SchemeAudience(customer.CustomerType, null, null, branchName, zoneName, stateName));
+            // A scheme aimed at named customers needs the retailer itself.
+            audiences.Add(new SchemeAudience(customer.CustomerType, customer.Name, customer.CustomerCode, branchName, zoneName, stateName));
+        }
+
+        return audiences.ToList();
+    }
+
+    /// <summary>The dealers a retailer is mapped to. Live data keeps the mapping in two
+    /// custom fields - distributor_name for the domestic dealer and agri_distributor for the
+    /// agri one - and about two hundred retailers carry two different dealers between them.
+    /// Those are the retailers the invoice form has to ask about; the rest it can simply tell.</summary>
+    public async Task<IReadOnlyCollection<RetailerDealerOptionDto>> GetRetailerDealerOptionsAsync(ulong customerId, CancellationToken cancellationToken)
+    {
+        var retailer = await _dbContext.Customers.AsNoTracking()
+            .FirstOrDefaultAsync(x => x.Id == customerId, cancellationToken);
+        if (retailer is null) return [];
+
+        var dealerIds = new List<ulong>();
+        foreach (var field in new[] { "distributor_name", "agri_distributor" })
+        {
+            foreach (var dealerId in AllULongs(ReadField(retailer, field)))
+            {
+                if (!dealerIds.Contains(dealerId)) dealerIds.Add(dealerId);
+            }
+        }
+
+        // Older retailers carry the dealer as the parent record rather than in custom fields.
+        if (dealerIds.Count == 0 && retailer.ParentId is > 0) dealerIds.Add(retailer.ParentId.Value);
+        if (dealerIds.Count == 0) return [];
+
+        var dealers = await _dbContext.Customers.AsNoTracking()
+            .Where(x => dealerIds.Contains(x.Id) && x.CustomerType == DistributorCustomerType)
+            .ToListAsync(cancellationToken);
+
+        // Kept in the order the retailer lists them, so the domestic dealer leads.
+        return dealerIds
+            .Select(dealerId => dealers.FirstOrDefault(dealer => dealer.Id == dealerId))
+            .Where(dealer => dealer is not null)
+            .Select(dealer => new RetailerDealerOptionDto
+            {
+                Id = dealer!.Id,
+                Name = dealer.Name,
+                FirmName = DealerFirmName(dealer),
+                Code = string.IsNullOrWhiteSpace(dealer.CustomerCode) ? null : dealer.CustomerCode.Trim()
+            })
+            .ToList();
+    }
+
+    /// <summary>Every id in a field that may hold one or several, comma separated.</summary>
+    private static IEnumerable<ulong> AllULongs(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) yield break;
+        foreach (var part in value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (ulong.TryParse(part, out var parsed) && parsed > 0) yield return parsed;
+        }
     }
 
     public async Task<Customer?> GetRetailerAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken)
@@ -239,11 +487,11 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
     /// the retailer; when a retailer has no dealer mapped we fall back to that retailer
     /// alone so a straight resubmission is still caught. Rejected invoices are skipped:
     /// the number is free again so the dealer can re-enter a corrected invoice.</summary>
-    public async Task<bool> InvoiceNumberExistsAsync(string invoiceNumber, ulong secondaryCustomerId, ulong? exceptId, CancellationToken cancellationToken)
+    public async Task<bool> InvoiceNumberExistsAsync(string invoiceNumber, ulong secondaryCustomerId, ulong? dealerCustomerId, ulong? exceptId, CancellationToken cancellationToken)
     {
         var retailer = await _dbContext.Customers.AsNoTracking()
             .FirstOrDefaultAsync(x => x.Id == secondaryCustomerId, cancellationToken);
-        var distributorCustomerId = retailer is null ? null : AssignedDistributorId(retailer);
+        var distributorCustomerId = dealerCustomerId ?? (retailer is null ? null : AssignedDistributorId(retailer));
 
         var query = distributorCustomerId.HasValue
             ? BaseQuery(distributorCustomerId)
@@ -550,24 +798,33 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
                 || EF.Functions.Like(x.CustomFields, agriNumber)));
     }
 
+    /// <summary>The invoices that belong to one dealer.
+    ///
+    /// An invoice raised from the field app says which dealer it is for, and that answer is
+    /// final - a retailer mapped to two dealers must not show the same invoice to both. Every
+    /// invoice raised before that question existed carries no dealer, and those still follow
+    /// the retailer's mapping, which is how the dealer app has always found them.</summary>
     private static IQueryable<InvoiceRow> ApplyDistributorInvoiceScope(IQueryable<InvoiceRow> query, ulong? distributorCustomerId)
     {
         if (!distributorCustomerId.HasValue) return query;
 
-        var domestic = JsonFieldPattern("distributor_name", distributorCustomerId.Value);
-        var domesticSpaced = JsonFieldSpacedPattern("distributor_name", distributorCustomerId.Value);
-        var domesticNumber = JsonNumberFieldPattern("distributor_name", distributorCustomerId.Value);
-        var agri = JsonFieldPattern("agri_distributor", distributorCustomerId.Value);
-        var agriSpaced = JsonFieldSpacedPattern("agri_distributor", distributorCustomerId.Value);
-        var agriNumber = JsonNumberFieldPattern("agri_distributor", distributorCustomerId.Value);
+        var dealerId = distributorCustomerId.Value;
+        var domestic = JsonFieldPattern("distributor_name", dealerId);
+        var domesticSpaced = JsonFieldSpacedPattern("distributor_name", dealerId);
+        var domesticNumber = JsonNumberFieldPattern("distributor_name", dealerId);
+        var agri = JsonFieldPattern("agri_distributor", dealerId);
+        var agriSpaced = JsonFieldSpacedPattern("agri_distributor", dealerId);
+        var agriNumber = JsonNumberFieldPattern("agri_distributor", dealerId);
 
-        return query.Where(x => x.Customer.CustomFields != null
-            && (EF.Functions.Like(x.Customer.CustomFields, domestic)
-                || EF.Functions.Like(x.Customer.CustomFields, domesticSpaced)
-                || EF.Functions.Like(x.Customer.CustomFields, domesticNumber)
-                || EF.Functions.Like(x.Customer.CustomFields, agri)
-                || EF.Functions.Like(x.Customer.CustomFields, agriSpaced)
-                || EF.Functions.Like(x.Customer.CustomFields, agriNumber)));
+        return query.Where(x => x.Invoice.DealerCustomerId == dealerId
+            || (x.Invoice.DealerCustomerId == null
+                && x.Customer.CustomFields != null
+                && (EF.Functions.Like(x.Customer.CustomFields, domestic)
+                    || EF.Functions.Like(x.Customer.CustomFields, domesticSpaced)
+                    || EF.Functions.Like(x.Customer.CustomFields, domesticNumber)
+                    || EF.Functions.Like(x.Customer.CustomFields, agri)
+                    || EF.Functions.Like(x.Customer.CustomFields, agriSpaced)
+                    || EF.Functions.Like(x.Customer.CustomFields, agriNumber))));
     }
 
     private static string JsonFieldPattern(string key, ulong value) => $"%\"{key}\":\"{value}\"%";
@@ -746,25 +1003,19 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
         }
     }
 
-    private async Task<Dictionary<ulong, string>> LoadAssignedDistributorNamesAsync(IEnumerable<Customer> customers, CancellationToken cancellationToken)
+    private async Task<Dictionary<ulong, string>> LoadDealerNamesAsync(IEnumerable<InvoiceRow> rows, CancellationToken cancellationToken)
     {
-        var customerDistributorIds = customers
-            .Select(customer => new { CustomerId = customer.Id, DistributorId = AssignedDistributorId(customer) })
-            .Where(x => x.DistributorId.HasValue)
-            .GroupBy(x => x.CustomerId)
-            .Select(x => x.First())
-            .ToList();
+        var dealerIds = rows
+            .Select(row => InvoiceDealerId(row.Invoice, row.Customer))
+            .Where(id => id.HasValue)
+            .Select(id => id!.Value)
+            .Distinct()
+            .ToArray();
+        if (dealerIds.Length == 0) return [];
 
-        var distributorIds = customerDistributorIds.Select(x => x.DistributorId!.Value).Distinct().ToArray();
-        if (distributorIds.Length == 0) return [];
-
-        var distributorNames = await _dbContext.Customers.AsNoTracking()
-            .Where(x => distributorIds.Contains(x.Id))
+        return await _dbContext.Customers.AsNoTracking()
+            .Where(x => dealerIds.Contains(x.Id))
             .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
-
-        return customerDistributorIds
-            .Where(x => x.DistributorId.HasValue && distributorNames.ContainsKey(x.DistributorId.Value))
-            .ToDictionary(x => x.CustomerId, x => distributorNames[x.DistributorId!.Value]);
     }
 
     private async Task<IReadOnlyCollection<NewInvoiceApprovalLogDto>> GetApprovalLogsAsync(ulong invoiceId, CancellationToken cancellationToken) =>
@@ -945,7 +1196,7 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
             CityName = cityName,
             ZoneName = zoneName,
             BranchName = branchName,
-            AssignedDistributorId = AssignedDistributorId(customer),
+            AssignedDistributorId = InvoiceDealerId(invoice, customer),
             AssignedDistributorName = assignedDistributorName,
             AssignedEmployeeName = assignedEmployeeName,
             InvoiceNumber = invoice.InvoiceNumber,
@@ -1083,6 +1334,12 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
     private static ulong? AssignedDistributorId(Customer customer) =>
         FirstULong(ReadField(customer, "distributor_name")) ?? FirstULong(ReadField(customer, "agri_distributor")) ?? customer.ParentId;
 
+    /// <summary>Whose invoice this is. A retailer can be mapped to more than one dealer, so
+    /// whoever raises the invoice says which one and that answer wins. Invoices raised before
+    /// the question existed carry no dealer and fall back to the retailer's mapping.</summary>
+    private static ulong? InvoiceDealerId(NewInvoice invoice, Customer customer) =>
+        invoice.DealerCustomerId ?? AssignedDistributorId(customer);
+
     private static string? AssignedZoneName(Customer customer, IReadOnlyDictionary<ulong, string> zones) =>
         zones.TryGetValue(customer.Id, out var zoneName) ? zoneName : null;
 
@@ -1092,8 +1349,11 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
     private static string? AssignedEmployeeName(Customer customer, IReadOnlyDictionary<ulong, string> employees) =>
         employees.TryGetValue(customer.Id, out var employeeName) ? employeeName : null;
 
-    private static string? AssignedDistributorName(Customer customer, IReadOnlyDictionary<ulong, string> distributors) =>
-        distributors.TryGetValue(customer.Id, out var distributorName) ? distributorName : null;
+    private static string? DealerName(NewInvoice invoice, Customer customer, IReadOnlyDictionary<ulong, string> dealerNames)
+    {
+        var dealerId = InvoiceDealerId(invoice, customer);
+        return dealerId.HasValue && dealerNames.TryGetValue(dealerId.Value, out var name) ? name : null;
+    }
 
     private static ulong? FirstULong(string? value)
     {

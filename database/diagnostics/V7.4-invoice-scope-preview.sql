@@ -29,7 +29,7 @@ END;
 SELECT
     u.id AS [user_id], u.name, u.reportingid AS [reports_to],
     (SELECT name FROM users m WHERE m.id = u.reportingid) AS [manager],
-    u.branch_id, u.active, u.customer_id,
+    u.branch_id, u.active, u.customerid,
     STUFF((SELECT ', ' + r.name FROM model_has_roles mr
            INNER JOIN roles r ON r.id = mr.role_id
            WHERE mr.model_id = u.id AND mr.model_type = 'App\Models\User'
@@ -60,7 +60,7 @@ WITH downline AS (
     UNION ALL
     SELECT u.id, u.name, u.reportingid, d.level + 1
     FROM users u INNER JOIN downline d ON u.reportingid = d.id
-    WHERE u.deleted_at IS NULL AND u.active = 'Y' AND u.isDeleted = 0 AND u.customer_id IS NULL
+    WHERE u.deleted_at IS NULL AND u.active = 'Y' AND u.isDeleted = 0 AND u.customerid IS NULL
 )
 SELECT level, id AS [user_id], name AS [visible_user]
 FROM downline ORDER BY level, name
@@ -71,7 +71,7 @@ WITH downline AS (
     SELECT id FROM users WHERE id = @user_id
     UNION ALL
     SELECT u.id FROM users u INNER JOIN downline d ON u.reportingid = d.id
-    WHERE u.deleted_at IS NULL AND u.active = 'Y' AND u.isDeleted = 0 AND u.customer_id IS NULL
+    WHERE u.deleted_at IS NULL AND u.active = 'Y' AND u.isDeleted = 0 AND u.customerid IS NULL
 ),
 matched AS (
     SELECT i.id AS invoice_id, i.invoice_number, c.id AS customer_id, c.name AS customer_name,
@@ -92,7 +92,7 @@ matched AS (
                 THEN 1 ELSE 0 END AS matched_by_executive_id
     FROM new_invoices i
     INNER JOIN customers c ON c.id = i.secondary_customer_id
-    WHERE i.deleted_at IS NULL AND c.deleted_at IS NULL
+    WHERE c.deleted_at IS NULL
 )
 SELECT
     CASE WHEN matched_by_custom_fields = 1 OR matched_by_executive_id = 1
@@ -108,12 +108,12 @@ WITH downline AS (
     SELECT id FROM users WHERE id = @user_id
     UNION ALL
     SELECT u.id FROM users u INNER JOIN downline d ON u.reportingid = d.id
-    WHERE u.deleted_at IS NULL AND u.active = 'Y' AND u.isDeleted = 0 AND u.customer_id IS NULL
+    WHERE u.deleted_at IS NULL AND u.active = 'Y' AND u.isDeleted = 0 AND u.customerid IS NULL
 )
 SELECT
-    (SELECT COUNT(*) FROM new_invoices WHERE deleted_at IS NULL) AS [visible_today],
+    (SELECT COUNT(*) FROM new_invoices) AS [visible_today],
     (SELECT COUNT(*) FROM new_invoices i INNER JOIN customers c ON c.id = i.secondary_customer_id
-      WHERE i.deleted_at IS NULL AND c.deleted_at IS NULL
+      WHERE c.deleted_at IS NULL
         AND (EXISTS (SELECT 1 FROM downline d WHERE c.custom_fields IS NOT NULL
                      AND (c.custom_fields LIKE '%"employee_id":"' + CAST(d.id AS VARCHAR(20)) + '"%'
                        OR c.custom_fields LIKE '%"employee_id": "' + CAST(d.id AS VARCHAR(20)) + '"%'

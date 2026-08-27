@@ -12,6 +12,7 @@ public sealed class NewInvoiceConfiguration : IEntityTypeConfiguration<NewInvoic
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
         builder.Property(x => x.SecondaryCustomerId).HasColumnName("secondary_customer_id");
+        builder.Property(x => x.DealerCustomerId).HasColumnName("dealer_customer_id");
         builder.Property(x => x.LoyaltySchemeId).HasColumnName("loyalty_scheme_id");
         builder.Property(x => x.InvoiceNumber).HasColumnName("invoice_number").HasMaxLength(255);
         builder.Property(x => x.InvoiceDate).HasColumnName("invoice_date").HasColumnType("date");
@@ -38,6 +39,7 @@ public sealed class NewInvoiceConfiguration : IEntityTypeConfiguration<NewInvoic
         // is here so that lookup stays cheap.
         builder.HasIndex(x => x.InvoiceNumber);
         builder.HasIndex(x => x.SecondaryCustomerId);
+        builder.HasIndex(x => x.DealerCustomerId);
         builder.HasIndex(x => x.LoyaltySchemeId);
         builder.HasIndex(x => x.CreatedBy);
         builder.HasIndex(x => x.ApprovalStatus);

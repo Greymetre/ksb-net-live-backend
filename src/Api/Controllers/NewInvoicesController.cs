@@ -94,11 +94,29 @@ public sealed class NewInvoicesController : ControllerBase
         return Ok(response);
     }
 
+    /// <summary>The retailer picker, a page at a time. Unpaged this is two megabytes and
+    /// thousands of rows for anyone senior, which no dropdown can use and no phone can draw.
+    /// The search runs in SQL; page_size 0 still returns everything for any caller that
+    /// genuinely needs the whole list.</summary>
     [HttpGet("retailers")]
-    public async Task<IActionResult> GetRetailers([FromQuery] string? search, CancellationToken cancellationToken)
+    public async Task<IActionResult> GetRetailers(
+        [FromQuery] string? search,
+        [FromQuery] int page = 1,
+        [FromQuery(Name = "page_size")] int pageSize = 0,
+        CancellationToken cancellationToken = default)
     {
-        var response = await _newInvoiceService.GetRetailersAsync(search, CurrentUserId(), cancellationToken);
+        var response = pageSize > 0
+            ? await _newInvoiceService.GetRetailersAsync(search, CurrentUserId(), page, pageSize, cancellationToken)
+            : await _newInvoiceService.GetRetailersAsync(search, CurrentUserId(), cancellationToken);
         return Ok(response);
+    }
+
+    /// <summary>The dealers behind the retailer just chosen on the form. Like the other
+    /// option endpoints it carries no permission of its own - the create call it feeds does.</summary>
+    [HttpGet("retailer-dealers")]
+    public async Task<IActionResult> GetRetailerDealers([FromQuery(Name = "customer_id")] ulong customerId, CancellationToken cancellationToken)
+    {
+        return Ok(await _newInvoiceService.GetRetailerDealersAsync(customerId, cancellationToken));
     }
 
     [HttpGet("schemes")]
@@ -150,7 +168,9 @@ public sealed class NewInvoicesController : ControllerBase
     [HttpDelete("{id}")]
     public async Task<IActionResult> DeleteInvoice(ulong id, CancellationToken cancellationToken)
     {
-        var response = await _newInvoiceService.DeleteInvoiceAsync(id, IsSuperAdmin(), CurrentUserId(), cancellationToken);
+        var response = await _newInvoiceService.DeleteInvoiceAsync(id,
+            IsSuperAdmin() ? InvoiceDeletePolicy.AnyStatus : InvoiceDeletePolicy.PendingOnly,
+            CurrentUserId(), cancellationToken);
 
         if (response.Extra.TryGetValue("removed_files", out var removed) && removed is IEnumerable<string> files)
         {
@@ -242,6 +262,7 @@ public sealed class NewInvoicesController : ControllerBase
         return new NewInvoiceRequestDto
         {
             SecondaryCustomerId = form.SecondaryCustomerId,
+            DealerCustomerId = form.DealerCustomerId,
             SchemeId = form.SchemeId,
             InvoiceNumber = form.InvoiceNumber,
             InvoiceDate = form.InvoiceDate,
@@ -309,6 +330,7 @@ public sealed class NewInvoicesController : ControllerBase
 public sealed class NewInvoiceFormRequest
 {
     [FromForm(Name = "secondary_customer_id")] public ulong SecondaryCustomerId { get; set; }
+    [FromForm(Name = "dealer_id")] public ulong? DealerCustomerId { get; set; }
     [FromForm(Name = "scheme_id")] public ulong? SchemeId { get; set; }
     [FromForm(Name = "invoice_number")] public string? InvoiceNumber { get; set; }
     [FromForm(Name = "invoice_date")] public DateTime? InvoiceDate { get; set; }

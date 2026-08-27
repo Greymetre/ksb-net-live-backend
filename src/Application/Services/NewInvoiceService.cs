@@ -110,8 +110,24 @@ public sealed class NewInvoiceService : INewInvoiceService
     public async Task<LaravelApiResponse> GetRetailersAsync(string? search, ulong? actorUserId, CancellationToken cancellationToken) =>
         LaravelApiResponse.Success("retailers", await _repository.GetRetailerOptionsAsync(search, actorUserId, cancellationToken));
 
+    public async Task<LaravelApiResponse> GetRetailersAsync(string? search, ulong? actorUserId, int page, int pageSize, CancellationToken cancellationToken)
+    {
+        var result = await _repository.GetRetailerOptionPageAsync(search, actorUserId, page, pageSize, cancellationToken);
+        var response = LaravelApiResponse.Success("retailers", result.Items);
+        response.Extra["total"] = result.Total;
+        response.Extra["page"] = result.Page;
+        response.Extra["page_size"] = result.PageSize;
+        response.Extra["has_more"] = result.Page * (long)result.PageSize < result.Total;
+        return response;
+    }
+
     public async Task<LaravelApiResponse> GetDealersAsync(ulong? actorUserId, CancellationToken cancellationToken) =>
         LaravelApiResponse.Success("dealers", await _repository.GetDealerOptionsAsync(actorUserId, cancellationToken));
+
+    /// <summary>The dealers one retailer is mapped to, so the invoice form can ask which one
+    /// it is for - or simply show the answer when there is only one.</summary>
+    public async Task<LaravelApiResponse> GetRetailerDealersAsync(ulong customerId, CancellationToken cancellationToken) =>
+        LaravelApiResponse.Success("dealers", await _repository.GetRetailerDealerOptionsAsync(customerId, cancellationToken));
 
     public async Task<LaravelApiResponse> GetSchemeOptionsAsync(ulong customerId, DateTime? invoiceDate, CancellationToken cancellationToken)
     {
@@ -131,6 +147,7 @@ public sealed class NewInvoiceService : INewInvoiceService
         var invoice = new NewInvoice
         {
             SecondaryCustomerId = request.SecondaryCustomerId,
+            DealerCustomerId = request.DealerCustomerId,
             LoyaltySchemeId = request.SchemeId,
             InvoiceNumber = request.InvoiceNumber!.Trim(),
             InvoiceDate = request.InvoiceDate!.Value.Date,
@@ -176,6 +193,7 @@ public sealed class NewInvoiceService : INewInvoiceService
         var changes = DescribeChanges(invoice, before, request, resolved);
 
         invoice.SecondaryCustomerId = request.SecondaryCustomerId;
+        if (request.DealerCustomerId.HasValue) invoice.DealerCustomerId = request.DealerCustomerId;
         invoice.LoyaltySchemeId = request.SchemeId;
         invoice.InvoiceNumber = request.InvoiceNumber!.Trim();
         invoice.InvoiceDate = request.InvoiceDate!.Value.Date;
@@ -240,17 +258,24 @@ public sealed class NewInvoiceService : INewInvoiceService
 
     private static string Or(string? value) => string.IsNullOrWhiteSpace(value) ? "-" : value.Trim();
 
-    /// <summary>
-    /// Everyone else may only delete an invoice that is still pending; a superadmin
-    /// can remove one at any stage, which is why <paramref name="allowAnyStatus"/>
-    /// is decided by the caller from the signed-in user's role.
-    /// </summary>
-    public async Task<LaravelApiResponse> DeleteInvoiceAsync(ulong id, bool allowAnyStatus, ulong? actorUserId, CancellationToken cancellationToken)
+    /// <summary>How far a deletion may reach is decided by the caller: the CRM allows a
+    /// pending invoice, the field app a pending or held one, and a superadmin any of them.
+    /// Whatever the policy, the invoice still has to be one the actor can see.</summary>
+    public async Task<LaravelApiResponse> DeleteInvoiceAsync(ulong id, InvoiceDeletePolicy policy, ulong? actorUserId, CancellationToken cancellationToken)
     {
         var invoice = await FindOrThrowAsync(id, actorUserId, cancellationToken);
-        if (!allowAnyStatus && invoice.ApprovalStatus != NewInvoice.StatusPending)
+        var deletable = policy switch
         {
-            throw Http(403, "Only pending invoices can be deleted.");
+            InvoiceDeletePolicy.AnyStatus => true,
+            InvoiceDeletePolicy.PendingOrHold => invoice.ApprovalStatus is NewInvoice.StatusPending or NewInvoice.StatusHold,
+            _ => invoice.ApprovalStatus == NewInvoice.StatusPending
+        };
+
+        if (!deletable)
+        {
+            throw Http(403, policy == InvoiceDeletePolicy.PendingOrHold
+                ? "Only a pending or held invoice can be deleted."
+                : "Only pending invoices can be deleted.");
         }
 
         var removedFiles = await _repository.DeleteInvoiceAsync(invoice, cancellationToken);
@@ -357,6 +382,21 @@ public sealed class NewInvoiceService : INewInvoiceService
         return LaravelApiResponse.Success("new_invoice", updated, "Invoice rejected successfully.");
     }
 
+    /// <summary>Invoice dates are entered and read in India, so "today" is decided there.</summary>
+    private static readonly TimeZoneInfo IndiaTimeZone = ResolveIndiaTimeZone();
+
+    private static TimeZoneInfo ResolveIndiaTimeZone()
+    {
+        foreach (var id in new[] { "India Standard Time", "Asia/Kolkata" })
+        {
+            try { return TimeZoneInfo.FindSystemTimeZoneById(id); }
+            catch (TimeZoneNotFoundException) { }
+            catch (InvalidTimeZoneException) { }
+        }
+
+        return TimeZoneInfo.CreateCustomTimeZone("IST", TimeSpan.FromMinutes(330), "IST", "IST");
+    }
+
     private sealed record ValidatedInvoice(string RetailerName, string SchemeName);
 
     private async Task<ValidatedInvoice> ValidateRequestAsync(NewInvoiceRequestDto request, ulong? exceptId, ulong? actorUserId, CancellationToken cancellationToken)
@@ -366,6 +406,13 @@ public sealed class NewInvoiceService : INewInvoiceService
         if (!request.SchemeId.HasValue || request.SchemeId.Value == 0) errors["scheme_id"] = ["Scheme selection is required."];
         if (string.IsNullOrWhiteSpace(request.InvoiceNumber)) errors["invoice_number"] = ["Invoice number is required."];
         if (!request.InvoiceDate.HasValue) errors["invoice_date"] = ["Invoice date is required."];
+        // An invoice cannot be dated into the future. The screens do not offer those dates,
+        // and the rule belongs here as well so no caller can post one. India runs +05:30,
+        // so "today" is read there rather than in UTC - a late evening entry is still today.
+        else if (request.InvoiceDate.Value.Date > TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, IndiaTimeZone).Date)
+        {
+            errors["invoice_date"] = ["Invoice date cannot be in the future."];
+        }
         if (!request.Amount.HasValue || request.Amount.Value <= 0) errors["amount"] = ["Amount must be greater than 0."];
         if (request.Points.HasValue && request.Points.Value < 0) errors["points"] = ["Points cannot be negative."];
         if (string.IsNullOrWhiteSpace(request.Attachment)) errors["attachment"] = ["Invoice attachment is required."];
@@ -375,7 +422,7 @@ public sealed class NewInvoiceService : INewInvoiceService
         var retailer = await _repository.GetRetailerAsync(request.SecondaryCustomerId, actorUserId, cancellationToken);
         if (retailer is null) throw Http(LaravelStatusCodes.NoContentLikeValidation, new { secondary_customer_id = new[] { "Only active retailer customers can be selected." } });
 
-        if (await _repository.InvoiceNumberExistsAsync(request.InvoiceNumber!.Trim(), request.SecondaryCustomerId, exceptId, cancellationToken))
+        if (await _repository.InvoiceNumberExistsAsync(request.InvoiceNumber!.Trim(), request.SecondaryCustomerId, request.DealerCustomerId, exceptId, cancellationToken))
         {
             throw Http(LaravelStatusCodes.NoContentLikeValidation, new { invoice_number = new[] { "This invoice number is already used for this dealer." } });
         }
