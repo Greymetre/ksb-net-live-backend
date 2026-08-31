@@ -17,6 +17,13 @@
 -- does not rewrite the table and does not depend on how many invoices there are. The
 -- index build is the only real work.
 --
+-- WHY THE DYNAMIC SQL BELOW
+-- SQL Server compiles a whole batch before it runs any of it. A statement that names
+-- dealer_customer_id cannot be compiled until the column exists, so on a server that
+-- binds strictly the entire batch is rejected - column and all - with "Invalid column
+-- name". Every statement that touches the new column is therefore executed through
+-- sp_executesql, which is compiled at the moment it runs, after the ALTER.
+--
 -- It checks the database first and stops without writing if it is not the one expected.
 -- It is safe to run twice: the second run finds the column and the index in place.
 --
@@ -52,7 +59,8 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_new_invoices_dealer_customer_id'
                      AND object_id = OBJECT_ID('dbo.new_invoices'))
     BEGIN
-        CREATE INDEX IX_new_invoices_dealer_customer_id ON dbo.new_invoices (dealer_customer_id);
+        -- Names the column, so it waits for the ALTER above to have happened.
+        EXEC sp_executesql N'CREATE INDEX IX_new_invoices_dealer_customer_id ON dbo.new_invoices (dealer_customer_id)';
         SET @indexed = 1;
     END;
 
@@ -67,10 +75,19 @@ BEGIN
         SET @migration_recorded = 1;
     END;
 
+    -- Same reason as the index: these count on the new column.
+    DECLARE @with_dealer INT = 0, @on_mapping INT = 0;
+    EXEC sp_executesql
+        N'SELECT @with_dealer_out = COUNT(*) FROM dbo.new_invoices WHERE dealer_customer_id IS NOT NULL;
+          SELECT @on_mapping_out  = COUNT(*) FROM dbo.new_invoices WHERE dealer_customer_id IS NULL;',
+        N'@with_dealer_out INT OUTPUT, @on_mapping_out INT OUTPUT',
+        @with_dealer_out = @with_dealer OUTPUT,
+        @on_mapping_out = @on_mapping OUTPUT;
+
     SELECT N'Column added by this run'    AS [step], CASE WHEN @added = 1 THEN N'yes' ELSE N'no - already present' END AS [value]
     UNION ALL SELECT N'Index created by this run',    CASE WHEN @indexed = 1 THEN N'yes' ELSE N'no - already present' END
     UNION ALL SELECT N'Migration row recorded',       CASE WHEN @migration_recorded = 1 THEN N'yes' ELSE N'no - already present' END
-    UNION ALL SELECT N'Invoices carrying a dealer',   CAST((SELECT COUNT(*) FROM dbo.new_invoices WHERE dealer_customer_id IS NOT NULL) AS NVARCHAR(20))
-    UNION ALL SELECT N'Invoices left on the mapping', CAST((SELECT COUNT(*) FROM dbo.new_invoices WHERE dealer_customer_id IS NULL) AS NVARCHAR(20));
+    UNION ALL SELECT N'Invoices carrying a dealer',   CAST(@with_dealer AS NVARCHAR(20))
+    UNION ALL SELECT N'Invoices left on the mapping', CAST(@on_mapping AS NVARCHAR(20));
 END;
 GO
