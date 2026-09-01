@@ -5,6 +5,7 @@ using Domain.Constants;
 using Domain.Entities;
 using Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Domain.Services;
 
 namespace Infrastructure.Repositories;
 
@@ -102,11 +103,10 @@ public sealed class UserRepository : IUserRepository
             .Select(x => new OptionDto { Id = x.Id, Name = x.DesignationName })
             .ToListAsync(cancellationToken);
 
-        var divisions = await _dbContext.Divisions.AsNoTracking()
+        var divisions = (await _dbContext.Divisions.AsNoTracking()
             .Where(x => x.Active == "Y")
-            .OrderBy(x => x.DivisionName)
             .Select(x => new OptionDto { Id = x.Id, Name = x.DivisionName })
-            .ToListAsync(cancellationToken);
+            .ToListAsync(cancellationToken)).ByZone(x => x.Name).ToList();
 
         var departments = await _dbContext.Departments.AsNoTracking()
             .Where(x => x.Active == "Y")

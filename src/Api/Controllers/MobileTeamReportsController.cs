@@ -1,10 +1,12 @@
 using System.Data;
+using System.Globalization;
 using System.Security.Claims;
 using Application.Interfaces.Repositories;
 using Infrastructure.Data;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Domain.Services;
 
 namespace Api.Controllers;
 
@@ -42,7 +44,7 @@ public sealed class MobileTeamReportsController : ControllerBase
             _ => true
         }).ToList();
 
-        var zones = rows.GroupBy(x => x.user.Zone ?? "Unknown").OrderBy(x => x.Key).Select(zone => new
+        var zones = rows.GroupBy(x => x.user.Zone ?? "Unknown").ByZone(x => x.Key).Select(zone => new
         {
             zone = zone.Key,
             users = zone.Select(x => new
@@ -65,30 +67,37 @@ public sealed class MobileTeamReportsController : ControllerBase
     {
         var users = await Team(filter, ct);
         var ids = users.Select(x => x.Id).ToArray();
-        var now = IndiaNow(); var today = now.Date; var tomorrow = today.AddDays(1); var month = new DateTime(now.Year, now.Month, 1); var nextMonth = month.AddMonths(1);
-        var orders = await _db.Orders.AsNoTracking().Where(x => x.CreatedBy.HasValue && ids.Contains(x.CreatedBy.Value) && x.OrderDate >= month && x.OrderDate < nextMonth)
+        var now = IndiaNow(); var today = now.Date; var tomorrow = today.AddDays(1); var month = new DateTime(now.Year, now.Month, 1); var nextMonth = month.AddMonths(1); var year = new DateTime(now.Year, 1, 1);
+        var orders = await _db.Orders.AsNoTracking().Where(x => x.CreatedBy.HasValue && ids.Contains(x.CreatedBy.Value) && x.OrderDate >= year && x.OrderDate < nextMonth)
             .Select(x => new { UserId = x.CreatedBy!.Value, x.OrderDate, x.GrandTotal, x.TotalQty, x.BuyerId }).ToListAsync(ct);
-        var targets = await _db.SalesTargetUsers.AsNoTracking().Where(x => x.UserId.HasValue && ids.Contains(x.UserId.Value) && x.Type == "secondary" && x.Month == now.ToString("MMM") && x.Year == now.Year)
-            .GroupBy(x => x.UserId!.Value).Select(x => new { UserId = x.Key, Target = x.Sum(y => y.Target ?? 0), Qty = x.Sum(y => y.QuantityTarget ?? 0) }).ToListAsync(ct);
+        var targetRows = await _db.SalesTargetUsers.AsNoTracking().Where(x => x.UserId.HasValue && ids.Contains(x.UserId.Value) && x.Type == "secondary" && x.Year == now.Year)
+            .Select(x => new { UserId = x.UserId!.Value, x.Month, Target = x.Target ?? 0, Qty = x.QuantityTarget ?? 0 }).ToListAsync(ct);
+        var targetMap = targetRows.Where(x => MonthIndex(x.Month) == now.Month).GroupBy(x => x.UserId).ToDictionary(g => g.Key, g => (Target: g.Sum(y => y.Target), Qty: g.Sum(y => y.Qty)));
+        var yearTargetMap = targetRows.Where(x => { var m = MonthIndex(x.Month); return m >= 1 && m <= now.Month; }).GroupBy(x => x.UserId).ToDictionary(g => g.Key, g => (Target: g.Sum(y => y.Target), Qty: g.Sum(y => y.Qty)));
         var retailers = await RetailerCounts(ids, today, ct);
-        var visits = await VisitCounts(ids, today, tomorrow, month, nextMonth, ct);
-        var targetMap = targets.ToDictionary(x => x.UserId);
+        var visits = await VisitCounts(ids, today, tomorrow, month, nextMonth, year, ct);
 
         var userRows = users.Select(user =>
         {
-            var all = orders.Where(x => x.UserId == user.Id).ToList(); var current = all.Where(x => x.OrderDate >= today && x.OrderDate < tomorrow).ToList();
-            targetMap.TryGetValue(user.Id, out var target); retailers.TryGetValue(user.Id, out var retailer); visits.TryGetValue(user.Id, out var visit);
-            var targetValue = target?.Target ?? 0; var targetQty = target?.Qty ?? 0; var monthValue = all.Sum(x => x.GrandTotal); var monthQty = all.Sum(x => x.TotalQty);
+            var yearOrders = orders.Where(x => x.UserId == user.Id).ToList();
+            var all = yearOrders.Where(x => x.OrderDate >= month && x.OrderDate < nextMonth).ToList(); var current = all.Where(x => x.OrderDate >= today && x.OrderDate < tomorrow).ToList();
+            targetMap.TryGetValue(user.Id, out var target); yearTargetMap.TryGetValue(user.Id, out var yearTarget); retailers.TryGetValue(user.Id, out var retailer); visits.TryGetValue(user.Id, out var visit);
+            var targetValue = target.Target; var targetQty = target.Qty; var monthValue = all.Sum(x => x.GrandTotal); var monthQty = all.Sum(x => x.TotalQty);
+            var yearTargetValue = yearTarget.Target; var yearTargetQty = yearTarget.Qty; var yearValue = yearOrders.Sum(x => x.GrandTotal); var yearQty = yearOrders.Sum(x => x.TotalQty);
             return new SalesRow(user, retailer.Total, targetValue, targetQty, current.Sum(x => x.GrandTotal), current.Sum(x => x.TotalQty), current.Count,
                 monthValue, monthQty, all.Count, targetValue > 0 ? Math.Round(monthValue / targetValue * 100, 2) : 0,
-                targetQty > 0 ? Math.Round(monthQty / targetQty * 100, 2) : 0, visit.Today, visit.Month, visit.Unique, all.Where(x => x.BuyerId.HasValue).Select(x => x.BuyerId).Distinct().Count());
+                targetQty > 0 ? Math.Round(monthQty / targetQty * 100, 2) : 0, visit.Today, visit.Month, visit.Unique, all.Where(x => x.BuyerId.HasValue).Select(x => x.BuyerId).Distinct().Count(),
+                yearTargetValue, yearTargetQty, yearValue, yearQty, yearOrders.Count, yearTargetValue > 0 ? Math.Round(yearValue / yearTargetValue * 100, 2) : 0,
+                yearTargetQty > 0 ? Math.Round(yearQty / yearTargetQty * 100, 2) : 0, visit.Year, visit.YearUnique, yearOrders.Where(x => x.BuyerId.HasValue).Select(x => x.BuyerId).Distinct().Count());
         }).ToList();
-        var zones = userRows.GroupBy(x => x.User.Zone ?? "Unknown").OrderBy(x => x.Key).Select(g => new { zone = g.Key, users = g.Select(SalesJson), totals = new { target = g.Sum(x => x.Target), month_value = g.Sum(x => x.MonthValue), today_value = g.Sum(x => x.TodayValue) } }).ToArray();
+        var zones = userRows.GroupBy(x => x.User.Zone ?? "Unknown").ByZone(x => x.Key).Select(g => new { zone = g.Key, users = g.Select(SalesJson), totals = new { target = g.Sum(x => x.Target), month_value = g.Sum(x => x.MonthValue), today_value = g.Sum(x => x.TodayValue), year_target = g.Sum(x => x.YearTarget), year_value = g.Sum(x => x.YearValue) } }).ToArray();
         return Ok(new { success = true, message = "Today team sales fetched successfully", data = new { zones, summary = new
         {
             total_users = userRows.Count, total_target = userRows.Sum(x => x.Target), total_target_qty = userRows.Sum(x => x.TargetQty), total_month_value = userRows.Sum(x => x.MonthValue),
             total_today_value = userRows.Sum(x => x.TodayValue), total_today_orders = userRows.Sum(x => x.TodayCount), total_month_orders = userRows.Sum(x => x.MonthCount),
-            total_visits_today = userRows.Sum(x => x.TodayVisits), total_visits_month = userRows.Sum(x => x.MonthVisits), month_unique_retailer_visits = userRows.Sum(x => x.UniqueVisits), total_unique_retailers_month = userRows.Sum(x => x.UniqueBuyers)
+            total_visits_today = userRows.Sum(x => x.TodayVisits), total_visits_month = userRows.Sum(x => x.MonthVisits), month_unique_retailer_visits = userRows.Sum(x => x.UniqueVisits), total_unique_retailers_month = userRows.Sum(x => x.UniqueBuyers),
+            total_year_target = userRows.Sum(x => x.YearTarget), total_year_target_qty = userRows.Sum(x => x.YearTargetQty), total_year_value = userRows.Sum(x => x.YearValue), total_year_orders = userRows.Sum(x => x.YearCount),
+            total_visits_year = userRows.Sum(x => x.YearVisits), year_unique_retailer_visits = userRows.Sum(x => x.YearUniqueVisits), total_unique_retailers_year = userRows.Sum(x => x.YearUniqueBuyers)
         }}});
     }
 
@@ -102,7 +111,7 @@ public sealed class MobileTeamReportsController : ControllerBase
         var quantities = await _db.OrderDetails.AsNoTracking().Where(x => x.OrderId.HasValue && orderIds.Contains(x.OrderId.Value)).GroupBy(x => x.OrderId!.Value).Select(x => new { Id = x.Key, Qty = x.Sum(y => y.Quantity) }).ToDictionaryAsync(x => x.Id, x => x.Qty, ct);
         var retailers = await RetailerCounts(ids, today, ct);
         var rows = users.Select(user => { var own = orders.Where(x => x.UserId == user.Id).ToList(); retailers.TryGetValue(user.Id, out var r); return new RetailerRow(user, r.Total, r.Today, own.Where(x => x.BuyerId.HasValue).Select(x => x.BuyerId).Distinct().Count(), own.Count, own.Sum(x => quantities.GetValueOrDefault(x.Id)), own.Sum(x => x.GrandTotal)); }).ToList();
-        var zones = rows.GroupBy(x => x.User.Zone ?? "Unknown").OrderBy(x => x.Key).Select(g => new { zone = g.Key, users = g.Select(RetailerJson), totals = RetailerTotals(g) }).ToArray();
+        var zones = rows.GroupBy(x => x.User.Zone ?? "Unknown").ByZone(x => x.Key).Select(g => new { zone = g.Key, users = g.Select(RetailerJson), totals = RetailerTotals(g) }).ToArray();
         return Ok(new { success = true, message = "Retailer sales summary fetched successfully", data = new { zones, summary = RetailerTotals(rows) } });
     }
 
@@ -134,25 +143,35 @@ public sealed class MobileTeamReportsController : ControllerBase
         return rows.GroupBy(x => x.UserId).ToDictionary(x => x.Key, x => (x.Count(), x.Count(y => y.CreatedAt >= today && y.CreatedAt < today.AddDays(1))));
     }
 
-    private async Task<Dictionary<ulong, (int Today, int Month, int Unique)>> VisitCounts(ulong[] ids, DateTime today, DateTime tomorrow, DateTime month, DateTime nextMonth, CancellationToken ct)
+    private async Task<Dictionary<ulong, (int Today, int Month, int Unique, int Year, int YearUnique)>> VisitCounts(ulong[] ids, DateTime today, DateTime tomorrow, DateTime month, DateTime nextMonth, DateTime year, CancellationToken ct)
     {
-        var result = ids.ToDictionary(x => x, _ => (0, 0, 0)); if (ids.Length == 0) return result;
+        var result = ids.ToDictionary(x => x, _ => (0, 0, 0, 0, 0)); if (ids.Length == 0) return result;
         await using var command = _db.Database.GetDbConnection().CreateCommand();
-        command.CommandText = $"SELECT user_id, SUM(CASE WHEN checkin_date >= @today AND checkin_date < @tomorrow THEN 1 ELSE 0 END), COUNT(*), COUNT(DISTINCT entity_id) FROM check_in WHERE deleted_at IS NULL AND entity_type='secondary_customer' AND user_id IN ({string.Join(',', ids)}) AND checkin_date >= @month AND checkin_date < @nextMonth GROUP BY user_id";
-        foreach (var p in new[] { ("@today", today), ("@tomorrow", tomorrow), ("@month", month), ("@nextMonth", nextMonth) }) { var parameter = command.CreateParameter(); parameter.ParameterName = p.Item1; parameter.Value = p.Item2; command.Parameters.Add(parameter); }
+        command.CommandText = $"SELECT user_id, SUM(CASE WHEN checkin_date >= @today AND checkin_date < @tomorrow THEN 1 ELSE 0 END), SUM(CASE WHEN checkin_date >= @month AND checkin_date < @nextMonth THEN 1 ELSE 0 END), COUNT(DISTINCT CASE WHEN checkin_date >= @month AND checkin_date < @nextMonth THEN entity_id END), COUNT(*), COUNT(DISTINCT entity_id) FROM check_in WHERE deleted_at IS NULL AND entity_type='secondary_customer' AND user_id IN ({string.Join(',', ids)}) AND checkin_date >= @year AND checkin_date < @nextMonth GROUP BY user_id";
+        foreach (var p in new[] { ("@today", today), ("@tomorrow", tomorrow), ("@month", month), ("@nextMonth", nextMonth), ("@year", year) }) { var parameter = command.CreateParameter(); parameter.ParameterName = p.Item1; parameter.Value = p.Item2; command.Parameters.Add(parameter); }
         if (command.Connection!.State != ConnectionState.Open) await command.Connection.OpenAsync(ct);
-        await using var reader = await command.ExecuteReaderAsync(ct); while (await reader.ReadAsync(ct)) result[Convert.ToUInt64(reader.GetValue(0))] = (Convert.ToInt32(reader.GetValue(1)), Convert.ToInt32(reader.GetValue(2)), Convert.ToInt32(reader.GetValue(3)));
+        await using var reader = await command.ExecuteReaderAsync(ct); while (await reader.ReadAsync(ct)) result[Convert.ToUInt64(reader.GetValue(0))] = (Convert.ToInt32(reader.GetValue(1)), Convert.ToInt32(reader.GetValue(2)), Convert.ToInt32(reader.GetValue(3)), Convert.ToInt32(reader.GetValue(4)), Convert.ToInt32(reader.GetValue(5)));
         return result;
     }
 
+    private static int MonthIndex(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return 0;
+        var text = value.Trim();
+        if (int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var number)) return number >= 1 && number <= 12 ? number : 0;
+        foreach (var format in new[] { "MMM", "MMMM" })
+            if (DateTime.TryParseExact(text, format, CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed)) return parsed.Month;
+        return 0;
+    }
+
     private static bool IsLeave(string value) => value.Contains("Full Day Leave", StringComparison.OrdinalIgnoreCase) || value.Contains("First Half Leave", StringComparison.OrdinalIgnoreCase) || value.Contains("Second Half Leave", StringComparison.OrdinalIgnoreCase);
-    private static object SalesJson(SalesRow x) => new { id=x.User.Id,name=x.User.Name,branch=x.User.Branch??"N/A",reporting=new{id=x.User.ReportingId,name=x.User.ReportingName,mobile=x.User.ReportingMobile},registered_retailers=x.Retailers,target=x.Target,targetQty=x.TargetQty,today_order_value=x.TodayValue,today_order_qty=x.TodayQty,today_order_count=x.TodayCount,month_order_value=x.MonthValue,month_order_qty=x.MonthQty,month_order_count=x.MonthCount,achievement_percent=x.Achievement,achievement_percent_qty=x.QtyAchievement,today_visits=x.TodayVisits,month_visits=x.MonthVisits,month_unique_retailer_visits=x.UniqueVisits,unique_retailers_month=x.UniqueBuyers};
+    private static object SalesJson(SalesRow x) => new { id=x.User.Id,name=x.User.Name,branch=x.User.Branch??"N/A",reporting=new{id=x.User.ReportingId,name=x.User.ReportingName,mobile=x.User.ReportingMobile},registered_retailers=x.Retailers,target=x.Target,targetQty=x.TargetQty,today_order_value=x.TodayValue,today_order_qty=x.TodayQty,today_order_count=x.TodayCount,month_order_value=x.MonthValue,month_order_qty=x.MonthQty,month_order_count=x.MonthCount,achievement_percent=x.Achievement,achievement_percent_qty=x.QtyAchievement,today_visits=x.TodayVisits,month_visits=x.MonthVisits,month_unique_retailer_visits=x.UniqueVisits,unique_retailers_month=x.UniqueBuyers,year_target=x.YearTarget,year_targetQty=x.YearTargetQty,year_order_value=x.YearValue,year_order_qty=x.YearQty,year_order_count=x.YearCount,year_achievement_percent=x.YearAchievement,year_achievement_percent_qty=x.YearQtyAchievement,year_visits=x.YearVisits,year_unique_retailer_visits=x.YearUniqueVisits,unique_retailers_year=x.YearUniqueBuyers};
     private static object RetailerJson(RetailerRow x) => new { id=x.User.Id,name=x.User.Name,branch=x.User.Branch??"N/A",reporting=new{id=x.User.ReportingId,name=x.User.ReportingName,mobile=x.User.ReportingMobile},registered_retailers=x.Retailers,today_registered_retailers=x.TodayRetailers,unique_orders=x.UniqueOrders,total_orders=x.Orders,order_total_qty=(x.Quantity/1000m).ToString("0.00"),order_total_value=(int)Math.Round(x.Value/100000m) };
     private static object RetailerTotals(IEnumerable<RetailerRow> rows) => new { total_users=rows.Count(),total_registered_retailers=rows.Sum(x=>x.Retailers),total_today_registered_retailers=rows.Sum(x=>x.TodayRetailers),total_unique_orders=rows.Sum(x=>x.UniqueOrders),total_orders=rows.Sum(x=>x.Orders),total_order_qty=(rows.Sum(x=>x.Quantity)/1000m).ToString("0.00"),total_order_value=(int)Math.Round(rows.Sum(x=>x.Value)/100000m) };
     private static DateTime IndiaNow() => DateTime.UtcNow.AddHours(5).AddMinutes(30);
     private ulong CurrentUserId() => ulong.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var id) ? id : throw new UnauthorizedAccessException();
     private sealed record TeamUser(ulong Id,string Name,ulong? ReportingId,string? ReportingName,string? ReportingMobile,string? Zone,string? Branch);
-    private sealed record SalesRow(TeamUser User,int Retailers,decimal Target,decimal TargetQty,decimal TodayValue,long TodayQty,int TodayCount,decimal MonthValue,long MonthQty,int MonthCount,decimal Achievement,decimal QtyAchievement,int TodayVisits,int MonthVisits,int UniqueVisits,int UniqueBuyers);
+    private sealed record SalesRow(TeamUser User,int Retailers,decimal Target,decimal TargetQty,decimal TodayValue,long TodayQty,int TodayCount,decimal MonthValue,long MonthQty,int MonthCount,decimal Achievement,decimal QtyAchievement,int TodayVisits,int MonthVisits,int UniqueVisits,int UniqueBuyers,decimal YearTarget,decimal YearTargetQty,decimal YearValue,long YearQty,int YearCount,decimal YearAchievement,decimal YearQtyAchievement,int YearVisits,int YearUniqueVisits,int YearUniqueBuyers);
     private sealed record RetailerRow(TeamUser User,int Retailers,int TodayRetailers,int UniqueOrders,int Orders,long Quantity,decimal Value);
 }
 

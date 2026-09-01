@@ -19,6 +19,8 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
     private const ulong RetailerCustomerType = 2;
     private const ulong InfluencerCustomerType = 3;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private const string SuperAdminRoleName = "SUPERADMIN";
+    private const string AsrDesignationName = "ASR";
     private readonly AppDbContext _dbContext;
 
     public NewInvoiceRepository(AppDbContext dbContext)
@@ -752,6 +754,50 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
     /// <summary>The dealer a login belongs to, or null for an internal user. A login the CRM
     /// provisions carries the Distributor role, but dealer logins that pre-date that only have
     /// users.customer_id pointing at the dealer; both are dealer logins and both stay pinned to
+    /// <summary>Raising an invoice from the field app belongs to the ASR who owns the
+    /// retailer relationship. Everyone else - DSR, BM, BDM, dealer logins - can see the
+    /// listing but not add to it. A superadmin is exempt, the way they are everywhere else.
+    ///
+    /// Both the role and the designation are matched on the id, but that id is read from
+    /// the database by name rather than written into the code: local and live do not carry
+    /// the same numbers, so a hard-coded id would quietly grant or deny the button on one
+    /// of them. Every matching row is collected, so a duplicated or renamed-back row still
+    /// counts.</summary>
+    public async Task<bool> CanCreateFieldInvoiceAsync(ulong? actorUserId, CancellationToken cancellationToken)
+    {
+        if (!actorUserId.HasValue) return false;
+
+        var superAdminRoleIds = await _dbContext.Roles.AsNoTracking()
+            .Where(x => x.Name != null && x.Name.Trim().ToUpper() == SuperAdminRoleName)
+            .Select(x => x.Id)
+            .ToListAsync(cancellationToken);
+
+        if (superAdminRoleIds.Count > 0)
+        {
+            var isSuperAdmin = await _dbContext.ModelHasRoles.AsNoTracking()
+                .AnyAsync(x => x.ModelId == actorUserId.Value
+                    && x.ModelType == LaravelModelTypes.User
+                    && superAdminRoleIds.Contains(x.RoleId), cancellationToken);
+
+            if (isSuperAdmin) return true;
+        }
+
+        var designationId = await _dbContext.Users.AsNoTracking()
+            .IgnoreQueryFilters()
+            .Where(x => x.Id == actorUserId.Value)
+            .Select(x => x.DesignationId)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (!designationId.HasValue) return false;
+
+        var asrDesignationIds = await _dbContext.Designations.AsNoTracking()
+            .Where(x => x.DesignationName != null && x.DesignationName.Trim().ToUpper() == AsrDesignationName)
+            .Select(x => x.Id)
+            .ToListAsync(cancellationToken);
+
+        return asrDesignationIds.Contains(designationId.Value);
+    }
+
     /// that dealer's own retailers rather than falling through to a reporting scope they have
     /// no place in.</summary>
     private async Task<ulong?> GetDistributorCustomerIdAsync(ulong? actorUserId, CancellationToken cancellationToken)

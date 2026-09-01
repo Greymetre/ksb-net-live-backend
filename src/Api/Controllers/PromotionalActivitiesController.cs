@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
+using Domain.Services;
 
 namespace Api.Controllers;
 
@@ -335,8 +336,8 @@ public sealed class PromotionalActivityReportsController : ControllerBase
         var designationId=string.Equals(role,"dsr",StringComparison.OrdinalIgnoreCase)?6UL:3UL;
         var raw=await (from x in q join u in _db.Users.AsNoTracking() on (ulong)x.UserId equals u.Id join z in _db.Divisions.AsNoTracking() on u.DivisionId equals (ulong?)z.Id into zj from z in zj.DefaultIfEmpty() join b in _db.Branches.AsNoTracking() on (ulong?)x.BranchId equals (ulong?)b.Id into bj from b in bj.DefaultIfEmpty() join m in _db.Users.AsNoTracking() on (ulong?)x.ReportingManagerId equals (ulong?)m.Id into mj from m in mj.DefaultIfEmpty() where u.DesignationId==designationId&& (string.IsNullOrWhiteSpace(zone)||z.DivisionName==zone) select new{Zone=z==null?null:z.DivisionName,BranchId=x.BranchId,Branch=b==null?null:b.BranchName,x.ActivityType,x.DistributorId,x.DistributorName,x.GiftCount,x.TotalExpense,Participants=x.Participants.Count,UserId=u.Id,UserName=u.Name,EmployeeCode=u.EmployeeCodes,Manager=m==null?null:m.Name}).ToListAsync(ct);
         var rows=raw.GroupBy(x=>new{x.Zone,x.BranchId,x.Branch,x.DistributorId,x.DistributorName,x.UserId,x.UserName,x.EmployeeCode,x.Manager}).Select(g=>new {zone=g.Key.Zone??"Unassigned",branch_id=g.Key.BranchId,branch=g.Key.Branch??"Unassigned",distributor_id=g.Key.DistributorId,distributor_name=g.Key.DistributorName??"Unassigned",user_id=g.Key.UserId,employee_code=g.Key.EmployeeCode,user_name=g.Key.UserName,manager=g.Key.Manager,
-            nukkad=Metric(g,"nukkad"),influencer=Metric(g,"influencer"),farmer=Metric(g,"farmer"),retailer=Metric(g,"retailer"),total=new{meets=g.Count(),participants=g.Sum(x=>x.Participants),gifts=g.Sum(x=>x.GiftCount),expense=g.Sum(x=>x.TotalExpense)}}).OrderBy(x=>x.zone).ThenBy(x=>x.distributor_name).ToList();
-        var zones=raw.Select(x=>x.Zone).Where(x=>!string.IsNullOrWhiteSpace(x)).Distinct().OrderBy(x=>x).ToArray();var branches=raw.Where(x=>x.BranchId.HasValue).Select(x=>new{id=x.BranchId,name=x.Branch}).Distinct().OrderBy(x=>x.name).ToArray();var distributors=raw.Where(x=>x.DistributorId.HasValue).Select(x=>new{id=x.DistributorId,name=x.DistributorName}).Distinct().OrderBy(x=>x.name).ToArray();
+            nukkad=Metric(g,"nukkad"),influencer=Metric(g,"influencer"),farmer=Metric(g,"farmer"),retailer=Metric(g,"retailer"),total=new{meets=g.Count(),participants=g.Sum(x=>x.Participants),gifts=g.Sum(x=>x.GiftCount),expense=g.Sum(x=>x.TotalExpense)}}).OrderBy(x=>ZoneOrder.Rank(x.zone)).ThenBy(x=>x.zone).ThenBy(x=>x.distributor_name).ToList();
+        var zones=raw.Select(x=>x.Zone).Where(x=>!string.IsNullOrWhiteSpace(x)).Distinct().ByZone(x=>x).ToArray();var branches=raw.Where(x=>x.BranchId.HasValue).Select(x=>new{id=x.BranchId,name=x.Branch}).Distinct().OrderBy(x=>x.name).ToArray();var distributors=raw.Where(x=>x.DistributorId.HasValue).Select(x=>new{id=x.DistributorId,name=x.DistributorName}).Distinct().OrderBy(x=>x.name).ToArray();
         return Ok(new{status="success",data=new{rows,filters=new{zones,branches,distributors},grand_total=new{meets=raw.Count,participants=raw.Sum(x=>x.Participants),gifts=raw.Sum(x=>x.GiftCount),expense=raw.Sum(x=>x.TotalExpense)}}});
     }
 

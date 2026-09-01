@@ -13,6 +13,8 @@ public interface INewInvoiceRepository
     Task<Application.Common.PagedResult<RetailerOptionDto>> GetRetailerOptionPageAsync(string? search, ulong? actorUserId, int page, int pageSize, CancellationToken cancellationToken);
     Task<IReadOnlyCollection<DealerOptionDto>> GetDealerOptionsAsync(ulong? actorUserId, CancellationToken cancellationToken);
     Task<IReadOnlyCollection<RetailerDealerOptionDto>> GetRetailerDealerOptionsAsync(ulong customerId, CancellationToken cancellationToken);
+    /// <summary>Whether this user may raise an invoice from the field app: an ASR, or a superadmin.</summary>
+    Task<bool> CanCreateFieldInvoiceAsync(ulong? actorUserId, CancellationToken cancellationToken);
     Task<IReadOnlyCollection<FieldSchemeDto>> GetFieldSchemesAsync(ulong? actorUserId, DateOnly today, CancellationToken cancellationToken);
     Task<FieldSchemeDetailDto?> GetFieldSchemeAsync(ulong id, ulong? actorUserId, DateOnly today, CancellationToken cancellationToken);
     Task<Customer?> GetRetailerAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);

@@ -8,6 +8,7 @@ using Infrastructure.Data;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Domain.Services;
 
 namespace Api.Controllers;
 
@@ -654,7 +655,7 @@ ORDER BY u.name ASC", cancellationToken);
                 var first = group.First();
                 return new { id = ULong(first, "zone_id"), name = Str(first, "zone_name"), zone_name = Str(first, "zone_name") };
             })
-            .OrderBy(x => ZoneSortOrder(x.name))
+            .OrderBy(x => ZoneOrder.Rank(x.name))
             .ThenBy(x => x.name)
             .Cast<object>()
             .ToList();
@@ -817,13 +818,6 @@ ORDER BY u.name ASC", cancellationToken, parameters.ToArray());
         };
     }
 
-    private static int ZoneSortOrder(string zoneName)
-    {
-        var lower = zoneName.ToLowerInvariant();
-        var order = new[] { "north", "east", "west", "south" };
-        for (var i = 0; i < order.Length; i++) if (lower.Contains(order[i], StringComparison.Ordinal)) return i;
-        return order.Length;
-    }
 
     private static DateTime IndiaNow() => DateTime.UtcNow.AddHours(5).AddMinutes(30);
     private ulong CurrentUserId() => ulong.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var userId) ? userId : throw new InvalidOperationException("Unauthenticated.");

@@ -7,6 +7,7 @@ using Infrastructure.Data;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Domain.Services;
 
 namespace Api.Controllers;
 
@@ -38,7 +39,8 @@ public sealed class CheckinReportsController : ControllerBase
         var visibleIds = await VisibleUserIds(ct);
         var users = await _db.Users.AsNoTracking().Where(x => visibleIds.Contains(x.Id) && x.Active == "Y" && !x.IsDeleted)
             .OrderBy(x => x.Name).Select(x => new { x.Id, x.Name, x.Mobile }).ToListAsync(ct);
-        var divisions = await _db.Divisions.AsNoTracking().Where(x => x.Active == "Y").OrderBy(x => x.DivisionName).Select(x => new { x.Id, name = x.DivisionName }).ToListAsync(ct);
+        var divisions = (await _db.Divisions.AsNoTracking().Where(x => x.Active == "Y").Select(x => new { x.Id, name = x.DivisionName }).ToListAsync(ct))
+            .ByZone(x => x.name).ToList();
         var branches = await _db.Branches.AsNoTracking().Where(x => x.Active == "Y").OrderBy(x => x.BranchName).Select(x => new { x.Id, name = x.BranchName }).ToListAsync(ct);
         var designations = await _db.Designations.AsNoTracking().Where(x => x.Active == "Y").OrderBy(x => x.DesignationName).Select(x => new { x.Id, name = x.DesignationName }).ToListAsync(ct);
         return Ok(new { users, divisions, branches, designations });

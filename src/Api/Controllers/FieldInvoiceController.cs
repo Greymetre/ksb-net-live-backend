@@ -60,10 +60,12 @@ public sealed class FieldInvoiceController : ControllerBase
 
         var result = await _newInvoiceRepository.GetInvoicesAsync(filter, CurrentUserId(), cancellationToken);
         var summary = await _newInvoiceRepository.GetInvoiceSummaryAsync(filter, CurrentUserId(), cancellationToken);
+        var canCreate = await _newInvoiceRepository.CanCreateFieldInvoiceAsync(CurrentUserId(), cancellationToken);
 
         return Ok(new
         {
             status = "success",
+            can_create = canCreate,
             summary = new
             {
                 total = summary.TotalInvoices,
@@ -227,6 +229,13 @@ public sealed class FieldInvoiceController : ControllerBase
     [RequestSizeLimit(15_000_000)]
     public async Task<IActionResult> CreateInvoice([FromForm] FieldInvoiceForm form, CancellationToken cancellationToken)
     {
+        // The app hides the add button for anyone but an ASR; the same rule is applied here so
+        // hiding it is not the only thing standing between another role and a new invoice.
+        if (!await _newInvoiceRepository.CanCreateFieldInvoiceAsync(CurrentUserId(), cancellationToken))
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new { status = "error", message = "Only an ASR can add an invoice." });
+        }
+
         if (form.Attachment is null || form.Attachment.Length == 0)
         {
             return UnprocessableEntity(new { status = "error", message = "Invoice attachment is required." });

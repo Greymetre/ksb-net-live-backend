@@ -6,6 +6,7 @@ using Infrastructure.Data;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Domain.Services;
 
 namespace Api.Controllers;
 
@@ -35,7 +36,7 @@ public sealed class ActivityReportExportsController : ControllerBase
         var raw = await Rows(filter, ct);
         var rows = raw.GroupBy(x => new { x.Zone, x.Branch, x.CreatorId, x.CreatorName, x.UserId, x.UserName })
             .Select(g => new ActivityExportRow(g.Key.Zone, g.Key.Branch, null, g.Key.CreatorName, g.Key.UserName, g.Count(), g.Sum(x => x.Participants), g.Sum(x => x.GiftCount), g.Sum(x => x.TotalExpense)))
-            .OrderBy(x => x.Zone).ThenBy(x => x.Branch).ThenBy(x => x.SalesEngineer).ThenBy(x => x.AsrName).ToList();
+            .OrderBy(x => ZoneOrder.Rank(x.Zone)).ThenBy(x => x.Zone).ThenBy(x => x.Branch).ThenBy(x => x.SalesEngineer).ThenBy(x => x.AsrName).ToList();
         return Workbook(rows, filter, "Sales Engg wise", false);
     }
 
@@ -46,7 +47,7 @@ public sealed class ActivityReportExportsController : ControllerBase
         var raw = await Rows(filter, ct);
         var rows = raw.GroupBy(x => new { x.Zone, x.Branch, x.DistributorId, x.DistributorName, x.CreatorId, x.CreatorName, x.UserId, x.UserName })
             .Select(g => new ActivityExportRow(g.Key.Zone, g.Key.Branch, g.Key.DistributorName, g.Key.CreatorName, g.Key.UserName, g.Count(), g.Sum(x => x.Participants), g.Sum(x => x.GiftCount), g.Sum(x => x.TotalExpense)))
-            .OrderBy(x => x.Zone).ThenBy(x => x.Branch).ThenBy(x => x.Distributor).ThenBy(x => x.AsrName).ToList();
+            .OrderBy(x => ZoneOrder.Rank(x.Zone)).ThenBy(x => x.Zone).ThenBy(x => x.Branch).ThenBy(x => x.Distributor).ThenBy(x => x.AsrName).ToList();
         return Workbook(rows, filter, "Distributor wise", true);
     }
 
@@ -65,7 +66,7 @@ public sealed class ActivityReportExportsController : ControllerBase
         for (var i = 0; i < fixedHeaders.Length; i++) sheet.Cell(headerRow, i + 1).Value = fixedHeaders[i];
         for (var i = 0; i < giftNames.Count; i++) sheet.Cell(headerRow, i + 4).Value = giftNames[i];
         var columns = giftNames.Count + 4; sheet.Cell(headerRow, columns).Value = "Total Gifts"; var output = headerRow + 1; var serial = 1;
-        foreach (var zone in raw.GroupBy(x => x.Zone).OrderBy(x => x.Key)) {
+        foreach (var zone in raw.GroupBy(x => x.Zone).ByZone(x => x.Key)) {
             var zoneTotals = giftNames.ToDictionary(x => x, _ => 0, StringComparer.OrdinalIgnoreCase);
             foreach (var branch in zone.GroupBy(x => x.Branch).OrderBy(x => x.Key)) {
                 sheet.Cell(output, 1).Value = serial++; sheet.Cell(output, 2).Value = zone.Key; sheet.Cell(output, 3).Value = branch.Key;
@@ -122,7 +123,7 @@ public sealed class ActivityReportExportsController : ControllerBase
         using var book = new XLWorkbook(); var sheet = book.Worksheets.Add("Activity Report");
         var headers = distributor ? new[] { "Sr. No", "Zone", "Branch", "Distributor Name", "Sales Engineer", "ASR / DSR Name", "No. of Meets", "Participation Count", "Gift Count", "Expenses Total" } : new[] { "Sr. No", "Zone", "Branch", "Sales Engineer", "ASR / DSR Name", "No. of Meets", "Participation Count", "Gift Count", "Expenses Total" };
         const int header = 1; for (var i = 0; i < headers.Length; i++) sheet.Cell(header, i + 1).Value = headers[i]; var output = header + 1; var serial = 1;
-        foreach (var zone in rows.GroupBy(x => x.Zone)) { foreach (var row in zone) { object?[] values = distributor ? [serial++, row.Zone, row.Branch, row.Distributor, row.SalesEngineer, row.AsrName, row.Meets, row.Participants, row.Gifts, row.Expense] : [serial++, row.Zone, row.Branch, row.SalesEngineer, row.AsrName, row.Meets, row.Participants, row.Gifts, row.Expense]; for (var i = 0; i < values.Length; i++) sheet.Cell(output, i + 1).Value = XLCellValue.FromObject(values[i]); output++; } Total(sheet, output++, $"{zone.Key} ZONE TOTAL", zone, headers.Length, XLColor.FromHtml("FFF2CC")); }
+        foreach (var zone in rows.GroupBy(x => x.Zone).ByZone(x => x.Key)) { foreach (var row in zone) { object?[] values = distributor ? [serial++, row.Zone, row.Branch, row.Distributor, row.SalesEngineer, row.AsrName, row.Meets, row.Participants, row.Gifts, row.Expense] : [serial++, row.Zone, row.Branch, row.SalesEngineer, row.AsrName, row.Meets, row.Participants, row.Gifts, row.Expense]; for (var i = 0; i < values.Length; i++) sheet.Cell(output, i + 1).Value = XLCellValue.FromObject(values[i]); output++; } Total(sheet, output++, $"{zone.Key} ZONE TOTAL", zone, headers.Length, XLColor.FromHtml("FFF2CC")); }
         Total(sheet, output, "GRAND TOTAL", rows, headers.Length, XLColor.FromHtml("1F4E78"), true); Style(sheet, header, output, headers.Length); return Excel(book, $"{MeetFileName(filter.Meet)}_Activity_{kind.Replace(" ", "_")}_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx");
     }
     private static string MeetLabel(string? meet) => string.IsNullOrWhiteSpace(meet) ? "All Meets" : meet.ToLower() switch { "retailer" => "Retailer Meet", "nukkad" => "Nukkad Meet", "farmer" => "Farmer Meet / Demo", "influencer" => "Influencer Meet", _ => meet };

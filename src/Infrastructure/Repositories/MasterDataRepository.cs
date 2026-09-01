@@ -4,6 +4,7 @@ using Application.Interfaces.Repositories;
 using Domain.Entities;
 using Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Domain.Services;
 
 namespace Infrastructure.Repositories;
 
@@ -765,8 +766,8 @@ public sealed class MasterDataRepository : IMasterDataRepository
                 || _dbContext.Users.Any(user => user.Id == x.CreatedBy && user.Name.Contains(term)));
         }
 
-        return await query
-            .OrderByDescending(x => x.Id)
+        // Zones read NEWS everywhere else, so the master list reads the same way.
+        return (await query
             .Take(MaxRows)
             .Select(x => new DivisionDto
             {
@@ -777,7 +778,7 @@ public sealed class MasterDataRepository : IMasterDataRepository
                 CreatedByName = _dbContext.Users.Where(user => user.Id == x.CreatedBy).Select(user => user.Name).FirstOrDefault(),
                 CreatedAt = x.CreatedAt
             })
-            .ToListAsync(cancellationToken);
+            .ToListAsync(cancellationToken)).ByZone(x => x.DivisionName).ToList();
     }
 
     public async Task<IReadOnlyCollection<DivisionDto>> ExportDivisionsAsync(CancellationToken cancellationToken) =>

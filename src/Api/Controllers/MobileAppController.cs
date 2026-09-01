@@ -664,6 +664,8 @@ public sealed class MobileAppController : ControllerBase
         [FromQuery] int? page,
         [FromQuery(Name = "page_size")] int? pageSize,
         [FromQuery(Name = "include_metrics")] bool? includeMetrics,
+        [FromQuery] string? kyc,
+        [FromQuery] bool? active,
         CancellationToken cancellationToken)
     {
         var dealer = await CurrentDealer(cancellationToken);
@@ -675,6 +677,21 @@ public sealed class MobileAppController : ControllerBase
         // the same JSON LIKE scan four or five times per request.
         var assignedRetailers = await DealerAssignedRetailers(dealer.Customer!.Id)
             .ToListAsync(cancellationToken);
+
+        // The dashboard's retailer tiles count only retailers who have raised an invoice
+        // with this dealer. Opening the list from one of those tiles passes active=true so
+        // the screen - counts included - shows exactly the set the tile counted.
+        if (active == true)
+        {
+            var dealerInvoices = (await _invoiceRepository.GetInvoicesAsync(new NewInvoiceFilterDto
+            {
+                DistributorCustomerId = dealer.Customer!.Id,
+                Unpaged = true
+            }, null, cancellationToken)).Items;
+            var activeIds = dealerInvoices.Select(x => x.SecondaryCustomerId).ToHashSet();
+            assignedRetailers = assignedRetailers.Where(x => activeIds.Contains(x.Id)).ToList();
+        }
+
         var shouldIncludeMetrics = includeMetrics ?? (page.HasValue || pageSize.HasValue);
         var totalRetailers = assignedRetailers.Count;
         // The Retailers screen shows KYC coverage for every assigned retailer,
@@ -692,6 +709,15 @@ public sealed class MobileAppController : ControllerBase
         {
             var term = search.Trim();
             filteredRetailers = filteredRetailers.Where(x => RetailerMatchesSearch(x, term));
+        }
+
+        // The Retailers screen offers an All / Pending KYC chip. The summary above it
+        // keeps counting every assigned retailer, so the filter is applied here rather
+        // than to the counts.
+        if (string.Equals(kyc?.Trim(), "pending", StringComparison.OrdinalIgnoreCase))
+        {
+            filteredRetailers = filteredRetailers.Where(retailer =>
+                !string.Equals(KycStatusValue(ReadFields(retailer)), "approved", StringComparison.OrdinalIgnoreCase));
         }
 
         var orderedRetailers = filteredRetailers

@@ -4,6 +4,7 @@ using Application.Interfaces.Repositories;
 using Domain.Entities;
 using Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Domain.Services;
 
 namespace Infrastructure.Repositories;
 
@@ -133,11 +134,10 @@ public sealed class LoyaltySchemeRepository : ILoyaltySchemeRepository
             .Select(x => new LoyaltySchemeOptionDto { Id = x.Id, Name = x.BranchName })
             .ToListAsync(cancellationToken);
 
-        var zones = await _dbContext.Divisions.AsNoTracking()
+        var zones = (await _dbContext.Divisions.AsNoTracking()
             .Where(x => x.DeletedAt == null && x.Active == "Y")
-            .OrderBy(x => x.DivisionName)
             .Select(x => new LoyaltySchemeOptionDto { Id = x.Id, Name = x.DivisionName })
-            .ToListAsync(cancellationToken);
+            .ToListAsync(cancellationToken)).ByZone(x => x.Name).ToList();
 
         var states = await _dbContext.States.AsNoTracking()
             .Where(x => x.DeletedAt == null && x.Active == "Y")
