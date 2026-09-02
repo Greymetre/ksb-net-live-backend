@@ -27,6 +27,7 @@ public sealed class MobileAppController : ControllerBase
     private const ulong InfluencerType = 3;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly AppDbContext _dbContext;
+    private readonly Api.Services.InvoiceAttachmentStore _attachments;
     private readonly IMasterDataService _masterDataService;
     private readonly INewInvoiceRepository _invoiceRepository;
     private readonly INewInvoiceService _newInvoiceService;
@@ -37,9 +38,10 @@ public sealed class MobileAppController : ControllerBase
     private readonly IWebHostEnvironment _environment;
     private readonly IConfiguration _configuration;
 
-    public MobileAppController(AppDbContext dbContext, IMasterDataService masterDataService, INewInvoiceRepository invoiceRepository, INewInvoiceService newInvoiceService, ICustomerRepository customerRepository, ITokenService tokenService, IPasswordHasher passwordHasher, ISmtpEmailSender emailSender, IWebHostEnvironment environment, IConfiguration configuration)
+    public MobileAppController(AppDbContext dbContext, IMasterDataService masterDataService, INewInvoiceRepository invoiceRepository, INewInvoiceService newInvoiceService, ICustomerRepository customerRepository, ITokenService tokenService, IPasswordHasher passwordHasher, ISmtpEmailSender emailSender, IWebHostEnvironment environment, IConfiguration configuration, Api.Services.InvoiceAttachmentStore attachments)
     {
         _dbContext = dbContext;
+        _attachments = attachments;
         _customerRepository = customerRepository;
         _masterDataService = masterDataService;
         _invoiceRepository = invoiceRepository;
@@ -109,6 +111,66 @@ public sealed class MobileAppController : ControllerBase
     }
 
     [AllowAnonymous]
+    /// <summary>Keeps the app version and device on the customer's session row current
+    /// after a store update, without waiting for the next sign-in. Mirrors the field app's
+    /// mobile-session/heartbeat.</summary>
+    [Authorize]
+    [HttpPost("customer-session/heartbeat")]
+    public async Task<IActionResult> CustomerSessionHeartbeat([FromBody] CustomerSessionHeartbeatRequest request, CancellationToken cancellationToken)
+    {
+        var customer = await CurrentCustomer(cancellationToken);
+        if (customer is null) return Unauthorized(new { status = false, message = "Unauthenticated." });
+        if (string.IsNullOrWhiteSpace(request.AppVersion))
+            return BadRequest(new { status = false, message = "app_version is required" });
+
+        var now = DateTime.UtcNow;
+        var detail = await _dbContext.MobileUserLoginDetails
+            .Where(x => x.CustomerId == customer.Id && x.App == "retailer")
+            .OrderByDescending(x => x.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (detail is null)
+        {
+            detail = new MobileUserLoginDetail
+            {
+                CustomerId = customer.Id,
+                App = "retailer",
+                FirstLoginDate = now,
+                LoginStatus = "1"
+            };
+            await _dbContext.MobileUserLoginDetails.AddAsync(detail, cancellationToken);
+        }
+
+        detail.AppVersion = request.AppVersion.Trim();
+        if (!string.IsNullOrWhiteSpace(request.DeviceName)) detail.DeviceName = request.DeviceName.Trim();
+        if (!string.IsNullOrWhiteSpace(request.DeviceType)) detail.DeviceType = request.DeviceType.Trim();
+        // A device id is claimed once and then left alone, so an admin reset actually frees it.
+        if (string.IsNullOrWhiteSpace(detail.UniqueId) && !string.IsNullOrWhiteSpace(request.UniqueId))
+            detail.UniqueId = request.UniqueId.Trim();
+        detail.LastLoginDate = now;
+        detail.LoginAt = now;
+        detail.LoginStatus = "1";
+        detail.UpdatedAt = now;
+        await _dbContext.SaveChangesAsync(cancellationToken);
+
+        return Ok(new { status = true, message = "App version updated", app_version = detail.AppVersion });
+    }
+
+    public sealed class CustomerSessionHeartbeatRequest
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("app_version")]
+        public string? AppVersion { get; init; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("device_name")]
+        public string? DeviceName { get; init; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("device_type")]
+        public string? DeviceType { get; init; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("unique_id")]
+        public string? UniqueId { get; init; }
+    }
+
     [HttpPost("auth/customer-login")]
     public async Task<IActionResult> CustomerPasswordLogin([FromBody] CustomerPasswordLoginRequest request, CancellationToken cancellationToken)
     {
@@ -845,6 +907,16 @@ public sealed class MobileAppController : ControllerBase
         return Ok(new { status = "success", data = schemes });
     }
 
+    /// <summary>Whatever the dealer app sent, as one list - old builds send a single
+    /// file, current ones a list.</summary>
+    private static List<IFormFile> DealerIncomingFiles(DealerInvoiceForm form)
+    {
+        var files = new List<IFormFile>();
+        if (form.Attachment is { Length: > 0 }) files.Add(form.Attachment);
+        if (form.Attachments is not null) files.AddRange(form.Attachments.Where(x => x.Length > 0));
+        return files;
+    }
+
     [Authorize]
     [HttpPost("dealer/invoices")]
     [RequestSizeLimit(15_000_000)]
@@ -854,7 +926,8 @@ public sealed class MobileAppController : ControllerBase
         if (dealer.Result is not null) return dealer.Result;
         var retailer = await DealerAssignedRetailers(dealer.Customer!.Id).FirstOrDefaultAsync(x => x.Id == form.RetailerId, cancellationToken);
         if (retailer is null) return UnprocessableEntity(new { status = "error", message = "Only a retailer assigned to this dealer can be selected." });
-        if (form.Attachment is null || form.Attachment.Length == 0)
+        var files = DealerIncomingFiles(form);
+        if (files.Count == 0)
             return UnprocessableEntity(new { status = "error", message = "Invoice attachment is required." });
 
         // created_by has to be the dealer's own user. It used to fall back to the
@@ -871,18 +944,30 @@ public sealed class MobileAppController : ControllerBase
         if (!creatorUserId.HasValue)
             return UnprocessableEntity(new { status = "error", message = "This dealer has no login user and one could not be created. Please contact admin." });
 
-        var attachment = await SaveFileAsync(form.Attachment, "new-invoices", cancellationToken);
-        var response = await WithoutOrphanUploadAsync(attachment, () => _newInvoiceService.CreateInvoiceAsync(new NewInvoiceRequestDto
+        var saved = await _attachments.SaveAsync(files, cancellationToken);
+        try
         {
-            SecondaryCustomerId = retailer.Id,
-            SchemeId = form.SchemeId,
-            InvoiceNumber = form.InvoiceNumber,
-            InvoiceDate = form.InvoiceDate,
-            Amount = form.Amount,
-            Points = 0,
-            Attachment = attachment
-        }, creatorUserId, cancellationToken));
-        return StatusCode(StatusCodes.Status201Created, response);
+            var response = await _newInvoiceService.CreateInvoiceAsync(new NewInvoiceRequestDto
+            {
+                SecondaryCustomerId = retailer.Id,
+                SchemeId = form.SchemeId,
+                InvoiceNumber = form.InvoiceNumber,
+                InvoiceDate = form.InvoiceDate,
+                Amount = form.Amount,
+                Points = 0,
+                Attachment = saved[0].FilePath,
+                Attachments = saved.Select(x => new InvoiceAttachmentInput
+                {
+                    FilePath = x.FilePath, FileName = x.FileName, MimeType = x.MimeType, FileSize = x.FileSize
+                }).ToList()
+            }, creatorUserId, cancellationToken);
+            return StatusCode(StatusCodes.Status201Created, response);
+        }
+        catch
+        {
+            _attachments.DeleteAll(saved.Select(x => x.FilePath));
+            throw;
+        }
     }
 
     [Authorize]
@@ -903,21 +988,41 @@ public sealed class MobileAppController : ControllerBase
         var retailer = await DealerAssignedRetailers(dealer.Customer.Id).FirstOrDefaultAsync(x => x.Id == form.RetailerId, cancellationToken);
         if (retailer is null) return UnprocessableEntity(new { status = "error", message = "Only a retailer assigned to this dealer can be selected." });
 
-        var uploaded = form.Attachment is { Length: > 0 }
-            ? await SaveFileAsync(form.Attachment, "new-invoices", cancellationToken)
-            : null;
-        var attachment = uploaded ?? existing.Attachment;
-        var response = await WithoutOrphanUploadAsync(uploaded, () => _newInvoiceService.UpdateInvoiceAsync(id, new NewInvoiceRequestDto
+        var files = DealerIncomingFiles(form);
+        var saved = files.Count > 0 ? await _attachments.SaveAsync(files, cancellationToken) : [];
+        try
         {
-            SecondaryCustomerId = retailer.Id,
-            SchemeId = form.SchemeId,
-            InvoiceNumber = form.InvoiceNumber,
-            InvoiceDate = form.InvoiceDate,
-            Amount = form.Amount,
-            Points = 0,
-            Attachment = attachment
-        }, existing.CreatedBy, cancellationToken));
-        return Ok(response);
+            var response = await _newInvoiceService.UpdateInvoiceAsync(id, new NewInvoiceRequestDto
+            {
+                SecondaryCustomerId = retailer.Id,
+                SchemeId = form.SchemeId,
+                InvoiceNumber = form.InvoiceNumber,
+                InvoiceDate = form.InvoiceDate,
+                Amount = form.Amount,
+                Points = 0,
+                Attachment = saved.Count > 0 ? saved[0].FilePath : existing.Attachment,
+                Attachments = saved.Select(x => new InvoiceAttachmentInput
+                {
+                    FilePath = x.FilePath, FileName = x.FileName, MimeType = x.MimeType, FileSize = x.FileSize
+                }).ToList(),
+                RemovedAttachmentIds = form.RemovedAttachmentIds ?? []
+            }, existing.CreatedBy, cancellationToken);
+
+            // Files the edit took off the invoice go once the change has stuck.
+            if (response.Extra.TryGetValue("removed_files", out var removed) && removed is IEnumerable<string> paths)
+            {
+                _attachments.DeleteAll(paths);
+            }
+            // Internal storage paths, not something the caller should see.
+            response.Extra.Remove("removed_files");
+
+            return Ok(response);
+        }
+        catch
+        {
+            _attachments.DeleteAll(saved.Select(x => x.FilePath));
+            throw;
+        }
     }
 
     [Authorize]
@@ -1437,6 +1542,14 @@ public sealed class MobileAppController : ControllerBase
                     RetailerId = invoice.SecondaryCustomerId,
                     SchemeId = invoice.SchemeId,
                     Attachment = invoice.Attachment,
+                    Attachments = (invoice.Attachments ?? []).Select(file => new MobileInvoiceAttachmentDto
+                    {
+                        Id = file.Id,
+                        FilePath = file.FilePath,
+                        FileName = file.FileName,
+                        MimeType = file.MimeType,
+                        FileSize = file.FileSize
+                    }).ToList(),
                     SchemeName = invoice.SchemeName,
                     SchemeNames = group.Where(x => !string.IsNullOrWhiteSpace(x.SchemeName)).Select(x => x.SchemeName!).Distinct().ToArray()
                 };
@@ -2707,8 +2820,19 @@ VALUES ('Y', {0}, {1}, {2}, {3}, {4}, {5}, {6}, SYSUTCDATETIME(), SYSUTCDATETIME
         public ulong RetailerId { get; set; }
         public ulong? SchemeId { get; set; }
         public string? Attachment { get; set; }
+        /// <summary>Every file on the invoice; `Attachment` is just the first of them.</summary>
+        public IReadOnlyCollection<MobileInvoiceAttachmentDto> Attachments { get; set; } = [];
         public string? SchemeName { get; set; }
         public IReadOnlyCollection<string> SchemeNames { get; set; } = [];
+    }
+
+    private sealed class MobileInvoiceAttachmentDto
+    {
+        public long Id { get; set; }
+        public string FilePath { get; set; } = string.Empty;
+        public string? FileName { get; set; }
+        public string? MimeType { get; set; }
+        public long? FileSize { get; set; }
     }
 
     private sealed class MobileInvoiceMonthGroupDto
@@ -2852,5 +2976,8 @@ VALUES ('Y', {0}, {1}, {2}, {3}, {4}, {5}, {6}, SYSUTCDATETIME(), SYSUTCDATETIME
         [FromForm(Name = "invoice_date")] public DateTime? InvoiceDate { get; set; }
         [FromForm(Name = "amount")] public decimal? Amount { get; set; }
         [FromForm(Name = "attachment_file")] public IFormFile? Attachment { get; set; }
+        /// <summary>Several files at once; the single field above still works for older builds.</summary>
+        [FromForm(Name = "attachment_files")] public List<IFormFile>? Attachments { get; set; }
+        [FromForm(Name = "removed_attachment_ids")] public List<long>? RemovedAttachmentIds { get; set; }
     }
 }

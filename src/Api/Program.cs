@@ -37,6 +37,8 @@ builder.Services.AddLaravelCompatibleSwagger();
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddSingleton<ISmtpEmailSender, SmtpEmailSender>();
+// One place decides what may be attached to an invoice, for all three screens.
+builder.Services.AddScoped<Api.Services.InvoiceAttachmentStore>();
 builder.Services.AddHttpClient();
 
 var jwt = builder.Configuration.GetSection("Jwt");
@@ -104,6 +106,26 @@ builder.Services
                     {
                         var detail = await dbContext.MobileUserLoginDetails
                             .Where(x => x.UserId == userId && x.App == "2")
+                            .OrderByDescending(x => x.Id)
+                            .FirstOrDefaultAsync(context.HttpContext.RequestAborted);
+                        if (detail is not null && !string.Equals(detail.AppVersion, appVersion, StringComparison.Ordinal))
+                        {
+                            detail.AppVersion = appVersion;
+                            detail.UpdatedAt = DateTime.UtcNow;
+                            await dbContext.SaveChangesAsync(context.HttpContext.RequestAborted);
+                        }
+                    }
+                }
+
+                // The same for the Vriddhi app, whose sessions are customer-provider.
+                // Without this the version would only ever be what was sent at login.
+                if (provider == "customers" && !string.IsNullOrWhiteSpace(appVersion))
+                {
+                    var customerIdValue = context.Principal?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+                    if (ulong.TryParse(customerIdValue, out var customerId))
+                    {
+                        var detail = await dbContext.MobileUserLoginDetails
+                            .Where(x => x.CustomerId == customerId && x.App == "retailer")
                             .OrderByDescending(x => x.Id)
                             .FirstOrDefaultAsync(context.HttpContext.RequestAborted);
                         if (detail is not null && !string.Equals(detail.AppVersion, appVersion, StringComparison.Ordinal))

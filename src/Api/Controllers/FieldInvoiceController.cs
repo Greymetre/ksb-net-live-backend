@@ -27,15 +27,28 @@ public sealed class FieldInvoiceController : ControllerBase
     private readonly INewInvoiceService _newInvoiceService;
     private readonly INewInvoiceRepository _newInvoiceRepository;
     private readonly IWebHostEnvironment _environment;
+    private readonly Api.Services.InvoiceAttachmentStore _attachments;
 
     public FieldInvoiceController(
         INewInvoiceService newInvoiceService,
         INewInvoiceRepository newInvoiceRepository,
-        IWebHostEnvironment environment)
+        IWebHostEnvironment environment,
+        Api.Services.InvoiceAttachmentStore attachments)
     {
         _newInvoiceService = newInvoiceService;
         _newInvoiceRepository = newInvoiceRepository;
         _environment = environment;
+        _attachments = attachments;
+    }
+
+    /// <summary>Whatever the caller sent, as one list. Old builds send "attachment",
+    /// current ones send "attachments"; both are accepted together.</summary>
+    private static List<IFormFile> IncomingFiles(FieldInvoiceForm form)
+    {
+        var files = new List<IFormFile>();
+        if (form.Attachment is { Length: > 0 }) files.Add(form.Attachment);
+        if (form.Attachments is not null) files.AddRange(form.Attachments.Where(x => x.Length > 0));
+        return files;
     }
 
     [HttpGet("invoices")]
@@ -236,12 +249,13 @@ public sealed class FieldInvoiceController : ControllerBase
             return StatusCode(StatusCodes.Status403Forbidden, new { status = "error", message = "Only an ASR can add an invoice." });
         }
 
-        if (form.Attachment is null || form.Attachment.Length == 0)
+        var files = IncomingFiles(form);
+        if (files.Count == 0)
         {
             return UnprocessableEntity(new { status = "error", message = "Invoice attachment is required." });
         }
 
-        var attachment = await SaveAttachmentAsync(form.Attachment, cancellationToken);
+        var saved = await _attachments.SaveAsync(files, cancellationToken);
         try
         {
             var response = await _newInvoiceService.CreateInvoiceAsync(new NewInvoiceRequestDto
@@ -253,15 +267,19 @@ public sealed class FieldInvoiceController : ControllerBase
                 InvoiceDate = form.InvoiceDate,
                 Amount = form.Amount,
                 Points = 0,
-                Attachment = attachment
+                Attachment = saved[0].FilePath,
+                Attachments = saved.Select(x => new InvoiceAttachmentInput
+                {
+                    FilePath = x.FilePath, FileName = x.FileName, MimeType = x.MimeType, FileSize = x.FileSize
+                }).ToList()
             }, CurrentUserId(), cancellationToken);
             return StatusCode(StatusCodes.Status201Created, response);
         }
         catch
         {
             // A rejected invoice - duplicate number, ineligible scheme - must not leave the
-            // uploaded file behind on every retry.
-            DeleteAttachment(attachment);
+            // uploaded files behind on every retry.
+            _attachments.DeleteAll(saved.Select(x => x.FilePath));
             throw;
         }
     }
@@ -278,9 +296,8 @@ public sealed class FieldInvoiceController : ControllerBase
         var existing = await _newInvoiceRepository.GetInvoiceAsync(id, CurrentUserId(), cancellationToken);
         if (existing is null) return NotFound(new { status = "error", message = "Invoice not found." });
 
-        var attachment = form.Attachment is { Length: > 0 }
-            ? await SaveAttachmentAsync(form.Attachment, cancellationToken)
-            : null;
+        var files = IncomingFiles(form);
+        var saved = files.Count > 0 ? await _attachments.SaveAsync(files, cancellationToken) : [];
 
         try
         {
@@ -293,14 +310,28 @@ public sealed class FieldInvoiceController : ControllerBase
                 InvoiceDate = form.InvoiceDate,
                 Amount = form.Amount,
                 Points = 0,
-                Attachment = attachment ?? existing.Attachment
+                Attachment = saved.Count > 0 ? saved[0].FilePath : existing.Attachment,
+                Attachments = saved.Select(x => new InvoiceAttachmentInput
+                {
+                    FilePath = x.FilePath, FileName = x.FileName, MimeType = x.MimeType, FileSize = x.FileSize
+                }).ToList(),
+                RemovedAttachmentIds = form.RemovedAttachmentIds ?? []
             }, CurrentUserId(), cancellationToken);
+
+            // Files the edit took off the invoice go once the change has stuck.
+            if (response.Extra.TryGetValue("removed_files", out var removed) && removed is IEnumerable<string> paths)
+            {
+                _attachments.DeleteAll(paths);
+            }
+            // Internal storage paths, not something the caller should see.
+            response.Extra.Remove("removed_files");
+
             return Ok(response);
         }
         catch
         {
-            // Only the file this request uploaded goes; the one already on the invoice stays.
-            if (attachment is not null) DeleteAttachment(attachment);
+            // Only the files this request uploaded go; the ones already on the invoice stay.
+            _attachments.DeleteAll(saved.Select(x => x.FilePath));
             throw;
         }
     }
@@ -367,6 +398,16 @@ public sealed class FieldInvoiceController : ControllerBase
         scheme_id = invoice.SchemeId,
         dealer_id = invoice.AssignedDistributorId,
         attachment_path = invoice.Attachment,
+        // Every file on the invoice, absolute so the app can show it straight away.
+        attachments = invoice.Attachments?.Select(file => new
+        {
+            id = file.Id,
+            url = $"{Request.PublicBaseUrl()}{file.FilePath}",
+            file_path = file.FilePath,
+            file_name = file.FileName,
+            mime_type = file.MimeType,
+            file_size = file.FileSize
+        }),
         approval_logs = invoice.ApprovalLogs?.Select(log => new
         {
             status_type = log.StatusType,
@@ -424,4 +465,8 @@ public sealed class FieldInvoiceForm
     [FromForm(Name = "invoice_date")] public DateTime? InvoiceDate { get; set; }
     [FromForm(Name = "amount")] public decimal? Amount { get; set; }
     [FromForm(Name = "attachment")] public IFormFile? Attachment { get; set; }
+    /// <summary>Several files may be sent at once. The single "attachment" field is still
+    /// read, so an app build from before this change keeps working.</summary>
+    [FromForm(Name = "attachments")] public List<IFormFile>? Attachments { get; set; }
+    [FromForm(Name = "removed_attachment_ids")] public List<long>? RemovedAttachmentIds { get; set; }
 }

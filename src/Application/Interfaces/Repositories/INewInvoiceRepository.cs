@@ -22,6 +22,12 @@ public interface INewInvoiceRepository
     Task<IReadOnlyCollection<InvoiceSchemeOptionDto>> GetInvoiceSchemeFilterOptionsAsync(CancellationToken cancellationToken);
     Task<bool> InvoiceNumberExistsAsync(string invoiceNumber, ulong secondaryCustomerId, ulong? dealerCustomerId, ulong? exceptId, CancellationToken cancellationToken);
     Task<NewInvoiceDto> CreateInvoiceAsync(NewInvoice invoice, CancellationToken cancellationToken);
+    /// <summary>Adds files to an invoice and removes the ones the caller took away.
+    /// Returns the stored paths of everything removed, so the caller can clear them off
+    /// disk once the database change has stuck.</summary>
+    Task<IReadOnlyCollection<string>> SaveAttachmentsAsync(ulong invoiceId, IReadOnlyList<InvoiceAttachmentInput> added, IReadOnlyList<long> removedIds, CancellationToken cancellationToken);
+    /// <summary>How many files the invoice currently holds.</summary>
+    Task<int> CountAttachmentsAsync(ulong invoiceId, CancellationToken cancellationToken);
     Task<NewInvoice?> FindInvoiceEntityAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
     Task<NewInvoiceDto> SaveInvoiceAsync(NewInvoice invoice, string statusType, int? fromStatus, int toStatus, ulong actorUserId, string? remark, decimal? approvedAmount, CancellationToken cancellationToken);
     /// <summary>

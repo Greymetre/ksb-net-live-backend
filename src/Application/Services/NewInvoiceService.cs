@@ -161,6 +161,10 @@ public sealed class NewInvoiceService : INewInvoiceService
         };
 
         var created = await _repository.CreateInvoiceAsync(invoice, cancellationToken);
+        if (request.Attachments is { Count: > 0 })
+        {
+            await _repository.SaveAttachmentsAsync(created.Id, request.Attachments, [], cancellationToken);
+        }
         // The row was just written by this actor against a retailer already checked
         // against their scope, so it is re-read without one - a scope lookup that came
         // back empty here would cost the invoice its "generated" history entry.
@@ -211,6 +215,19 @@ public sealed class NewInvoiceService : INewInvoiceService
             : string.Join("\n", changes);
 
         var updated = await _repository.SaveInvoiceAsync(invoice, "edited", fromStatus, NewInvoice.StatusPending, actorUserId.Value, remark, null, cancellationToken);
+
+        var addedFiles = request.Attachments ?? [];
+        var removedIds = request.RemovedAttachmentIds ?? [];
+        if (addedFiles.Count > 0 || removedIds.Count > 0)
+        {
+            var removedFiles = await _repository.SaveAttachmentsAsync(id, addedFiles, removedIds, cancellationToken);
+            updated = await _repository.GetInvoiceAsync(id, actorUserId, cancellationToken) ?? updated;
+            // The caller clears these off disk once this response has been accepted.
+            var response = LaravelApiResponse.Success("new_invoice", updated, "Invoice updated successfully");
+            response.Extra["removed_files"] = removedFiles;
+            return response;
+        }
+
         return LaravelApiResponse.Success("new_invoice", updated, "Invoice updated successfully");
     }
 
@@ -247,11 +264,10 @@ public sealed class NewInvoiceService : INewInvoiceService
             changes.Add($"Amount: {invoice.Amount.ToString("N2", CultureInfo.InvariantCulture)} -> {request.Amount.Value.ToString("N2", CultureInfo.InvariantCulture)}");
         }
 
-        var newAttachment = NormalizeText(request.Attachment);
-        if (newAttachment is not null && !string.Equals(invoice.Attachment, newAttachment, StringComparison.Ordinal))
-        {
-            changes.Add("Attachment: replaced");
-        }
+        var added = request.Attachments?.Count ?? 0;
+        var removed = request.RemovedAttachmentIds?.Count ?? 0;
+        if (added > 0) changes.Add($"Attachments: {added} added");
+        if (removed > 0) changes.Add($"Attachments: {removed} removed");
 
         return changes;
     }
@@ -397,6 +413,17 @@ public sealed class NewInvoiceService : INewInvoiceService
         return TimeZoneInfo.CreateCustomTimeZone("IST", TimeSpan.FromMinutes(330), "IST", "IST");
     }
 
+    private async Task<bool> KeepsAnAttachmentAsync(NewInvoiceRequestDto request, ulong? exceptId, CancellationToken cancellationToken)
+    {
+        if ((request.Attachments?.Count ?? 0) > 0) return true;
+        if (!string.IsNullOrWhiteSpace(request.Attachment)) return true;
+        if (!exceptId.HasValue) return false;
+
+        var held = await _repository.CountAttachmentsAsync(exceptId.Value, cancellationToken);
+        var removed = request.RemovedAttachmentIds?.Distinct().Count() ?? 0;
+        return held - removed > 0;
+    }
+
     private sealed record ValidatedInvoice(string RetailerName, string SchemeName);
 
     private async Task<ValidatedInvoice> ValidateRequestAsync(NewInvoiceRequestDto request, ulong? exceptId, ulong? actorUserId, CancellationToken cancellationToken)
@@ -415,7 +442,13 @@ public sealed class NewInvoiceService : INewInvoiceService
         }
         if (!request.Amount.HasValue || request.Amount.Value <= 0) errors["amount"] = ["Amount must be greater than 0."];
         if (request.Points.HasValue && request.Points.Value < 0) errors["points"] = ["Points cannot be negative."];
-        if (string.IsNullOrWhiteSpace(request.Attachment)) errors["attachment"] = ["Invoice attachment is required."];
+        // An invoice must end up holding at least one file. On an edit that means counting
+        // what it already has, minus what is being removed, plus what is being added - the
+        // first attachment can be swapped out as long as another one takes its place.
+        if (!await KeepsAnAttachmentAsync(request, exceptId, cancellationToken))
+        {
+            errors["attachment"] = ["Invoice attachment is required."];
+        }
 
         if (errors.Count > 0) throw Http(LaravelStatusCodes.NoContentLikeValidation, errors);
 

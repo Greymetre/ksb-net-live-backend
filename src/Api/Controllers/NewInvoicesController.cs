@@ -17,10 +17,13 @@ public sealed class NewInvoicesController : ControllerBase
     private readonly INewInvoiceService _newInvoiceService;
     private readonly IWebHostEnvironment _environment;
 
-    public NewInvoicesController(INewInvoiceService newInvoiceService, IWebHostEnvironment environment)
+    private readonly Api.Services.InvoiceAttachmentStore _attachments;
+
+    public NewInvoicesController(INewInvoiceService newInvoiceService, IWebHostEnvironment environment, Api.Services.InvoiceAttachmentStore attachments)
     {
         _newInvoiceService = newInvoiceService;
         _environment = environment;
+        _attachments = attachments;
     }
 
     [RequirePermission("invoice_transaction.view")]
@@ -143,7 +146,7 @@ public sealed class NewInvoicesController : ControllerBase
     [HttpPost]
     public async Task<IActionResult> CreateInvoice([FromForm] NewInvoiceFormRequest form, CancellationToken cancellationToken)
     {
-        if (form.AttachmentFile is null || form.AttachmentFile.Length == 0)
+        if (IncomingFiles(form).Count == 0)
         {
             return UnprocessableEntity(new { status = "error", message = new { attachment = new[] { "Invoice attachment is required." } } });
         }
@@ -161,6 +164,15 @@ public sealed class NewInvoicesController : ControllerBase
         var request = await ToRequestAsync(form, cancellationToken);
         var response = await WithoutOrphanUploadAsync(request, form,
             () => _newInvoiceService.UpdateInvoiceAsync(id, request, CurrentUserId(), cancellationToken));
+
+        // Files the edit took off the invoice are only cleared once the database change
+        // has stuck, so a failed update never loses an attachment it kept.
+        if (response.Extra.TryGetValue("removed_files", out var removed) && removed is IEnumerable<string> files)
+        {
+            foreach (var file in files) DeleteStoredFile(file);
+            response.Extra.Remove("removed_files");
+        }
+
         return Ok(response);
     }
 
@@ -259,6 +271,9 @@ public sealed class NewInvoicesController : ControllerBase
 
     private async Task<NewInvoiceRequestDto> ToRequestAsync(NewInvoiceFormRequest form, CancellationToken cancellationToken)
     {
+        var files = IncomingFiles(form);
+        var saved = files.Count > 0 ? await _attachments.SaveAsync(files, cancellationToken) : [];
+
         return new NewInvoiceRequestDto
         {
             SecondaryCustomerId = form.SecondaryCustomerId,
@@ -268,8 +283,23 @@ public sealed class NewInvoicesController : ControllerBase
             InvoiceDate = form.InvoiceDate,
             Amount = form.Amount,
             Points = form.Points,
-            Attachment = await SaveFileAsync(form.AttachmentFile, cancellationToken) ?? form.Attachment
+            Attachment = saved.Count > 0 ? saved[0].FilePath : form.Attachment,
+            Attachments = saved.Select(x => new InvoiceAttachmentInput
+            {
+                FilePath = x.FilePath, FileName = x.FileName, MimeType = x.MimeType, FileSize = x.FileSize
+            }).ToList(),
+            RemovedAttachmentIds = form.RemovedAttachmentIds ?? []
         };
+    }
+
+    /// <summary>Whatever the caller sent, as one list, so the old single-file shape and the
+    /// current multi-file one both work.</summary>
+    private static List<IFormFile> IncomingFiles(NewInvoiceFormRequest form)
+    {
+        var files = new List<IFormFile>();
+        if (form.AttachmentFile is { Length: > 0 }) files.Add(form.AttachmentFile);
+        if (form.AttachmentFiles is not null) files.AddRange(form.AttachmentFiles.Where(x => x.Length > 0));
+        return files;
     }
 
     /// <summary>The attachment is written to disk before the service validates the rest
@@ -286,7 +316,7 @@ public sealed class NewInvoicesController : ControllerBase
         }
         catch
         {
-            if (form.AttachmentFile is { Length: > 0 }) DeleteUpload(request.Attachment);
+            _attachments.DeleteAll((request.Attachments ?? []).Select(x => x.FilePath));
             throw;
         }
     }
@@ -338,4 +368,8 @@ public sealed class NewInvoiceFormRequest
     [FromForm(Name = "points")] public decimal? Points { get; set; }
     [FromForm(Name = "attachment")] public string? Attachment { get; set; }
     [FromForm(Name = "attachment_file")] public IFormFile? AttachmentFile { get; set; }
+    /// <summary>Several files at once. The single attachment_file field is still read, so
+    /// nothing that posts the old shape breaks.</summary>
+    [FromForm(Name = "attachment_files")] public List<IFormFile>? AttachmentFiles { get; set; }
+    [FromForm(Name = "removed_attachment_ids")] public List<long>? RemovedAttachmentIds { get; set; }
 }

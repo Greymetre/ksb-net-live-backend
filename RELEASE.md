@@ -1,6 +1,6 @@
 # FieldKonnect Backend
 
-Current release: `v7.3`
+Current release: `v8.0`
 
 Backend and frontend tags use the same release number. Version-specific,
 idempotent SQL Server scripts are stored under `database/releases` and must be

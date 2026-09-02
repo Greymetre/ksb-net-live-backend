@@ -13,6 +13,7 @@ public sealed class AppDbContext : DbContext
     public DbSet<Customer> Customers => Set<Customer>();
     public DbSet<NewInvoice> NewInvoices => Set<NewInvoice>();
     public DbSet<NewInvoiceApprovalLog> NewInvoiceApprovalLogs => Set<NewInvoiceApprovalLog>();
+    public DbSet<NewInvoiceAttachment> NewInvoiceAttachments => Set<NewInvoiceAttachment>();
     public DbSet<Role> Roles => Set<Role>();
     public DbSet<Permission> Permissions => Set<Permission>();
     public DbSet<ModelHasRole> ModelHasRoles => Set<ModelHasRole>();

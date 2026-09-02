@@ -19,11 +19,13 @@ public sealed class FieldKonnectReportingController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
     private readonly IHrRepository _hrRepository;
+    private readonly ICustomerRepository _customerRepository;
 
-    public FieldKonnectReportingController(AppDbContext dbContext, IHrRepository hrRepository)
+    public FieldKonnectReportingController(AppDbContext dbContext, IHrRepository hrRepository, ICustomerRepository customerRepository)
     {
         _dbContext = dbContext;
         _hrRepository = hrRepository;
+        _customerRepository = customerRepository;
     }
 
     [HttpGet("user-monitoring/options")]
@@ -103,6 +105,168 @@ OFFSET {offset} ROWS FETCH NEXT {pageSize} ROWS ONLY", cancellationToken);
 
         await EndMobileSessions(userId, clearUniqueId: true, cancellationToken);
         return Ok(new { status=true, message="Device UUID removed. The user can now sign in on a new device." });
+    }
+
+    // ---------------------------------------------------------------------------
+    // Customer App Details.
+    //
+    // The same screen as User App Details, for the people who sign in on the Vriddhi
+    // app instead of the field app. Both a dealer and a retailer sign in there, so the
+    // listing carries the customer type as well. The rows live in the same
+    // mobile_user_login_details table under app='retailer', keyed by customer_id rather
+    // than user_id, and are kept current the same way: written at login, refreshed by
+    // the session heartbeat and by the app version header on any authenticated call.
+    // ---------------------------------------------------------------------------
+
+    private const string CustomerAppKey = "retailer";
+
+    [HttpGet("customer-app-details/options")]
+    [RequirePermission("customer_app.view")]
+    public async Task<IActionResult> CustomerAppDetailOptions(CancellationToken cancellationToken)
+    {
+        var ids = await SignedInCustomerIds(cancellationToken);
+        if (ids.Count == 0) return Ok(new { customers = Array.Empty<object>(), customer_types = Array.Empty<object>() });
+
+        var customers = await _dbContext.Customers.AsNoTracking()
+            .Where(x => ids.Contains(x.Id) && x.DeletedAt == null)
+            .Select(x => new { id = x.Id, name = x.Name, mobile = x.Mobile, customer_type = x.CustomerType })
+            .OrderBy(x => x.name)
+            .ToListAsync(cancellationToken);
+
+        var typeIds = customers.Where(x => x.customer_type.HasValue).Select(x => x.customer_type!.Value).Distinct().ToArray();
+        var customerTypes = typeIds.Length == 0
+            ? []
+            : (await QueryRows($@"SELECT id, customertype_name FROM customer_types
+WHERE deleted_at IS NULL AND id IN ({string.Join(',', typeIds)}) ORDER BY customertype_name", cancellationToken))
+                .Select(x => new { id = ULong(x, "id"), name = Str(x, "customertype_name") })
+                .ToList();
+
+        return Ok(new { customers, customer_types = customerTypes });
+    }
+
+    [HttpGet("customer-app-details")]
+    [RequirePermission("customer_app.view")]
+    public async Task<IActionResult> CustomerAppDetails(
+        [FromQuery(Name = "customer_id")] ulong? customerId,
+        [FromQuery(Name = "customer_type")] ulong? customerType,
+        [FromQuery] int page = 1,
+        [FromQuery(Name = "page_size")] int pageSize = 10,
+        CancellationToken cancellationToken = default)
+    {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+
+        var ids = await SignedInCustomerIds(cancellationToken);
+        if (customerId.HasValue) ids = ids.Where(x => x == customerId.Value).ToList();
+        if (ids.Count == 0)
+            return Ok(new { data = Array.Empty<object>(), pagination = new { current_page = page, last_page = 1, page_size = pageSize, total = 0 } });
+
+        var idCsv = string.Join(',', ids);
+        var typeClause = customerType.HasValue ? $" AND c.customertype = {customerType.Value}" : string.Empty;
+
+        var total = await QueryScalarLong($@"SELECT COUNT(*) FROM (SELECT m.customer_id
+FROM mobile_user_login_details m INNER JOIN customers c ON c.id=m.customer_id AND c.deleted_at IS NULL
+WHERE m.app='{CustomerAppKey}' AND m.customer_id IN ({idCsv}){typeClause} GROUP BY m.customer_id) q", cancellationToken);
+
+        var offset = (page - 1) * pageSize;
+        var rows = await QueryRows($@"WITH latest AS (SELECT m.id, m.customer_id, c.name AS customer_name, c.mobile,
+c.customertype AS customer_type_id, ct.customertype_name AS customer_type_name,
+m.app_version, m.device_name, m.device_type, m.unique_id, m.first_login_date,
+m.last_login_date, m.login_status, m.login_at,
+ROW_NUMBER() OVER (PARTITION BY m.customer_id ORDER BY COALESCE(m.updated_at,m.last_login_date,m.created_at) DESC,m.id DESC) AS rn
+FROM mobile_user_login_details m
+INNER JOIN customers c ON c.id=m.customer_id AND c.deleted_at IS NULL
+LEFT JOIN customer_types ct ON ct.id=c.customertype AND ct.deleted_at IS NULL
+WHERE m.app='{CustomerAppKey}' AND m.customer_id IN ({idCsv}){typeClause})
+SELECT * FROM latest WHERE rn=1 ORDER BY COALESCE(login_at,last_login_date,first_login_date) DESC,id DESC
+OFFSET {offset} ROWS FETCH NEXT {pageSize} ROWS ONLY", cancellationToken);
+
+        var data = rows.Select(x => new
+        {
+            id = ULong(x, "id"),
+            customer_id = ULong(x, "customer_id"),
+            customer_name = Str(x, "customer_name"),
+            mobile = Str(x, "mobile"),
+            customer_type_id = Obj(x, "customer_type_id"),
+            customer_type = Str(x, "customer_type_name"),
+            app_version = Str(x, "app_version"),
+            device_name = Str(x, "device_name"),
+            device_type = Str(x, "device_type"),
+            unique_id = Str(x, "unique_id"),
+            first_login_date = Obj(x, "first_login_date"),
+            last_login_date = Obj(x, "last_login_date"),
+            login_status = Str(x, "login_status"),
+            login_at = Obj(x, "login_at")
+        }).ToList();
+
+        var lastPage = Math.Max(1, (long)Math.Ceiling(total / (double)pageSize));
+        return Ok(new { data, pagination = new { current_page = page, last_page = lastPage, page_size = pageSize, total } });
+    }
+
+    [HttpPost("customer-app-details/{customerId:long}/force-logout")]
+    [RequirePermission("customer_app.force_logout")]
+    public async Task<IActionResult> ForceLogoutCustomer(ulong customerId, CancellationToken cancellationToken)
+    {
+        if (!await CanManageAppCustomer(customerId, cancellationToken))
+            return StatusCode(403, new { status = false, message = "Customer is outside your data scope" });
+
+        await EndCustomerMobileSessions(customerId, clearUniqueId: false, cancellationToken);
+        return Ok(new { status = true, message = "Customer has been logged out from the mobile app." });
+    }
+
+    [HttpDelete("customer-app-details/{customerId:long}/unique-id")]
+    [RequirePermission("customer_app.reset_device")]
+    public async Task<IActionResult> ClearCustomerDeviceUuid(ulong customerId, CancellationToken cancellationToken)
+    {
+        if (!await CanManageAppCustomer(customerId, cancellationToken))
+            return StatusCode(403, new { status = false, message = "Customer is outside your data scope" });
+
+        await EndCustomerMobileSessions(customerId, clearUniqueId: true, cancellationToken);
+        return Ok(new { status = true, message = "Device UUID removed. The customer can now sign in on a new device." });
+    }
+
+    /// <summary>The customers who have signed in on the app, narrowed to the ones this
+    /// user may see. Reading the small login table first keeps the visibility check off
+    /// the whole customer table.</summary>
+    private async Task<List<ulong>> SignedInCustomerIds(CancellationToken cancellationToken)
+    {
+        var candidates = await _dbContext.MobileUserLoginDetails.AsNoTracking()
+            .Where(x => x.App == CustomerAppKey && x.CustomerId != null)
+            .Select(x => x.CustomerId!.Value)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+
+        var visible = await _customerRepository.FilterVisibleCustomerIdsAsync(CurrentUserId(), candidates, cancellationToken);
+        return visible.ToList();
+    }
+
+    private async Task<bool> CanManageAppCustomer(ulong customerId, CancellationToken cancellationToken) =>
+        (await SignedInCustomerIds(cancellationToken)).Contains(customerId);
+
+    private async Task EndCustomerMobileSessions(ulong customerId, bool clearUniqueId, CancellationToken cancellationToken)
+    {
+        var now = DateTime.UtcNow;
+        var details = _dbContext.MobileUserLoginDetails.Where(x => x.CustomerId == customerId && x.App == CustomerAppKey);
+        if (clearUniqueId)
+        {
+            await details.ExecuteUpdateAsync(updates => updates
+                .SetProperty(x => x.LoginStatus, "0")
+                .SetProperty(x => x.UniqueId, (string?)null)
+                .SetProperty(x => x.UpdatedAt, now), cancellationToken);
+        }
+        else
+        {
+            await details.ExecuteUpdateAsync(updates => updates
+                .SetProperty(x => x.LoginStatus, "0")
+                .SetProperty(x => x.UpdatedAt, now), cancellationToken);
+        }
+
+        // Customer tokens are issued against the customer id, so the same column holds them.
+        await _dbContext.OAuthAccessTokens
+            .Where(x => x.UserId == customerId && !x.Revoked && x.Name != null && x.Name.Contains("retailer"))
+            .ExecuteUpdateAsync(updates => updates
+                .SetProperty(x => x.Revoked, true)
+                .SetProperty(x => x.UpdatedAt, now), cancellationToken);
     }
 
     private async Task<bool> CanManageAppUser(ulong userId, CancellationToken cancellationToken) =>

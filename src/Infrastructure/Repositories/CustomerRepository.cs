@@ -354,6 +354,23 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
     /// their reporting descendants, to the end of the chain. Assignment is read from
     /// employee_details, from executive_id, and from the employee_id / sales_executive_id
     /// custom fields, because live data carries it in all three.</summary>
+    public async Task<IReadOnlyCollection<ulong>> FilterVisibleCustomerIdsAsync(
+        ulong? actorUserId,
+        IReadOnlyCollection<ulong> candidateIds,
+        CancellationToken cancellationToken)
+    {
+        if (candidateIds.Count == 0) return [];
+        if (await ReportingVisibility.HasUnrestrictedDataScopeAsync(_dbContext, actorUserId, cancellationToken))
+            return candidateIds.Distinct().ToArray();
+
+        var scoped = await ApplyReportingScopeAsync(
+            _dbContext.Customers.AsNoTracking().Where(x => candidateIds.Contains(x.Id)),
+            actorUserId,
+            cancellationToken);
+
+        return await scoped.Select(x => x.Id).Distinct().ToArrayAsync(cancellationToken);
+    }
+
     private async Task<IQueryable<Customer>> ApplyReportingScopeAsync(
         IQueryable<Customer> query,
         ulong? actorUserId,

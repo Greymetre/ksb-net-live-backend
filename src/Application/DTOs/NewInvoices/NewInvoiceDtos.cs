@@ -30,7 +30,10 @@ public sealed class NewInvoiceDto
     public string? SchemeHintMessage { get; set; }
     public decimal RegularWalletPoints { get; set; }
     public decimal BoosterWalletPoints { get; set; }
+    /// <summary>The first file, kept so older readers still work.</summary>
     public string? Attachment { get; set; }
+    /// <summary>Every file on the invoice - photographs and PDFs.</summary>
+    public List<InvoiceAttachmentDto> Attachments { get; set; } = [];
     public int ApprovalStatus { get; set; }
     public string ApprovalStatusLabel { get; set; } = string.Empty;
     public string? ApprovalRemark { get; set; }
@@ -82,7 +85,21 @@ public sealed class NewInvoiceRequestDto
     public DateTime? InvoiceDate { get; set; }
     public decimal? Amount { get; set; }
     public decimal? Points { get; set; }
+    /// <summary>The first file, still written to the invoice row so older readers work.</summary>
     public string? Attachment { get; set; }
+    /// <summary>Files added by this request. Null leaves whatever the invoice already has;
+    /// an empty list is a deliberate "no new files".</summary>
+    public List<InvoiceAttachmentInput>? Attachments { get; set; }
+    /// <summary>Ids of attachments the caller removed while editing.</summary>
+    public List<long>? RemovedAttachmentIds { get; set; }
+}
+
+public sealed class InvoiceAttachmentInput
+{
+    public string FilePath { get; set; } = string.Empty;
+    public string? FileName { get; set; }
+    public string? MimeType { get; set; }
+    public long? FileSize { get; set; }
 }
 
 public sealed class InvoiceSchemeOptionDto
@@ -180,4 +197,13 @@ public sealed class NewInvoiceApprovalRequestDto
 {
     public string? Remark { get; set; }
     public decimal? ApprovedAmount { get; set; }
+}
+
+public sealed class InvoiceAttachmentDto
+{
+    public long Id { get; set; }
+    public string FilePath { get; set; } = string.Empty;
+    public string? FileName { get; set; }
+    public string? MimeType { get; set; }
+    public long? FileSize { get; set; }
 }

@@ -93,6 +93,12 @@ public sealed class ReportManagementController : ControllerBase
         var indiaToday = DateTime.UtcNow.AddHours(5).AddMinutes(30).Date;
         var currentMonth = new DateTime(indiaToday.Year, indiaToday.Month, 1);
         var monthStarts = Enumerable.Range(0, 6).Select(index => currentMonth.AddMonths(index - 5)).ToArray();
+        // The month in progress is only part done, so scoring it against a whole month's
+        // targets makes every employee look like a failure until the month closes. It is
+        // measured against the share of the targets its elapsed days have earned, the same
+        // way the weekly report prorates a month target across its seven days.
+        var daysInCurrentMonth = DateTime.DaysInMonth(indiaToday.Year, indiaToday.Month);
+        var currentMonthShare = (decimal)indiaToday.Day / daysInCurrentMonth;
         var rangeStart = monthStarts[0];
         var rangeEnd = currentMonth.AddMonths(1);
         var targetYears = monthStarts.Select(x => x.Year).Distinct().ToArray();
@@ -166,19 +172,27 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
                     .Sum(x => x.Target ?? 0m);
                 var orderValue = orders.Where(x => x.UserId == user.Id && x.OrderDate >= monthStart && x.OrderDate < monthEnd).Sum(x => x.SubTotal);
                 var achievement = orderValue > 1m ? Math.Round((orderValue - orderValue / 100m) / 100000m, 2) : 0m;
-                    var score = CalculateRatingScores(marketDays, visits, achievement, target, promotional, registeredRetailers, active, 20, 200, 4);
+                    // A closed month is scored against the full targets; the one still running
+                    // against the part of them its elapsed days have earned.
+                    var share = monthStart == currentMonth ? currentMonthShare : 1m;
+                    var marketTarget = Math.Round(20m * share, 2);
+                    var visitTarget = Math.Round(200m * share, 2);
+                    var promotionalTarget = Math.Round(4m * share, 2);
+                    var salesTarget = Math.Round(target * share, 2);
+                    var score = CalculateRatingScores(marketDays, visits, achievement, salesTarget, promotional,
+                        registeredRetailers, active, marketTarget, visitTarget, promotionalTarget);
                     var monthKey = monthStart.ToString("yyyy-MM", CultureInfo.InvariantCulture);
                     monthlyRatings[monthKey] = score.FinalRating;
                     monthlyDetails[monthKey] = new RatingTrendMonthDetail(score.FinalRating,
                     [
-                        new("market_days", "Market Days", Math.Round(score.MarketRatio * 100m, 2), marketDays, 20m, 5m,
-                        $"{marketDays} of 20 target market days completed"),
-                    new("customer_visits", "Customer Visits", Math.Round(score.VisitRatio * 100m, 2), visits, 200m, 30m,
-                        $"{visits} of 200 target customer visits completed"),
-                    new("sales_achievement", "Sales Achievement", Math.Round(score.SalesRatio * 100m, 2), achievement, Math.Round(target, 2), 40m,
-                        $"Achieved {achievement:0.00}L against {target:0.00}L target"),
-                    new("promotional_activity", "Promotional Activity", Math.Round(score.PromoRatio * 100m, 2), promotional, 4m, 10m,
-                        $"{promotional} of 4 target promotional activities completed"),
+                        new("market_days", "Market Days", Math.Round(score.MarketRatio * 100m, 2), marketDays, marketTarget, 5m,
+                        $"{marketDays} of {marketTarget:0.##} target market days completed"),
+                    new("customer_visits", "Customer Visits", Math.Round(score.VisitRatio * 100m, 2), visits, visitTarget, 30m,
+                        $"{visits} of {visitTarget:0.##} target customer visits completed"),
+                    new("sales_achievement", "Sales Achievement", Math.Round(score.SalesRatio * 100m, 2), achievement, salesTarget, 40m,
+                        $"Achieved {achievement:0.00}L against {salesTarget:0.00}L target"),
+                    new("promotional_activity", "Promotional Activity", Math.Round(score.PromoRatio * 100m, 2), promotional, promotionalTarget, 10m,
+                        $"{promotional} of {promotionalTarget:0.##} target promotional activities completed"),
                     new("active_retailer", "Active Retailer", Math.Round(score.ActiveRatingRatio * 100m, 2), active, registeredRetailers, 15m,
                         $"{active} of {registeredRetailers} assigned retailers active (30% active gives full score)")
                 ]);
@@ -232,7 +246,12 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
                 {
                     key = x.ToString("yyyy-MM", CultureInfo.InvariantCulture),
                     label = x.ToString("MMM", CultureInfo.InvariantCulture),
-                    full_label = x.ToString("MMMM yyyy", CultureInfo.InvariantCulture)
+                    full_label = x.ToString("MMMM yyyy", CultureInfo.InvariantCulture),
+                    // The month still running is scored on its elapsed days, so the screen
+                    // can say so rather than leaving a part-month target unexplained.
+                    in_progress = x == currentMonth,
+                    elapsed_days = x == currentMonth ? indiaToday.Day : DateTime.DaysInMonth(x.Year, x.Month),
+                    days_in_month = DateTime.DaysInMonth(x.Year, x.Month)
                 })
             },
             summary = new
@@ -656,8 +675,10 @@ assigned_at, unassigned_at FROM (
 
     private static decimal CappedRatio(decimal achievement, decimal target) => target <= 0 ? 0m : Math.Min(achievement / target, 1m);
 
+    /// <summary>The three activity targets are decimals because a part-finished month is
+    /// scored against its own elapsed share of them, which is rarely a whole number.</summary>
     private static RatingScores CalculateRatingScores(int marketDays, int visits, decimal salesAchievement, decimal salesTarget,
-        int promotional, int registeredRetailers, int activeRetailers, int marketTarget, int visitTarget, int promotionalTarget)
+        int promotional, int registeredRetailers, int activeRetailers, decimal marketTarget, decimal visitTarget, decimal promotionalTarget)
     {
         const decimal marketWeight = 5m, visitWeight = 30m, salesWeight = 40m, promoWeight = 10m, retailerWeight = 15m;
         var marketRatio = CappedRatio(marketDays, marketTarget);
@@ -704,7 +725,11 @@ assigned_at, unassigned_at FROM (
         var indiaToday = DateTime.UtcNow.AddHours(5).AddMinutes(30).Date;
         var isYtd = !isWeekly && !filter.Month.HasValue;
         var start = isWeekly ? indiaToday.AddDays(-7) : new DateTime(filter.Year!.Value, filter.Month ?? 1, 1);
-        var end = isWeekly ? indiaToday : filter.Month.HasValue ? start.AddMonths(1)
+        // A month that has not finished yet ends today, so it is scored on the days that
+        // have actually happened rather than on a whole month the employee has not had.
+        var monthEndsToday = filter.Month.HasValue && filter.Year == indiaToday.Year && filter.Month == indiaToday.Month;
+        var end = isWeekly ? indiaToday
+            : filter.Month.HasValue ? (monthEndsToday ? indiaToday.AddDays(1) : start.AddMonths(1))
             : filter.Year == indiaToday.Year ? indiaToday.AddDays(1) : new DateTime(filter.Year!.Value + 1, 1, 1);
         var retailerAssignmentPeriods = await RetailerAssignmentPeriods(userIds, end, ct);
 
@@ -716,7 +741,16 @@ assigned_at, unassigned_at FROM (
             var monthStarts = Enumerable.Range(0, monthCount).Select(periodStart.AddMonths).Select(x => new DateTime(x.Year, x.Month, 1)).ToArray();
             var targetMonths = monthStarts.SelectMany(x => new[] { x.ToString("MMM", CultureInfo.InvariantCulture), x.ToString("MMMM", CultureInfo.InvariantCulture) }).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
             var targetYears = monthStarts.Select(x => x.Year).Distinct().ToArray();
-            var periodMonths = ytd ? monthCount : 1;
+            // How much of each month the window actually covers. A closed month counts once;
+            // the month still running counts only the share its elapsed days have earned.
+            decimal ElapsedShare(DateTime monthStart)
+            {
+                var monthEnd = monthStart.AddMonths(1);
+                var from = periodStart > monthStart ? periodStart : monthStart;
+                var to = periodEnd < monthEnd ? periodEnd : monthEnd;
+                return (decimal)Math.Max(0, (to - from).Days) / DateTime.DaysInMonth(monthStart.Year, monthStart.Month);
+            }
+            var periodMonths = monthStarts.Sum(ElapsedShare);
             var attendance = await _db.Attendances.AsNoTracking().Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value)
                 && x.PunchinDate >= periodStart && x.PunchinDate < periodEnd && x.DeletedAt == null).Select(x => new { UserId = x.UserId!.Value, x.PunchinDate, x.WorkingType }).ToListAsync(ct);
             var targets = await _db.SalesTargetUsers.AsNoTracking().Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value)
@@ -739,22 +773,18 @@ assigned_at, unassigned_at FROM (
                 var promotional = userAttendance.Sum(x => PromotionalActivityCount(x.WorkingType));
                 var customerVisits = visits.GetValueOrDefault(user.Id);
                 var userTargets = targets.Where(x => x.UserId == user.Id).ToList();
-                var target = weekly ? monthStarts.Sum(monthStart =>
+                var target = monthStarts.Sum(monthStart =>
                 {
-                    var segmentStart = periodStart > monthStart ? periodStart : monthStart;
-                    var monthEnd = monthStart.AddMonths(1);
-                    var segmentEnd = periodEnd < monthEnd ? periodEnd : monthEnd;
-                    var days = Math.Max(0, (segmentEnd - segmentStart).Days);
                     var monthTarget = userTargets.Where(x => x.Year == monthStart.Year && (string.Equals(x.Month, monthStart.ToString("MMM", CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase) || string.Equals(x.Month, monthStart.ToString("MMMM", CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase))).Sum(x => x.Target ?? 0m);
-                    return monthTarget / DateTime.DaysInMonth(monthStart.Year, monthStart.Month) * days;
-                }) : userTargets.Sum(x => x.Target ?? 0m);
+                    return monthTarget * ElapsedShare(monthStart);
+                });
                 var orderValue = orders.Where(x => x.UserId == user.Id).Sum(x => x.SubTotal);
                 var achievement = orderValue > 1m ? Math.Round((orderValue - orderValue / 100m) / 100000m, 2) : 0m;
                 var assigned = assignmentsByUser.GetValueOrDefault(user.Id, []);
                 var active = assigned.Count(activeRetailerIds.Contains);
-                var marketTarget = weekly ? 5 : 20 * periodMonths;
-                var visitTarget = weekly ? 50 : 200 * periodMonths;
-                var promotionalTarget = weekly ? 1 : 4 * periodMonths;
+                var marketTarget = weekly ? 5m : Math.Round(20m * periodMonths, 2);
+                var visitTarget = weekly ? 50m : Math.Round(200m * periodMonths, 2);
+                var promotionalTarget = weekly ? 1m : Math.Round(4m * periodMonths, 2);
                 var score = CalculateRatingScores(marketDays, customerVisits, achievement, target, promotional, assigned.Count, active,
                     marketTarget, visitTarget, promotionalTarget);
                 return new RatingReportRow(user.Id, BranchName(user, branches), user.EmployeeCodes ?? string.Empty, user.Name, Name(userNames, user.ReportingId), Name(divisions, user.DivisionId), null, score.FinalRating,
@@ -798,9 +828,9 @@ assigned_at, unassigned_at FROM (
         sheet.Cell(2, C(22)).Value = promoWeight; sheet.Cell(2, C(23)).Value = "Above 100% achievement will be considered 100%"; sheet.Range(2, C(23), 2, C(26)).Merge();
         sheet.Cell(2, C(27)).Value = retailerWeight; sheet.Cell(2, C(28)).Value = "Above 30% achievement will be considered 30%"; sheet.Range(2, C(28), 2, C(31)).Merge();
 
-        var headers = new List<string> { "Branch", "Emp Code", "ASR", "DOJ", "Zone" };
-        if (includeLastRating) headers.Add("L Final Rating");
-        headers.AddRange(["C Final Rating", "Tgt", "Ach", "% ACHD", "For Rating %", "Final Rating", "TGT", "Ach", "% ACHD", "For Rating %", "Final Rating", "TGT", "Ach", "% ACHD", "For Rating %", "Final Rating", "Tgt", "Ach", "% ACHD", "For Rating %", "Final Rating", "Total Registred Retailer", "Active", "Active %", "For Rating %", "Final Rating"]);
+        var headers = new List<string> { "Branch", "Emp Code", "ASR", "Reporting Person", "Zone" };
+        if (includeLastRating) headers.Add("LM Rating");
+        headers.AddRange(["CM Rating", "Tgt", "Ach", "% ACHD", "For Rating %", "Final Rating", "TGT", "Ach", "% ACHD", "For Rating %", "Final Rating", "TGT", "Ach", "% ACHD", "For Rating %", "Final Rating", "Tgt", "Ach", "% ACHD", "For Rating %", "Final Rating", "Total Registred Retailer", "Active", "Active %", "For Rating %", "Final Rating"]);
         for (var i = 0; i < headers.Count; i++) sheet.Cell(3, i + 1).Value = headers[i];
 
         var outputRow = 4;
@@ -929,9 +959,9 @@ public sealed class RatingReportFilter
 }
 
 internal sealed record RatingReportRow(ulong UserId, string Branch, string EmployeeCode, string EmployeeName, string ReportingManager, string Zone,
-    decimal? LastFinalRating, decimal FinalRating, int MarketTarget, int MarketDays, decimal MarketRatio, decimal MarketRating, int VisitTarget, int Visits, decimal VisitRatio, decimal VisitRating,
+    decimal? LastFinalRating, decimal FinalRating, decimal MarketTarget, int MarketDays, decimal MarketRatio, decimal MarketRating, decimal VisitTarget, int Visits, decimal VisitRatio, decimal VisitRating,
     decimal SalesTarget, decimal SalesAchievement, decimal SalesRatio, decimal SalesRating, int Promotional, decimal PromotionalRatio,
-    decimal PromotionalRating, int PromotionalTarget, int RegisteredRetailers, int ActiveRetailers, decimal ActiveRatio, decimal ActiveRatingRatio, decimal ActiveRating)
+    decimal PromotionalRating, decimal PromotionalTarget, int RegisteredRetailers, int ActiveRetailers, decimal ActiveRatio, decimal ActiveRatingRatio, decimal ActiveRating)
 {
     public object?[] Values(bool includeLastRating)
     {

@@ -68,6 +68,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         var approvals = await LoadApprovalStageSummariesAsync(rows.Select(x => x.Invoice.Id), cancellationToken);
         var items = rows.SelectMany(x => ToSchemeDtos(x.Invoice, x.Customer, CityName(x.Customer, cities), AssignedZoneName(x.Customer, assignedZones), AssignedBranchName(x.Customer, assignedBranches) ?? x.Branch?.BranchName, DealerName(x.Invoice, x.Customer, assignedDistributors), AssignedEmployeeName(x.Customer, assignedEmployees), x.Creator, x.Branch, schemes, schemeInvoices, ApprovalSummary(x.Invoice.Id, approvals))).ToList();
         await ApplyCreatedByLabelsAsync(items, rows.Select(x => x.Creator), cancellationToken);
+        await ApplyAttachmentsAsync(items, cancellationToken);
         return new PagedResult<NewInvoiceDto>(items, total, page, filter.Unpaged ? items.Count : pageSize);
     }
 
@@ -109,6 +110,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         var approvals = await LoadApprovalStageSummariesAsync([row.Invoice.Id], cancellationToken);
         var dto = ToSchemeDtos(row.Invoice, row.Customer, CityName(row.Customer, cities), AssignedZoneName(row.Customer, assignedZones), AssignedBranchName(row.Customer, assignedBranches) ?? row.Branch?.BranchName, DealerName(row.Invoice, row.Customer, assignedDistributors), AssignedEmployeeName(row.Customer, assignedEmployees), row.Creator, row.Branch, schemes, schemeInvoices, ApprovalSummary(row.Invoice.Id, approvals)).First();
         await ApplyCreatedByLabelsAsync([dto], [row.Creator], cancellationToken);
+        await ApplyAttachmentsAsync([dto], cancellationToken);
         dto.ApprovalLogs = await GetApprovalLogsAsync(id, cancellationToken);
         return dto;
     }
@@ -506,6 +508,73 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
             cancellationToken);
     }
 
+    public Task<int> CountAttachmentsAsync(ulong invoiceId, CancellationToken cancellationToken) =>
+        _dbContext.NewInvoiceAttachments.CountAsync(x => x.InvoiceId == invoiceId, cancellationToken);
+
+    public async Task<IReadOnlyCollection<string>> SaveAttachmentsAsync(
+        ulong invoiceId,
+        IReadOnlyList<InvoiceAttachmentInput> added,
+        IReadOnlyList<long> removedIds,
+        CancellationToken cancellationToken)
+    {
+        var removedPaths = new List<string>();
+
+        if (removedIds.Count > 0)
+        {
+            var doomed = await _dbContext.NewInvoiceAttachments
+                .Where(x => x.InvoiceId == invoiceId && removedIds.Contains(x.Id))
+                .ToListAsync(cancellationToken);
+            removedPaths.AddRange(doomed.Select(x => x.FilePath));
+            _dbContext.NewInvoiceAttachments.RemoveRange(doomed);
+        }
+
+        if (added.Count > 0)
+        {
+            var nextOrder = await _dbContext.NewInvoiceAttachments
+                .Where(x => x.InvoiceId == invoiceId)
+                .Select(x => (int?)x.SortOrder)
+                .MaxAsync(cancellationToken) ?? -1;
+
+            var now = DateTime.UtcNow;
+            foreach (var input in added)
+            {
+                await _dbContext.NewInvoiceAttachments.AddAsync(new NewInvoiceAttachment
+                {
+                    InvoiceId = invoiceId,
+                    FilePath = input.FilePath,
+                    FileName = input.FileName,
+                    MimeType = input.MimeType,
+                    FileSize = input.FileSize,
+                    SortOrder = ++nextOrder,
+                    CreatedAt = now,
+                    UpdatedAt = now
+                }, cancellationToken);
+            }
+        }
+
+        if (removedIds.Count == 0 && added.Count == 0) return removedPaths;
+
+        await _dbContext.SaveChangesAsync(cancellationToken);
+
+        // The invoice row keeps the first file, so anything still reading that column
+        // shows a file that exists rather than one that was just deleted.
+        var first = await _dbContext.NewInvoiceAttachments.AsNoTracking()
+            .Where(x => x.InvoiceId == invoiceId)
+            .OrderBy(x => x.SortOrder).ThenBy(x => x.Id)
+            .Select(x => x.FilePath)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        var invoice = await _dbContext.NewInvoices.FirstOrDefaultAsync(x => x.Id == invoiceId, cancellationToken);
+        if (invoice is not null && !string.Equals(invoice.Attachment, first, StringComparison.Ordinal))
+        {
+            invoice.Attachment = first;
+            invoice.UpdatedAt = DateTime.UtcNow;
+            await _dbContext.SaveChangesAsync(cancellationToken);
+        }
+
+        return removedPaths;
+    }
+
     public async Task<NewInvoiceDto> CreateInvoiceAsync(NewInvoice invoice, CancellationToken cancellationToken)
     {
         await _dbContext.NewInvoices.AddAsync(invoice, cancellationToken);
@@ -552,6 +621,12 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         var logs = _dbContext.NewInvoiceApprovalLogs.Where(x => x.NewInvoiceId == invoice.Id);
         _dbContext.NewInvoiceApprovalLogs.RemoveRange(logs);
 
+        // Every file the invoice carries, so none is orphaned on disk.
+        var ownAttachments = await _dbContext.NewInvoiceAttachments
+            .Where(x => x.InvoiceId == invoice.Id)
+            .ToListAsync(cancellationToken);
+        _dbContext.NewInvoiceAttachments.RemoveRange(ownAttachments);
+
         // Attachment rows written by the legacy app. The current flow keeps the path
         // on the invoice itself, but older invoices still carry these.
         var attachments = await _dbContext.Media
@@ -575,8 +650,10 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
 
         return attachments
             .Select(x => x.FileName)
+            .Concat(ownAttachments.Select(x => x.FilePath))
             .Append(invoice.Attachment ?? string.Empty)
             .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct()
             .ToArray();
     }
 
@@ -1037,6 +1114,47 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
 
             return string.IsNullOrWhiteSpace(user.Name) ? $"User {user.Id}" : user.Name;
         });
+    }
+
+    /// <summary>Fills in every file on each invoice, in one query for the whole page
+    /// rather than one per invoice. An invoice raised before attachments moved into
+    /// their own table still has its single path on the invoice row, so that is used
+    /// when the table holds nothing for it.</summary>
+    private async Task ApplyAttachmentsAsync(IReadOnlyCollection<NewInvoiceDto> items, CancellationToken cancellationToken)
+    {
+        if (items.Count == 0) return;
+
+        var ids = items.Select(x => x.Id).Distinct().ToArray();
+        var rows = await _dbContext.NewInvoiceAttachments.AsNoTracking()
+            .Where(x => ids.Contains(x.InvoiceId))
+            .OrderBy(x => x.InvoiceId).ThenBy(x => x.SortOrder).ThenBy(x => x.Id)
+            .Select(x => new { x.InvoiceId, x.Id, x.FilePath, x.FileName, x.MimeType, x.FileSize })
+            .ToListAsync(cancellationToken);
+
+        var byInvoice = rows.GroupBy(x => x.InvoiceId).ToDictionary(
+            group => group.Key,
+            group => group.Select(x => new InvoiceAttachmentDto
+            {
+                Id = x.Id,
+                FilePath = x.FilePath,
+                FileName = x.FileName,
+                MimeType = x.MimeType,
+                FileSize = x.FileSize
+            }).ToList());
+
+        foreach (var item in items)
+        {
+            if (byInvoice.TryGetValue(item.Id, out var attachments) && attachments.Count > 0)
+            {
+                item.Attachments = attachments;
+                item.Attachment ??= attachments[0].FilePath;
+                continue;
+            }
+
+            item.Attachments = string.IsNullOrWhiteSpace(item.Attachment)
+                ? []
+                : [new InvoiceAttachmentDto { Id = 0, FilePath = item.Attachment!, FileName = Path.GetFileName(item.Attachment!) }];
+        }
     }
 
     private async Task ApplyCreatedByLabelsAsync(IReadOnlyCollection<NewInvoiceDto> items, IEnumerable<User?> creators, CancellationToken cancellationToken)
