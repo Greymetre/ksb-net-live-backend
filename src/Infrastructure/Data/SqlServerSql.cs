@@ -52,9 +52,20 @@ public static partial class SqlServerSql
         do
         {
             previous = normalized;
-            normalized = SelectLimitRegex().Replace(
-                normalized,
-                match => $"SELECT TOP ({match.Groups["count"].Value}) {match.Groups["body"].Value}");
+            normalized = SelectLimitRegex().Replace(normalized, match =>
+            {
+                var body = match.Groups["body"].Value;
+                var count = match.Groups["count"].Value;
+
+                // TOP goes after DISTINCT, never before it. Emitting "SELECT TOP (1)
+                // DISTINCT ..." is a syntax error, and it silently broke every legacy
+                // query that paired the two - among them the record the field app reads
+                // back after saving a customer.
+                var leading = LeadingDistinctRegex().Match(body);
+                return leading.Success
+                    ? $"SELECT DISTINCT TOP ({count}) {body[leading.Length..]}"
+                    : $"SELECT TOP ({count}) {body}";
+            });
         }
         while (!string.Equals(previous, normalized, StringComparison.Ordinal));
 
@@ -87,7 +98,10 @@ public static partial class SqlServerSql
     private static partial Regex LimitOffsetRegex();
 
     [GeneratedRegex(
-        @"SELECT\s+(?!TOP\s*\()(?<body>(?:(?!\bSELECT\b).)*?)\s+LIMIT\s+(?<count>\d+)",
+        @"SELECT\s+(?!(?:DISTINCT\s+)?TOP\s*\()(?<body>(?:(?!\bSELECT\b).)*?)\s+LIMIT\s+(?<count>\d+)",
         RegexOptions.IgnoreCase | RegexOptions.Singleline)]
     private static partial Regex SelectLimitRegex();
+
+    [GeneratedRegex(@"^\s*DISTINCT\s+", RegexOptions.IgnoreCase)]
+    private static partial Regex LeadingDistinctRegex();
 }

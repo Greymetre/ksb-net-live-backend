@@ -67,4 +67,15 @@ public sealed class AppDbContext : DbContext
     {
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(AppDbContext).Assembly);
     }
+
+    /// <summary>SQL Server's JSON_VALUE, usable inside a LINQ query.
+    ///
+    /// Several tables keep half their data in a `custom_fields` JSON document, and the
+    /// only way to filter on it used to be a set of leading-wildcard LIKE patterns - one
+    /// per way the value might have been written - each of which scans the whole column.
+    /// Reading the field properly is both faster and correct, and the raw-SQL paths in
+    /// this codebase already do it; this makes it available to composable queries too.</summary>
+    [DbFunction("JSON_VALUE", IsBuiltIn = true)]
+    public static string? JsonValue(string? json, string path) => throw new NotSupportedException(
+        "JSON_VALUE is translated to SQL by EF Core and cannot be called in memory.");
 }

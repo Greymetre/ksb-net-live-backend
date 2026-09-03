@@ -1432,7 +1432,10 @@ WHERE customer_id IN ({customerIdCsv})
     {
         if (string.IsNullOrWhiteSpace(path)) return path;
         var value = path.Trim().Replace('\\', '/');
-        if (Uri.TryCreate(value, UriKind.Absolute, out _)) return value;
+        // See MobileStoragePath: on Linux Uri.TryCreate accepts "/public/..." as an
+        // absolute file:// URI, so the scheme has to be checked explicitly.
+        if (value.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || value.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) return value;
         value = value.TrimStart('/');
         if (value.StartsWith("storage/", StringComparison.OrdinalIgnoreCase)
             || value.StartsWith("public/storage/", StringComparison.OrdinalIgnoreCase)

@@ -19,6 +19,15 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
     private const ulong RetailerCustomerType = 2;
     private const ulong InfluencerCustomerType = 3;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    // Where a retailer's distributor mapping lives inside the custom_fields JSON. Domestic
+    // and agri are separate assignments; a retailer may carry either.
+    private const string DistributorJsonPath = "$.distributor_name";
+    private const string AgriDistributorJsonPath = "$.agri_distributor";
+    private const string ShopNameJsonPath = "$.shop_name";
+    private const string OwnerNameJsonPath = "$.owner_name";
+    private const string AddressLineJsonPath = "$.address_line";
+    private const string BeltAreaJsonPath = "$.belt_area_market_name";
+
     private const string SuperAdminRoleName = "SUPERADMIN";
     private const string AsrDesignationName = "ASR";
     private readonly AppDbContext _dbContext;
@@ -139,22 +148,40 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
 
         if (!string.IsNullOrWhiteSpace(search))
         {
+            // Shop name, owner name, address and market area live in the JSON, and they are
+            // what people type. Matching the whole document instead meant reading every
+            // row's entire JSON - and matching on things nobody searches by, so a term
+            // could land on a Google Maps link, a GPS coordinate, or "APPROVED", which
+            // returned every approved retailer.
             var term = search.Trim();
             var likeTerm = $"%{term}%";
             query = query.Where(x => x.Name.Contains(term)
                 || (x.Mobile != null && x.Mobile.Contains(term))
                 || x.CustomerCode.Contains(term)
-                || (x.CustomFields != null && EF.Functions.Like(x.CustomFields, likeTerm)));
+                || (x.CustomFields != null
+                    && (EF.Functions.Like(AppDbContext.JsonValue(x.CustomFields, ShopNameJsonPath), likeTerm)
+                        || EF.Functions.Like(AppDbContext.JsonValue(x.CustomFields, OwnerNameJsonPath), likeTerm)
+                        || EF.Functions.Like(AppDbContext.JsonValue(x.CustomFields, AddressLineJsonPath), likeTerm)
+                        || EF.Functions.Like(AppDbContext.JsonValue(x.CustomFields, BeltAreaJsonPath), likeTerm))));
         }
 
         var currentPage = Pagination.Page(page);
         var size = Math.Clamp(pageSize, 1, MaxRows);
-        var total = await query.LongCountAsync(cancellationToken);
+
+        // Counting the matches ran this same filter a second time and doubled what the
+        // picker cost. Nothing displays a total - the callers only need to know whether
+        // to offer another page - so one extra row answers that for free.
         var retailers = await query
             .OrderBy(x => x.Name)
             .Skip((currentPage - 1) * size)
-            .Take(size)
+            .Take(size + 1)
             .ToListAsync(cancellationToken);
+
+        var hasMore = retailers.Count > size;
+        if (hasMore) retailers.RemoveAt(retailers.Count - 1);
+        // "How many are known so far", not the true total. It is only ever read back
+        // through has_more, which this satisfies exactly.
+        var total = (long)(currentPage - 1) * size + retailers.Count + (hasMore ? 1 : 0);
 
         var cities = await LoadCitiesAsync(retailers.Select(CityId), cancellationToken);
         var items = retailers.Select(customer => new RetailerOptionDto
@@ -901,24 +928,23 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         return linkedToDealer ? customerId : null;
     }
 
+    /// <summary>The retailers mapped to one distributor.
+    ///
+    /// This used to be six leading-wildcard LIKE patterns over the custom_fields JSON -
+    /// one for each way the id might have been written - which scans every row's whole
+    /// document. On a distributor login that alone was most of a ten second wait for the
+    /// retailer picker. JSON_VALUE reads the two fields that actually hold the answer and
+    /// handles string and numeric values by itself, which is how the dashboard and the
+    /// dealer app have always read it.</summary>
     private static IQueryable<Customer> ApplyDistributorRetailerScope(IQueryable<Customer> query, ulong? distributorCustomerId)
     {
         if (!distributorCustomerId.HasValue) return query;
 
-        var domestic = JsonFieldPattern("distributor_name", distributorCustomerId.Value);
-        var domesticSpaced = JsonFieldSpacedPattern("distributor_name", distributorCustomerId.Value);
-        var domesticNumber = JsonNumberFieldPattern("distributor_name", distributorCustomerId.Value);
-        var agri = JsonFieldPattern("agri_distributor", distributorCustomerId.Value);
-        var agriSpaced = JsonFieldSpacedPattern("agri_distributor", distributorCustomerId.Value);
-        var agriNumber = JsonNumberFieldPattern("agri_distributor", distributorCustomerId.Value);
+        var dealerValue = distributorCustomerId.Value.ToString(CultureInfo.InvariantCulture);
 
         return query.Where(x => x.CustomFields != null
-            && (EF.Functions.Like(x.CustomFields, domestic)
-                || EF.Functions.Like(x.CustomFields, domesticSpaced)
-                || EF.Functions.Like(x.CustomFields, domesticNumber)
-                || EF.Functions.Like(x.CustomFields, agri)
-                || EF.Functions.Like(x.CustomFields, agriSpaced)
-                || EF.Functions.Like(x.CustomFields, agriNumber)));
+            && (AppDbContext.JsonValue(x.CustomFields, DistributorJsonPath) == dealerValue
+                || AppDbContext.JsonValue(x.CustomFields, AgriDistributorJsonPath) == dealerValue));
     }
 
     /// <summary>The invoices that belong to one dealer.
@@ -932,29 +958,15 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         if (!distributorCustomerId.HasValue) return query;
 
         var dealerId = distributorCustomerId.Value;
-        var domestic = JsonFieldPattern("distributor_name", dealerId);
-        var domesticSpaced = JsonFieldSpacedPattern("distributor_name", dealerId);
-        var domesticNumber = JsonNumberFieldPattern("distributor_name", dealerId);
-        var agri = JsonFieldPattern("agri_distributor", dealerId);
-        var agriSpaced = JsonFieldSpacedPattern("agri_distributor", dealerId);
-        var agriNumber = JsonNumberFieldPattern("agri_distributor", dealerId);
+        var dealerValue = dealerId.ToString(CultureInfo.InvariantCulture);
 
         return query.Where(x => x.Invoice.DealerCustomerId == dealerId
             || (x.Invoice.DealerCustomerId == null
                 && x.Customer.CustomFields != null
-                && (EF.Functions.Like(x.Customer.CustomFields, domestic)
-                    || EF.Functions.Like(x.Customer.CustomFields, domesticSpaced)
-                    || EF.Functions.Like(x.Customer.CustomFields, domesticNumber)
-                    || EF.Functions.Like(x.Customer.CustomFields, agri)
-                    || EF.Functions.Like(x.Customer.CustomFields, agriSpaced)
-                    || EF.Functions.Like(x.Customer.CustomFields, agriNumber))));
+                && (AppDbContext.JsonValue(x.Customer.CustomFields, DistributorJsonPath) == dealerValue
+                    || AppDbContext.JsonValue(x.Customer.CustomFields, AgriDistributorJsonPath) == dealerValue)));
     }
 
-    private static string JsonFieldPattern(string key, ulong value) => $"%\"{key}\":\"{value}\"%";
-
-    private static string JsonFieldSpacedPattern(string key, ulong value) => $"%\"{key}\": \"{value}\"%";
-
-    private static string JsonNumberFieldPattern(string key, ulong value) => $"%\"{key}\":{value}%";
 
     private async Task<Dictionary<ulong, string>> LoadCitiesAsync(IEnumerable<ulong?> cityIds, CancellationToken cancellationToken)
     {

@@ -42,7 +42,9 @@ public static class ExportHyperlinkFactory
     private static string AttachmentPath(string path, string baseUrl)
     {
         var value = path.Trim();
-        if (Uri.TryCreate(value, UriKind.Absolute, out var absolute))
+        if ((value.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+             || value.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            && Uri.TryCreate(value, UriKind.Absolute, out var absolute))
         {
             value = absolute.PathAndQuery;
         }

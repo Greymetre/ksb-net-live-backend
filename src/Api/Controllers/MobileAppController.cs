@@ -7,6 +7,7 @@ using System.Text.Json.Serialization;
 using Application.DTOs.NewInvoices;
 using Application.Interfaces.Repositories;
 using Application.Interfaces.Services;
+using Api.Extensions;
 using Api.Services;
 using Domain.Entities;
 using Domain.Services;
@@ -2311,12 +2312,22 @@ VALUES ('Y', {0}, {1}, {2}, {3}, {4}, {5}, {6}, SYSUTCDATETIME(), SYSUTCDATETIME
         return new { uploaded, approved, status = approved == documents.Length ? "approved" : uploaded > 0 ? "pending" : "missing" };
     }
 
+    /// <summary>An absolute URL for a stored file.
+    ///
+    /// This used to build the address from the host alone, which dropped the prefix the
+    /// API is mounted under and left no separator when the stored path had no leading
+    /// slash - so a KYC document came back as "https://host" + "storage/x.jpg", one
+    /// unreachable word. PublicBaseUrl carries the mount point, and the slash is added
+    /// exactly once however the path was stored.</summary>
     private string MediaUrl(string? path)
     {
         if (string.IsNullOrWhiteSpace(path)) return string.Empty;
-        if (Uri.TryCreate(path, UriKind.Absolute, out _)) return path;
-        var request = Request;
-        return $"{request.Scheme}://{request.Host}{path}";
+        // Only a real http(s) URL is already public. Uri.TryCreate with UriKind.Absolute
+        // cannot be used here: on Linux it accepts a leading-slash path as an absolute
+        // file:// URI, so every stored path would be returned unprefixed and 404.
+        if (path.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || path.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) return path;
+        return $"{Request.PublicBaseUrl()}/{path.TrimStart('/')}";
     }
 
     /// <summary>The attachment lands on disk before the invoice service validates the

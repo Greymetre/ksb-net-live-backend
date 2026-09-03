@@ -166,8 +166,9 @@ COALESCE(NULLIF(JSON_VALUE(c.custom_fields, '$.legal_name'), ''), NULLIF(c.name,
 COALESCE(NULLIF(JSON_VALUE(c.custom_fields, '$.trade_name'), ''), NULLIF(c.name, '')) AS trade_name,
 COALESCE(NULLIF(JSON_VALUE(c.custom_fields, '$.distributor_code'), ''), NULLIF(c.customer_code, '')) AS distributor_code,
 COALESCE(NULLIF(JSON_VALUE(c.custom_fields, '$.mobile_number'), ''), NULLIF(c.mobile, '')) AS mobile_number,
-c.contact_number AS whatsapp_number, c.email, c.active, c.customer_code, c.sap_code, c.customertype,
+c.contact_number AS whatsapp_number, c.email, c.active, c.customer_code, c.sap_code, c.customertype, c.custom_fields,
 ctype.customertype_name, ctype.type_name, NULLIF(JSON_VALUE(c.custom_fields, '$.sub_type'), '') AS sub_type,
+CASE WHEN {KycApprovedSql} = 1 THEN 'approved' ELSE 'pending' END AS kyc_status,
 COALESCE(NULLIF(c.shop_image, ''), NULLIF(JSON_VALUE(c.custom_fields, '$.shop_photo'), ''), NULLIF(JSON_VALUE(c.custom_fields, '$.shop_image'), '')) AS shop_photo,
 CONCAT(NULLIF(c.latitude, ''), CASE WHEN NULLIF(c.latitude, '') IS NOT NULL AND NULLIF(c.longitude, '') IS NOT NULL THEN ',' ELSE '' END, NULLIF(c.longitude, '')) AS gps_location,
 COALESCE(NULLIF(cd.gstin_no, ''), NULLIF(JSON_VALUE(c.custom_fields, '$.gst_number'), ''), NULLIF(JSON_VALUE(c.custom_fields, '$.gstin_no'), '')) AS gst_number,
@@ -413,7 +414,7 @@ LEFT JOIN customer_details cd ON cd.customer_id = c.id AND cd.deleted_at IS NULL
 WHERE {string.Join(" AND ", where)}", cancellationToken, parameters.ToArray());
         var rows = await QueryRows($@"SELECT bc.id AS beat_customer_id, bc.beat_id, bc.customer_type, b.beat_name,
 c.id AS customer_id, c.name AS owner_name, c.name AS shop_name, c.name AS legal_name,
-c.mobile AS mobile_number, c.contact_number AS whatsapp_number, c.email, c.active,
+c.mobile AS mobile_number, c.contact_number AS whatsapp_number, c.email, c.active, c.custom_fields,
 ctype.customertype_name AS type, COALESCE(NULLIF(UPPER(LTRIM(RTRIM(JSON_VALUE(c.custom_fields, '$.status')))), ''), NULLIF(UPPER(LTRIM(RTRIM(cd.visit_status))), ''), 'PENDING') AS status, ca.address1 AS address_line, ca.city_id, customer_city.city_name,
 c.name AS customer_name, c.mobile AS customer_mobile, cd.visit_status,
 CAST(CASE WHEN EXISTS (SELECT 1 FROM check_in ci WHERE ci.user_id = @auth_user AND ci.checkin_date = @today AND (ci.customer_id = bc.customer_id OR ci.entity_id = bc.customer_id)) THEN 1 ELSE 0 END AS bit) AS isvisited
@@ -772,7 +773,10 @@ ORDER BY city.city_name ASC", cancellationToken);
             ("@last_name", lastName),
             ("@mobile", mobile),
             ("@contact_number", FirstNonEmpty(Value(body, "alternate_mobile"), Value(body, "whatsapp_number"), Value(body, "contact_number"))),
-            ("@email", NullIfEmpty(Value(body, "email"))),
+            // COALESCE-guarded below on update: a caller that never sent "email" leaves it
+            // alone, while one that sent it blank clears it.
+            ("@email", body.ContainsKey("email") ? NullIfEmpty(Value(body, "email")) : null),
+            ("@email_sent", body.ContainsKey("email") ? 1 : 0),
             ("@latitude", latitude),
             ("@longitude", longitude),
             ("@profile_image", profileImage),
@@ -796,7 +800,8 @@ ORDER BY city.city_name ASC", cancellationToken);
         {
             customerId = id.Value;
             await Execute(@"UPDATE customers SET active = @active, name = @name, first_name = @first_name, last_name = @last_name,
-mobile = @mobile, contact_number = @contact_number, email = @email, latitude = @latitude, longitude = @longitude,
+mobile = @mobile, contact_number = @contact_number,
+email = CASE WHEN @email_sent = 1 THEN @email ELSE email END, latitude = @latitude, longitude = @longitude,
 profile_image = COALESCE(@profile_image, profile_image), shop_image = COALESCE(@shop_image, shop_image),
 customer_code = @customer_code, status_id = @status_id, customertype = @customertype, firmtype = @firmtype,
 updated_by = @updated_by, executive_id = @executive_id, manager_name = @manager_name, manager_phone = @manager_phone,
@@ -807,7 +812,8 @@ sap_code = @sap_code, custom_fields = @custom_fields, updated_at = @now WHERE id
         {
             customerId = deletedCustomerId.Value;
             await Execute(@"UPDATE customers SET deleted_at = NULL, active = @active, name = @name, first_name = @first_name, last_name = @last_name,
-mobile = @mobile, contact_number = @contact_number, email = @email, latitude = @latitude, longitude = @longitude,
+mobile = @mobile, contact_number = @contact_number,
+email = CASE WHEN @email_sent = 1 THEN @email ELSE email END, latitude = @latitude, longitude = @longitude,
 profile_image = COALESCE(@profile_image, profile_image), shop_image = COALESCE(@shop_image, shop_image),
 customer_code = @customer_code, status_id = @status_id, customertype = @customertype, firmtype = @firmtype,
 updated_by = @updated_by, executive_id = @executive_id, manager_name = @manager_name, manager_phone = @manager_phone,
@@ -886,7 +892,7 @@ pincode_id, created_by, created_at, updated_at) OUTPUT INSERTED.id VALUES ('Y', 
     {
         var id = await ExistingId("customer_details", "customer_id", customerId, cancellationToken);
         var existingVisitStatusRow = id.HasValue
-            ? (await QueryRows("SELECT visit_status FROM customer_details WHERE id = @id LIMIT 1", cancellationToken, ("@id", id.Value))).FirstOrDefault()
+            ? (await QueryRows("SELECT TOP 1 visit_status FROM customer_details WHERE id = @id", cancellationToken, ("@id", id.Value))).FirstOrDefault()
             : null;
         var existingVisitStatus = existingVisitStatusRow is null ? null : Str(existingVisitStatusRow, "visit_status");
         var visitStatus = isDistributor
@@ -982,7 +988,7 @@ WHERE customer_id = @customer_id AND user_id = @user_id AND deleted_at IS NOT NU
     private async Task<ulong?> ExistingId(string table, string column, ulong value, CancellationToken cancellationToken)
     {
         var deletedFilter = table is "beat_customers" ? string.Empty : " AND deleted_at IS NULL";
-        var rows = await QueryRows($"SELECT id FROM {table} WHERE {column} = @value{deletedFilter} ORDER BY id DESC LIMIT 1", cancellationToken, ("@value", value));
+        var rows = await QueryRows($"SELECT TOP 1 id FROM {table} WHERE {column} = @value{deletedFilter} ORDER BY id DESC", cancellationToken, ("@value", value));
         var id = rows.FirstOrDefault();
         return id is null ? null : ULong(id, "id");
     }
@@ -992,7 +998,7 @@ WHERE customer_id = @customer_id AND user_id = @user_id AND deleted_at IS NOT NU
         var like = distributor ? "%Distributor%" : "%" + type + "%";
         var row = (await QueryRows(@"SELECT id FROM customer_types
 WHERE deleted_at IS NULL AND (customertype_name LIKE @type OR type_name LIKE @type)
-ORDER BY id ASC LIMIT 1", cancellationToken, ("@type", like))).FirstOrDefault();
+ORDER BY id ASC OFFSET 0 ROWS FETCH NEXT 1 ROWS ONLY", cancellationToken, ("@type", like))).FirstOrDefault();
         if (row is not null) return ULong(row, "id");
         return distributor ? 1UL : 2UL;
     }
@@ -1002,7 +1008,7 @@ ORDER BY id ASC LIMIT 1", cancellationToken, ("@type", like))).FirstOrDefault();
         var offset = (page - 1) * perPage;
         var (where, parameters) = await CustomerDistributorWhere(cancellationToken);
         var total = await QueryScalarLong($"SELECT COUNT(DISTINCT c.id) FROM customers c LEFT JOIN customer_types ctype ON ctype.id = c.customertype AND ctype.deleted_at IS NULL WHERE {where}", cancellationToken, parameters.ToArray());
-        var rows = await QueryRows($@"SELECT DISTINCT c.id,
+        var rows = await QueryRows($@"SELECT DISTINCT TOP 1 c.id,
 c.id AS customer_id,
 c.name AS legal_name,
 c.name AS trade_name,
@@ -1015,16 +1021,16 @@ c.sap_code,
 c.customertype,
 ctype.customertype_name,
 ctype.type_name,
-COALESCE(c.shop_image, JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.shop_image')), JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.shop_photo'))) AS shop_image,
+COALESCE(c.shop_image, JSON_VALUE(c.custom_fields, '$.shop_image'), JSON_VALUE(c.custom_fields, '$.shop_photo')) AS shop_image,
 CONCAT_WS(',', NULLIF(c.latitude, ''), NULLIF(c.longitude, '')) AS gps_location,
-COALESCE(cd.gstin_no, JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.gst_number')), JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.gstin_no'))) AS gst_number,
-COALESCE(cd.pan_no, JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.pan_number')), JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.pan_no'))) AS pan_number,
-JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.bank_account_type')) AS bank_account_type,
-COALESCE(cd.account_number, JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.bank_account_number')), JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.account_number'))) AS bank_account_number,
+COALESCE(cd.gstin_no, JSON_VALUE(c.custom_fields, '$.gst_number'), JSON_VALUE(c.custom_fields, '$.gstin_no')) AS gst_number,
+COALESCE(cd.pan_no, JSON_VALUE(c.custom_fields, '$.pan_number'), JSON_VALUE(c.custom_fields, '$.pan_no')) AS pan_number,
+JSON_VALUE(c.custom_fields, '$.bank_account_type') AS bank_account_type,
+COALESCE(cd.account_number, JSON_VALUE(c.custom_fields, '$.bank_account_number'), JSON_VALUE(c.custom_fields, '$.account_number')) AS bank_account_number,
 cd.bank_name,
-COALESCE(cd.ifsc_code, JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.ifsc_code')), JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.ifsc'))) AS ifsc_code,
-COALESCE(cd.account_holder, JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.account_holder_name')), JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.account_holder'))) AS account_holder_name,
-JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.registration_type')) AS registration_type,
+COALESCE(cd.ifsc_code, JSON_VALUE(c.custom_fields, '$.ifsc_code'), JSON_VALUE(c.custom_fields, '$.ifsc')) AS ifsc_code,
+COALESCE(cd.account_holder, JSON_VALUE(c.custom_fields, '$.account_holder_name'), JSON_VALUE(c.custom_fields, '$.account_holder')) AS account_holder_name,
+JSON_VALUE(c.custom_fields, '$.registration_type') AS registration_type,
 a.address1 AS billing_address,
 a.city_id AS billing_city,
 city.city_name AS billing_city_name,
@@ -1040,11 +1046,11 @@ u.name AS supervisor_name,
 c.created_at,
 c.updated_at,
 'customers' AS source_table,
-(SELECT ci.checkin_date FROM check_in ci WHERE (ci.entity_type = 'distributor' OR ci.customer_id = c.id) AND ci.entity_id = c.id AND ci.user_id = @auth_user ORDER BY ci.checkin_date DESC, ci.checkin_time DESC LIMIT 1) AS last_checkin_date,
-(SELECT ci.checkin_time FROM check_in ci WHERE (ci.entity_type = 'distributor' OR ci.customer_id = c.id) AND ci.entity_id = c.id AND ci.user_id = @auth_user ORDER BY ci.checkin_date DESC, ci.checkin_time DESC LIMIT 1) AS last_checkin_time,
+(SELECT TOP 1 ci.checkin_date FROM check_in ci WHERE (ci.entity_type = 'distributor' OR ci.customer_id = c.id) AND ci.entity_id = c.id AND ci.user_id = @auth_user ORDER BY ci.checkin_date DESC, ci.checkin_time DESC) AS last_checkin_date,
+(SELECT TOP 1 ci.checkin_time FROM check_in ci WHERE (ci.entity_type = 'distributor' OR ci.customer_id = c.id) AND ci.entity_id = c.id AND ci.user_id = @auth_user ORDER BY ci.checkin_date DESC, ci.checkin_time DESC) AS last_checkin_time,
 (SELECT IF(COUNT(*) > 0, 1, 0) FROM check_in ci WHERE (ci.entity_type = 'distributor' OR ci.customer_id = c.id) AND ci.entity_id = c.id AND ci.user_id = @auth_user AND ci.checkin_date = @today) AS has_checked_in_today,
 (SELECT IF(COUNT(*) > 0, 1, 0) FROM check_in ci WHERE (ci.entity_type = 'distributor' OR ci.customer_id = c.id) AND ci.entity_id = c.id AND ci.user_id = @auth_user AND ci.checkout_date IS NULL AND ci.checkin_date = @today) AS current_visit_is_open,
-(SELECT ci.id FROM check_in ci WHERE (ci.entity_type = 'distributor' OR ci.customer_id = c.id) AND ci.entity_id = c.id AND ci.user_id = @auth_user ORDER BY ci.checkin_date DESC, ci.checkin_time DESC LIMIT 1) AS last_checkin_id
+(SELECT TOP 1 ci.id FROM check_in ci WHERE (ci.entity_type = 'distributor' OR ci.customer_id = c.id) AND ci.entity_id = c.id AND ci.user_id = @auth_user ORDER BY ci.checkin_date DESC, ci.checkin_time DESC) AS last_checkin_id
 FROM customers c
 LEFT JOIN addresses a ON a.customer_id = c.id AND a.deleted_at IS NULL
 LEFT JOIN customer_details cd ON cd.customer_id = c.id AND cd.deleted_at IS NULL
@@ -1056,7 +1062,7 @@ LEFT JOIN customer_types ctype ON ctype.id = c.customertype AND ctype.deleted_at
 LEFT JOIN users u ON u.id = c.executive_id
 WHERE {where}
 ORDER BY c.created_at DESC, c.id DESC
-LIMIT {perPage} OFFSET {offset}", cancellationToken, parameters.ToArray());
+OFFSET {offset} ROWS FETCH NEXT {perPage} ROWS ONLY", cancellationToken, parameters.ToArray());
         return (rows, total);
     }
 
@@ -1076,16 +1082,16 @@ c.sap_code,
 c.customertype,
 ctype.customertype_name,
 ctype.type_name,
-COALESCE(c.shop_image, JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.shop_image')), JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.shop_photo'))) AS shop_image,
+COALESCE(c.shop_image, JSON_VALUE(c.custom_fields, '$.shop_image'), JSON_VALUE(c.custom_fields, '$.shop_photo')) AS shop_image,
 CONCAT_WS(',', NULLIF(c.latitude, ''), NULLIF(c.longitude, '')) AS gps_location,
-COALESCE(cd.gstin_no, JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.gst_number')), JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.gstin_no'))) AS gst_number,
-COALESCE(cd.pan_no, JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.pan_number')), JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.pan_no'))) AS pan_number,
-JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.bank_account_type')) AS bank_account_type,
-COALESCE(cd.account_number, JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.bank_account_number')), JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.account_number'))) AS bank_account_number,
+COALESCE(cd.gstin_no, JSON_VALUE(c.custom_fields, '$.gst_number'), JSON_VALUE(c.custom_fields, '$.gstin_no')) AS gst_number,
+COALESCE(cd.pan_no, JSON_VALUE(c.custom_fields, '$.pan_number'), JSON_VALUE(c.custom_fields, '$.pan_no')) AS pan_number,
+JSON_VALUE(c.custom_fields, '$.bank_account_type') AS bank_account_type,
+COALESCE(cd.account_number, JSON_VALUE(c.custom_fields, '$.bank_account_number'), JSON_VALUE(c.custom_fields, '$.account_number')) AS bank_account_number,
 cd.bank_name,
-COALESCE(cd.ifsc_code, JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.ifsc_code')), JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.ifsc'))) AS ifsc_code,
-COALESCE(cd.account_holder, JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.account_holder_name')), JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.account_holder'))) AS account_holder_name,
-JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.registration_type')) AS registration_type,
+COALESCE(cd.ifsc_code, JSON_VALUE(c.custom_fields, '$.ifsc_code'), JSON_VALUE(c.custom_fields, '$.ifsc')) AS ifsc_code,
+COALESCE(cd.account_holder, JSON_VALUE(c.custom_fields, '$.account_holder_name'), JSON_VALUE(c.custom_fields, '$.account_holder')) AS account_holder_name,
+JSON_VALUE(c.custom_fields, '$.registration_type') AS registration_type,
 a.address1 AS billing_address,
 a.city_id AS billing_city,
 city.city_name AS billing_city_name,
@@ -1110,8 +1116,7 @@ LEFT JOIN states s ON s.id = a.state_id
 LEFT JOIN pincodes p ON p.id = a.pincode_id
 LEFT JOIN customer_types ctype ON ctype.id = c.customertype AND ctype.deleted_at IS NULL
 LEFT JOIN users u ON u.id = c.executive_id
-WHERE {where}
-LIMIT 1", cancellationToken, parameters.ToArray())).FirstOrDefault();
+WHERE {where}", cancellationToken, parameters.ToArray())).FirstOrDefault();
     }
 
     private async Task<(IReadOnlyList<Dictionary<string, object?>> Rows, long Total)> FallbackSecondaryCustomers(string type, int page, int perPage, CancellationToken cancellationToken)
@@ -1121,16 +1126,16 @@ LIMIT 1", cancellationToken, parameters.ToArray())).FirstOrDefault();
         var total = await QueryScalarLong($@"SELECT COUNT(DISTINCT c.id)
 FROM customers c
 LEFT JOIN addresses a ON a.customer_id = c.id AND a.deleted_at IS NULL
-LEFT JOIN cities city ON city.id = COALESCE(a.city_id, CAST(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.city_id')), '') AS UNSIGNED))
+LEFT JOIN cities city ON city.id = COALESCE(a.city_id, TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.city_id'), '')))
 LEFT JOIN customer_details cd ON cd.customer_id = c.id AND cd.deleted_at IS NULL
 LEFT JOIN customer_types ctype ON ctype.id = c.customertype AND ctype.deleted_at IS NULL
 WHERE {where}", cancellationToken, parameters.ToArray());
         var rows = await QueryRows($@"SELECT DISTINCT c.id,
 c.id AS customer_id,
 @fallback_type AS type,
-	COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.owner_name')), ''), NULLIF(c.name, '')) AS owner_name,
-	COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.shop_name')), ''), NULLIF(c.name, '')) AS shop_name,
-	COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.mobile_number')), ''), NULLIF(c.mobile, '')) AS mobile_number,
+	COALESCE(NULLIF(JSON_VALUE(c.custom_fields, '$.owner_name'), ''), NULLIF(c.name, '')) AS owner_name,
+	COALESCE(NULLIF(JSON_VALUE(c.custom_fields, '$.shop_name'), ''), NULLIF(c.name, '')) AS shop_name,
+	COALESCE(NULLIF(JSON_VALUE(c.custom_fields, '$.mobile_number'), ''), NULLIF(c.mobile, '')) AS mobile_number,
 c.contact_number AS whatsapp_number,
 c.email,
 c.active,
@@ -1139,35 +1144,35 @@ c.sap_code,
 c.customertype,
 ctype.customertype_name,
 ctype.type_name,
-	NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.sub_type')), '') AS sub_type,
-	COALESCE(NULLIF(c.shop_image, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.shop_photo')), ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.shop_image')), '')) AS shop_photo,
+	NULLIF(JSON_VALUE(c.custom_fields, '$.sub_type'), '') AS sub_type,
+	COALESCE(NULLIF(c.shop_image, ''), NULLIF(JSON_VALUE(c.custom_fields, '$.shop_photo'), ''), NULLIF(JSON_VALUE(c.custom_fields, '$.shop_image'), '')) AS shop_photo,
 	CONCAT_WS(',', NULLIF(c.latitude, ''), NULLIF(c.longitude, '')) AS gps_location,
-	COALESCE(NULLIF(cd.gstin_no, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.gst_number')), ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.gstin_no')), '')) AS gst_number,
-	COALESCE(NULLIF(cd.pan_no, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.pan_number')), ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.pan_no')), '')) AS pan_number,
-	NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.gst_attachment')), '') AS gst_attachment,
-	NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.pan_attachment')), '') AS pan_attachment,
-	NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.aadhar_attachment')), '') AS aadhar_attachment,
-	COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.bank_proof')), ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.cancelled_cheque')), '')) AS bank_proof,
-	NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.bank_account_type')), '') AS bank_account_type,
-	COALESCE(NULLIF(cd.account_number, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.bank_account_number')), ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.account_number')), '')) AS bank_account_number,
-	COALESCE(NULLIF(cd.bank_name, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.bank_name')), '')) AS bank_name,
-	COALESCE(NULLIF(cd.ifsc_code, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.ifsc_code')), ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.ifsc')), '')) AS ifsc_code,
-	COALESCE(NULLIF(cd.account_holder, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.account_holder_name')), ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.account_holder')), '')) AS account_holder_name,
-	NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.remark')), '') AS remark,
-	NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.distributor_name')), '') AS distributor_name,
-	NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.agri_distributor')), '') AS agri_distributor,
-	NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.belt_area_market_name')), '') AS belt_area_market_name,
-	NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.saathi_awareness_status')), '') AS saathi_awareness_status,
-	COALESCE(NULLIF(a.address1, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.address_line')), '')) AS address_line,
-COALESCE(a.country_id, CAST(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.country_id')), '') AS UNSIGNED)) AS country_id,
+	COALESCE(NULLIF(cd.gstin_no, ''), NULLIF(JSON_VALUE(c.custom_fields, '$.gst_number'), ''), NULLIF(JSON_VALUE(c.custom_fields, '$.gstin_no'), '')) AS gst_number,
+	COALESCE(NULLIF(cd.pan_no, ''), NULLIF(JSON_VALUE(c.custom_fields, '$.pan_number'), ''), NULLIF(JSON_VALUE(c.custom_fields, '$.pan_no'), '')) AS pan_number,
+	NULLIF(JSON_VALUE(c.custom_fields, '$.gst_attachment'), '') AS gst_attachment,
+	NULLIF(JSON_VALUE(c.custom_fields, '$.pan_attachment'), '') AS pan_attachment,
+	NULLIF(JSON_VALUE(c.custom_fields, '$.aadhar_attachment'), '') AS aadhar_attachment,
+	COALESCE(NULLIF(JSON_VALUE(c.custom_fields, '$.bank_proof'), ''), NULLIF(JSON_VALUE(c.custom_fields, '$.cancelled_cheque'), '')) AS bank_proof,
+	NULLIF(JSON_VALUE(c.custom_fields, '$.bank_account_type'), '') AS bank_account_type,
+	COALESCE(NULLIF(cd.account_number, ''), NULLIF(JSON_VALUE(c.custom_fields, '$.bank_account_number'), ''), NULLIF(JSON_VALUE(c.custom_fields, '$.account_number'), '')) AS bank_account_number,
+	COALESCE(NULLIF(cd.bank_name, ''), NULLIF(JSON_VALUE(c.custom_fields, '$.bank_name'), '')) AS bank_name,
+	COALESCE(NULLIF(cd.ifsc_code, ''), NULLIF(JSON_VALUE(c.custom_fields, '$.ifsc_code'), ''), NULLIF(JSON_VALUE(c.custom_fields, '$.ifsc'), '')) AS ifsc_code,
+	COALESCE(NULLIF(cd.account_holder, ''), NULLIF(JSON_VALUE(c.custom_fields, '$.account_holder_name'), ''), NULLIF(JSON_VALUE(c.custom_fields, '$.account_holder'), '')) AS account_holder_name,
+	NULLIF(JSON_VALUE(c.custom_fields, '$.remark'), '') AS remark,
+	NULLIF(JSON_VALUE(c.custom_fields, '$.distributor_name'), '') AS distributor_name,
+	NULLIF(JSON_VALUE(c.custom_fields, '$.agri_distributor'), '') AS agri_distributor,
+	NULLIF(JSON_VALUE(c.custom_fields, '$.belt_area_market_name'), '') AS belt_area_market_name,
+	NULLIF(JSON_VALUE(c.custom_fields, '$.saathi_awareness_status'), '') AS saathi_awareness_status,
+	COALESCE(NULLIF(a.address1, ''), NULLIF(JSON_VALUE(c.custom_fields, '$.address_line'), '')) AS address_line,
+COALESCE(a.country_id, TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.country_id'), ''))) AS country_id,
 co.country_name,
-COALESCE(a.state_id, CAST(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.state_id')), '') AS UNSIGNED)) AS state_id,
+COALESCE(a.state_id, TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.state_id'), ''))) AS state_id,
 s.state_name,
-COALESCE(a.district_id, CAST(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.district_id')), '') AS UNSIGNED)) AS district_id,
+COALESCE(a.district_id, TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.district_id'), ''))) AS district_id,
 d.district_name,
-COALESCE(a.city_id, CAST(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.city_id')), '') AS UNSIGNED)) AS city_id,
+COALESCE(a.city_id, TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.city_id'), ''))) AS city_id,
 city.city_name,
-COALESCE(a.pincode_id, CAST(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.pincode_id')), '') AS UNSIGNED)) AS pincode_id,
+COALESCE(a.pincode_id, TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.pincode_id'), ''))) AS pincode_id,
 p.pincode AS pincode_value,
 bc.beat_id,
 b.beat_name,
@@ -1178,20 +1183,20 @@ c.executive_id AS employee_id,
 c.created_at,
 c.updated_at,
 'customers' AS source_table,
-(SELECT ci.checkin_date FROM check_in ci WHERE (ci.entity_type = 'secondary_customer' OR ci.customer_id = c.id) AND ci.entity_id = c.id AND ci.user_id = @auth_user ORDER BY ci.checkin_date DESC, ci.checkin_time DESC LIMIT 1) AS last_checkin_date,
-(SELECT ci.checkin_time FROM check_in ci WHERE (ci.entity_type = 'secondary_customer' OR ci.customer_id = c.id) AND ci.entity_id = c.id AND ci.user_id = @auth_user ORDER BY ci.checkin_date DESC, ci.checkin_time DESC LIMIT 1) AS last_checkin_time,
-(SELECT ci.checkout_date FROM check_in ci WHERE (ci.entity_type = 'secondary_customer' OR ci.customer_id = c.id) AND ci.entity_id = c.id AND ci.user_id = @auth_user ORDER BY ci.checkin_date DESC, ci.checkin_time DESC LIMIT 1) AS last_checkout_date,
-(SELECT ci.checkout_time FROM check_in ci WHERE (ci.entity_type = 'secondary_customer' OR ci.customer_id = c.id) AND ci.entity_id = c.id AND ci.user_id = @auth_user ORDER BY ci.checkin_date DESC, ci.checkin_time DESC LIMIT 1) AS last_checkout_time,
+(SELECT TOP 1 ci.checkin_date FROM check_in ci WHERE (ci.entity_type = 'secondary_customer' OR ci.customer_id = c.id) AND ci.entity_id = c.id AND ci.user_id = @auth_user ORDER BY ci.checkin_date DESC, ci.checkin_time DESC) AS last_checkin_date,
+(SELECT TOP 1 ci.checkin_time FROM check_in ci WHERE (ci.entity_type = 'secondary_customer' OR ci.customer_id = c.id) AND ci.entity_id = c.id AND ci.user_id = @auth_user ORDER BY ci.checkin_date DESC, ci.checkin_time DESC) AS last_checkin_time,
+(SELECT TOP 1 ci.checkout_date FROM check_in ci WHERE (ci.entity_type = 'secondary_customer' OR ci.customer_id = c.id) AND ci.entity_id = c.id AND ci.user_id = @auth_user ORDER BY ci.checkin_date DESC, ci.checkin_time DESC) AS last_checkout_date,
+(SELECT TOP 1 ci.checkout_time FROM check_in ci WHERE (ci.entity_type = 'secondary_customer' OR ci.customer_id = c.id) AND ci.entity_id = c.id AND ci.user_id = @auth_user ORDER BY ci.checkin_date DESC, ci.checkin_time DESC) AS last_checkout_time,
 (SELECT IF(COUNT(*) > 0, 1, 0) FROM check_in ci WHERE (ci.entity_type = 'secondary_customer' OR ci.customer_id = c.id) AND ci.entity_id = c.id AND ci.user_id = @auth_user AND ci.checkin_date = @today) AS has_checked_in_today,
 (SELECT IF(COUNT(*) > 0, 1, 0) FROM check_in ci WHERE (ci.entity_type = 'secondary_customer' OR ci.customer_id = c.id) AND ci.entity_id = c.id AND ci.user_id = @auth_user AND ci.checkout_date IS NULL AND ci.checkin_date = @today) AS current_visit_is_open,
-(SELECT ci.id FROM check_in ci WHERE (ci.entity_type = 'secondary_customer' OR ci.customer_id = c.id) AND ci.entity_id = c.id AND ci.user_id = @auth_user ORDER BY ci.checkin_date DESC, ci.checkin_time DESC LIMIT 1) AS last_checkin_id
+(SELECT TOP 1 ci.id FROM check_in ci WHERE (ci.entity_type = 'secondary_customer' OR ci.customer_id = c.id) AND ci.entity_id = c.id AND ci.user_id = @auth_user ORDER BY ci.checkin_date DESC, ci.checkin_time DESC) AS last_checkin_id
 FROM customers c
 LEFT JOIN addresses a ON a.customer_id = c.id AND a.deleted_at IS NULL
-LEFT JOIN countries co ON co.id = COALESCE(a.country_id, CAST(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.country_id')), '') AS UNSIGNED))
-LEFT JOIN states s ON s.id = COALESCE(a.state_id, CAST(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.state_id')), '') AS UNSIGNED))
-LEFT JOIN districts d ON d.id = COALESCE(a.district_id, CAST(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.district_id')), '') AS UNSIGNED))
-LEFT JOIN cities city ON city.id = COALESCE(a.city_id, CAST(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.city_id')), '') AS UNSIGNED))
-LEFT JOIN pincodes p ON p.id = COALESCE(a.pincode_id, CAST(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.pincode_id')), '') AS UNSIGNED))
+LEFT JOIN countries co ON co.id = COALESCE(a.country_id, TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.country_id'), '')))
+LEFT JOIN states s ON s.id = COALESCE(a.state_id, TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.state_id'), '')))
+LEFT JOIN districts d ON d.id = COALESCE(a.district_id, TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.district_id'), '')))
+LEFT JOIN cities city ON city.id = COALESCE(a.city_id, TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.city_id'), '')))
+LEFT JOIN pincodes p ON p.id = COALESCE(a.pincode_id, TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.pincode_id'), '')))
 LEFT JOIN customer_details cd ON cd.customer_id = c.id AND cd.deleted_at IS NULL
 LEFT JOIN customer_types ctype ON ctype.id = c.customertype AND ctype.deleted_at IS NULL
 LEFT JOIN beat_customers bc ON bc.customer_id = c.id
@@ -1199,7 +1204,7 @@ LEFT JOIN beats b ON b.id = bc.beat_id
 LEFT JOIN users creator ON creator.id = c.created_by
 WHERE {where}
 ORDER BY c.created_at DESC, c.id DESC
-LIMIT {perPage} OFFSET {offset}", cancellationToken, parameters.ToArray());
+OFFSET {offset} ROWS FETCH NEXT {perPage} ROWS ONLY", cancellationToken, parameters.ToArray());
         return (rows, total);
     }
 
@@ -1210,9 +1215,10 @@ LIMIT {perPage} OFFSET {offset}", cancellationToken, parameters.ToArray());
         return (await QueryRows($@"SELECT DISTINCT c.id,
 c.id AS customer_id,
 @fallback_type AS type,
-	COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.owner_name')), ''), NULLIF(c.name, '')) AS owner_name,
-	COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.shop_name')), ''), NULLIF(c.name, '')) AS shop_name,
-	COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.mobile_number')), ''), NULLIF(c.mobile, '')) AS mobile_number,
+c.custom_fields,
+	COALESCE(NULLIF(JSON_VALUE(c.custom_fields, '$.owner_name'), ''), NULLIF(c.name, '')) AS owner_name,
+	COALESCE(NULLIF(JSON_VALUE(c.custom_fields, '$.shop_name'), ''), NULLIF(c.name, '')) AS shop_name,
+	COALESCE(NULLIF(JSON_VALUE(c.custom_fields, '$.mobile_number'), ''), NULLIF(c.mobile, '')) AS mobile_number,
 c.contact_number AS whatsapp_number,
 c.email,
 c.active,
@@ -1221,35 +1227,35 @@ c.sap_code,
 c.customertype,
 ctype.customertype_name,
 ctype.type_name,
-	NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.sub_type')), '') AS sub_type,
-	COALESCE(NULLIF(c.shop_image, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.shop_photo')), ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.shop_image')), '')) AS shop_photo,
+	NULLIF(JSON_VALUE(c.custom_fields, '$.sub_type'), '') AS sub_type,
+	COALESCE(NULLIF(c.shop_image, ''), NULLIF(JSON_VALUE(c.custom_fields, '$.shop_photo'), ''), NULLIF(JSON_VALUE(c.custom_fields, '$.shop_image'), '')) AS shop_photo,
 	CONCAT_WS(',', NULLIF(c.latitude, ''), NULLIF(c.longitude, '')) AS gps_location,
-	COALESCE(NULLIF(cd.gstin_no, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.gst_number')), ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.gstin_no')), '')) AS gst_number,
-	COALESCE(NULLIF(cd.pan_no, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.pan_number')), ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.pan_no')), '')) AS pan_number,
-	NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.gst_attachment')), '') AS gst_attachment,
-	NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.pan_attachment')), '') AS pan_attachment,
-	NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.aadhar_attachment')), '') AS aadhar_attachment,
-	COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.bank_proof')), ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.cancelled_cheque')), '')) AS bank_proof,
-	NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.bank_account_type')), '') AS bank_account_type,
-	COALESCE(NULLIF(cd.account_number, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.bank_account_number')), ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.account_number')), '')) AS bank_account_number,
-	COALESCE(NULLIF(cd.bank_name, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.bank_name')), '')) AS bank_name,
-	COALESCE(NULLIF(cd.ifsc_code, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.ifsc_code')), ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.ifsc')), '')) AS ifsc_code,
-	COALESCE(NULLIF(cd.account_holder, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.account_holder_name')), ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.account_holder')), '')) AS account_holder_name,
-	NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.remark')), '') AS remark,
-	NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.distributor_name')), '') AS distributor_name,
-	NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.agri_distributor')), '') AS agri_distributor,
-	NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.belt_area_market_name')), '') AS belt_area_market_name,
-	NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.saathi_awareness_status')), '') AS saathi_awareness_status,
-	COALESCE(NULLIF(a.address1, ''), NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.address_line')), '')) AS address_line,
-COALESCE(a.country_id, CAST(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.country_id')), '') AS UNSIGNED)) AS country_id,
+	COALESCE(NULLIF(cd.gstin_no, ''), NULLIF(JSON_VALUE(c.custom_fields, '$.gst_number'), ''), NULLIF(JSON_VALUE(c.custom_fields, '$.gstin_no'), '')) AS gst_number,
+	COALESCE(NULLIF(cd.pan_no, ''), NULLIF(JSON_VALUE(c.custom_fields, '$.pan_number'), ''), NULLIF(JSON_VALUE(c.custom_fields, '$.pan_no'), '')) AS pan_number,
+	NULLIF(JSON_VALUE(c.custom_fields, '$.gst_attachment'), '') AS gst_attachment,
+	NULLIF(JSON_VALUE(c.custom_fields, '$.pan_attachment'), '') AS pan_attachment,
+	NULLIF(JSON_VALUE(c.custom_fields, '$.aadhar_attachment'), '') AS aadhar_attachment,
+	COALESCE(NULLIF(JSON_VALUE(c.custom_fields, '$.bank_proof'), ''), NULLIF(JSON_VALUE(c.custom_fields, '$.cancelled_cheque'), '')) AS bank_proof,
+	NULLIF(JSON_VALUE(c.custom_fields, '$.bank_account_type'), '') AS bank_account_type,
+	COALESCE(NULLIF(cd.account_number, ''), NULLIF(JSON_VALUE(c.custom_fields, '$.bank_account_number'), ''), NULLIF(JSON_VALUE(c.custom_fields, '$.account_number'), '')) AS bank_account_number,
+	COALESCE(NULLIF(cd.bank_name, ''), NULLIF(JSON_VALUE(c.custom_fields, '$.bank_name'), '')) AS bank_name,
+	COALESCE(NULLIF(cd.ifsc_code, ''), NULLIF(JSON_VALUE(c.custom_fields, '$.ifsc_code'), ''), NULLIF(JSON_VALUE(c.custom_fields, '$.ifsc'), '')) AS ifsc_code,
+	COALESCE(NULLIF(cd.account_holder, ''), NULLIF(JSON_VALUE(c.custom_fields, '$.account_holder_name'), ''), NULLIF(JSON_VALUE(c.custom_fields, '$.account_holder'), '')) AS account_holder_name,
+	NULLIF(JSON_VALUE(c.custom_fields, '$.remark'), '') AS remark,
+	NULLIF(JSON_VALUE(c.custom_fields, '$.distributor_name'), '') AS distributor_name,
+	NULLIF(JSON_VALUE(c.custom_fields, '$.agri_distributor'), '') AS agri_distributor,
+	NULLIF(JSON_VALUE(c.custom_fields, '$.belt_area_market_name'), '') AS belt_area_market_name,
+	NULLIF(JSON_VALUE(c.custom_fields, '$.saathi_awareness_status'), '') AS saathi_awareness_status,
+	COALESCE(NULLIF(a.address1, ''), NULLIF(JSON_VALUE(c.custom_fields, '$.address_line'), '')) AS address_line,
+COALESCE(a.country_id, TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.country_id'), ''))) AS country_id,
 co.country_name,
-COALESCE(a.state_id, CAST(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.state_id')), '') AS UNSIGNED)) AS state_id,
+COALESCE(a.state_id, TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.state_id'), ''))) AS state_id,
 s.state_name,
-COALESCE(a.district_id, CAST(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.district_id')), '') AS UNSIGNED)) AS district_id,
+COALESCE(a.district_id, TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.district_id'), ''))) AS district_id,
 d.district_name,
-COALESCE(a.city_id, CAST(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.city_id')), '') AS UNSIGNED)) AS city_id,
+COALESCE(a.city_id, TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.city_id'), ''))) AS city_id,
 city.city_name,
-COALESCE(a.pincode_id, CAST(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.pincode_id')), '') AS UNSIGNED)) AS pincode_id,
+COALESCE(a.pincode_id, TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.pincode_id'), ''))) AS pincode_id,
 p.pincode AS pincode_value,
 bc.beat_id,
 b.beat_name,
@@ -1262,18 +1268,17 @@ c.updated_at,
 'customers' AS source_table
 FROM customers c
 LEFT JOIN addresses a ON a.customer_id = c.id AND a.deleted_at IS NULL
-LEFT JOIN countries co ON co.id = COALESCE(a.country_id, CAST(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.country_id')), '') AS UNSIGNED))
-LEFT JOIN states s ON s.id = COALESCE(a.state_id, CAST(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.state_id')), '') AS UNSIGNED))
-LEFT JOIN districts d ON d.id = COALESCE(a.district_id, CAST(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.district_id')), '') AS UNSIGNED))
-LEFT JOIN cities city ON city.id = COALESCE(a.city_id, CAST(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.city_id')), '') AS UNSIGNED))
-LEFT JOIN pincodes p ON p.id = COALESCE(a.pincode_id, CAST(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.custom_fields, '$.pincode_id')), '') AS UNSIGNED))
+LEFT JOIN countries co ON co.id = COALESCE(a.country_id, TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.country_id'), '')))
+LEFT JOIN states s ON s.id = COALESCE(a.state_id, TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.state_id'), '')))
+LEFT JOIN districts d ON d.id = COALESCE(a.district_id, TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.district_id'), '')))
+LEFT JOIN cities city ON city.id = COALESCE(a.city_id, TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.city_id'), '')))
+LEFT JOIN pincodes p ON p.id = COALESCE(a.pincode_id, TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.pincode_id'), '')))
 LEFT JOIN customer_details cd ON cd.customer_id = c.id AND cd.deleted_at IS NULL
 LEFT JOIN customer_types ctype ON ctype.id = c.customertype AND ctype.deleted_at IS NULL
 LEFT JOIN beat_customers bc ON bc.customer_id = c.id
 LEFT JOIN beats b ON b.id = bc.beat_id
 LEFT JOIN users creator ON creator.id = c.created_by
-WHERE {where}
-LIMIT 1", cancellationToken, parameters.ToArray())).FirstOrDefault();
+WHERE {where}", cancellationToken, parameters.ToArray())).FirstOrDefault();
     }
 
     private async Task<(string Where, List<(string, object?)> Parameters)> CustomerDistributorWhere(CancellationToken cancellationToken, ulong? id = null)
@@ -1355,6 +1360,17 @@ LIMIT 1", cancellationToken, parameters.ToArray())).FirstOrDefault();
         {
             where.Add("COALESCE(NULLIF(UPPER(LTRIM(RTRIM(JSON_VALUE(c.custom_fields, '$.status')))), ''), NULLIF(UPPER(LTRIM(RTRIM(cd.visit_status))), ''), 'PENDING') = UPPER(@status)");
             parameters.Add(("@status", status.Trim()));
+        }
+
+        // KYC is complete only when all four documents are approved, the same rule the KYC
+        // screen and the invoice tile apply. "pending" also asks for retailers who have
+        // traded, so the filtered list matches the count that opened it.
+        var kyc = Request.Query["kyc"].ToString();
+        if (!string.IsNullOrWhiteSpace(kyc))
+        {
+            where.Add(KycApprovedSql + (kyc.Trim().Equals("approved", StringComparison.OrdinalIgnoreCase) ? " = 1" : " = 0"));
+            if (!kyc.Trim().Equals("approved", StringComparison.OrdinalIgnoreCase))
+                where.Add("EXISTS (SELECT 1 FROM new_invoices ni WHERE ni.secondary_customer_id = c.id)");
         }
 
         var access = await AssignedCustomerAccess(CurrentUserId(), cancellationToken, includeHrAndHo: true);
@@ -1541,7 +1557,56 @@ AND {customerTypePredicate}", cancellationToken,
         ["account_holder_name"] = FirstNonEmpty(Str(row, "account_holder_name"), Str(row, "account_holder"))
     };
 
-    private Dictionary<string, object?> RetailerDetails(Dictionary<string, object?> row) => new(StringComparer.OrdinalIgnoreCase)
+    /// <summary>The customer, as the field app reads it back.
+    ///
+    /// Everything the app posted is stored in custom_fields, so everything stored is
+    /// handed back - the curated entries below then override the ones that need shaping
+    /// (a storage path, a joined city name, a coalesced fallback).
+    ///
+    /// It used to return only the curated list. Fifty-eight fields the form posts were
+    /// never returned, so the form re-opened them blank and posted the blanks back, which
+    /// erased them - an email typed in the CRM survived exactly until someone opened that
+    /// customer in the field app.</summary>
+    private Dictionary<string, object?> RetailerDetails(Dictionary<string, object?> row)
+    {
+        var details = StoredFields(row);
+        foreach (var item in CuratedRetailerDetails(row)) details[item.Key] = item.Value;
+        return details;
+    }
+
+    /// <summary>Whatever custom_fields holds, plus the columns the app knows by name.</summary>
+    private static Dictionary<string, object?> StoredFields(Dictionary<string, object?> row)
+    {
+        var stored = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        var json = Str(row, "custom_fields");
+        if (!string.IsNullOrWhiteSpace(json))
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(json);
+                if (document.RootElement.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var property in document.RootElement.EnumerateObject())
+                    {
+                        stored[property.Name] = JsonValue(property.Value);
+                    }
+                }
+            }
+            catch (JsonException)
+            {
+                // A malformed document is not worth failing the whole read over.
+            }
+        }
+
+        // Columns the form posts and reads under these names.
+        stored["email"] = Str(row, "email");
+        stored["active"] = Str(row, "active");
+        stored["sap_code"] = Str(row, "sap_code");
+        stored["customer_code"] = Str(row, "customer_code");
+        return stored;
+    }
+
+    private Dictionary<string, object?> CuratedRetailerDetails(Dictionary<string, object?> row) => new(StringComparer.OrdinalIgnoreCase)
     {
         ["id"] = ULong(row, "id"),
         ["shop_photo"] = MobileStoragePath(FirstNonEmpty(Str(row, "shop_photo"), Str(row, "shop_image"))),
@@ -1660,8 +1725,7 @@ FROM check_in
 WHERE user_id = @user_id
 AND deleted_at IS NULL
 AND ((entity_type = @entity_type AND entity_id = @entity_id) OR customer_id = @entity_id)
-ORDER BY checkin_date DESC, checkin_time DESC, id DESC
-LIMIT 1", cancellationToken,
+ORDER BY checkin_date DESC, checkin_time DESC, id DESC", cancellationToken,
             ("@user_id", CurrentUserId()), ("@entity_type", entityType), ("@entity_id", entityId))).FirstOrDefault();
 
         return new
@@ -1840,7 +1904,7 @@ WHERE id = @user_id AND deleted_at IS NULL", cancellationToken, ("@user_id", cur
 
     private async Task<Dictionary<string, object?>> ExistingCustomFields(ulong customerId, CancellationToken cancellationToken)
     {
-        var row = (await QueryRows("SELECT custom_fields FROM customers WHERE id = @id LIMIT 1", cancellationToken, ("@id", customerId))).FirstOrDefault();
+        var row = (await QueryRows("SELECT TOP 1 custom_fields FROM customers WHERE id = @id", cancellationToken, ("@id", customerId))).FirstOrDefault();
         var json = row is null ? null : Str(row, "custom_fields");
         if (string.IsNullOrWhiteSpace(json)) return new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
 
@@ -1942,11 +2006,27 @@ WHERE id = @user_id AND deleted_at IS NULL", cancellationToken, ("@user_id", cur
         _ => null
     };
 
+    /// <summary>A stored path only counts as public when it carries an http(s) scheme.
+    /// Uri.TryCreate cannot answer this: on Linux it reads "/public/..." as file://.</summary>
+    private static bool IsPublicUrl(string value) =>
+        value.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+        || value.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>1 when every KYC document is approved, 0 otherwise - the same rule the
+    /// KYC screen applies. The Loyalty invoice tab counts through this very endpoint, so
+    /// the number on its tile is by construction the list this filter returns.</summary>
+    private const string KycApprovedSql = @"(CASE WHEN LOWER(ISNULL(JSON_VALUE(c.custom_fields, '$.gst_kyc_status'), '')) = 'approved'
+    AND LOWER(ISNULL(JSON_VALUE(c.custom_fields, '$.pan_kyc_status'), '')) = 'approved'
+    AND LOWER(ISNULL(JSON_VALUE(c.custom_fields, '$.aadhar_kyc_status'), '')) = 'approved'
+    AND LOWER(ISNULL(JSON_VALUE(c.custom_fields, '$.bank_kyc_status'), '')) = 'approved' THEN 1 ELSE 0 END)";
+
     private static string MobileStoragePath(string? path)
     {
         var value = FirstNonEmpty(path);
         if (value is null) return string.Empty;
-        if (Uri.TryCreate(value, UriKind.Absolute, out _)) return value;
+        // A leading-slash path is not a public URL, but Uri.TryCreate would call it one
+        // on Linux (file://), which skips the normalization below and breaks the link.
+        if (IsPublicUrl(value)) return value;
         value = value.Replace("\\", "/", StringComparison.Ordinal).TrimStart('/');
         if (value.StartsWith("public/storage/", StringComparison.OrdinalIgnoreCase)) return value["public/".Length..];
         if (value.StartsWith("storage/", StringComparison.OrdinalIgnoreCase)) return value;
@@ -1955,7 +2035,47 @@ WHERE id = @user_id AND deleted_at IS NULL", cancellationToken, ("@user_id", cur
 
     private static DateTime? ParseDate(string? value) => DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var date) ? date.Date : null;
     private static List<ulong> ParseIds(string? csv) => (csv ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(x => ulong.TryParse(x, out var id) ? id : 0).Where(id => id > 0).Distinct().ToList();
-    private static Dictionary<string, object?> CleanRow(Dictionary<string, object?> row) => row.ToDictionary(pair => pair.Key, pair => pair.Value is DateTime date ? date.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) : pair.Value, StringComparer.OrdinalIgnoreCase);
+    /// <summary>A row as the field app reads it.
+    ///
+    /// Half a customer lives in custom_fields - the secondary email, the billing and
+    /// shipping address, the bank details, the trade figures. The app reads those by name
+    /// at the top level, so they are lifted out of the document here. Without this the
+    /// form opened them blank and posted the blanks back, erasing them.
+    ///
+    /// The document is laid down first and the real columns over it: where both carry a
+    /// value the column is the one that was written last, so it wins.</summary>
+    private static Dictionary<string, object?> CleanRow(Dictionary<string, object?> row)
+    {
+        var flattened = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+
+        if (row.TryGetValue("custom_fields", out var raw) && raw is string json && !string.IsNullOrWhiteSpace(json))
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(json);
+                if (document.RootElement.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var property in document.RootElement.EnumerateObject())
+                    {
+                        flattened[property.Name] = JsonValue(property.Value);
+                    }
+                }
+            }
+            catch (JsonException)
+            {
+                // A malformed document should not cost the caller the whole row.
+            }
+        }
+
+        foreach (var pair in row)
+        {
+            flattened[pair.Key] = pair.Value is DateTime date
+                ? date.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)
+                : pair.Value;
+        }
+
+        return flattened;
+    }
     private static object? Obj(Dictionary<string, object?> row, string key) => row.TryGetValue(key, out var value) && value is not DBNull ? value : null;
     private static string Str(Dictionary<string, object?> row, string key) => Convert.ToString(Obj(row, key), CultureInfo.InvariantCulture) ?? string.Empty;
     private static ulong ULong(Dictionary<string, object?> row, string key) => Obj(row, key) is null ? 0 : Convert.ToUInt64(Obj(row, key), CultureInfo.InvariantCulture);

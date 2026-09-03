@@ -113,7 +113,7 @@ public sealed class ReportManagementController : ControllerBase
             .Select(x => new { UserId = x.UserId!.Value, x.Year, x.Month, x.Target }).ToListAsync(ct);
         var orders = await _db.Orders.AsNoTracking().Where(x => x.CreatedBy.HasValue && userIds.Contains(x.CreatedBy.Value)
             && x.OrderDate >= rangeStart && x.OrderDate < rangeEnd && x.DeletedAt == null)
-            .Select(x => new { UserId = x.CreatedBy!.Value, x.OrderDate, x.SubTotal }).ToListAsync(ct);
+            .Select(x => new { UserId = x.CreatedBy!.Value, x.OrderDate, Value = x.GrandTotal }).ToListAsync(ct);
 
         List<Dictionary<string, object?>> visitRows = userIds.Length == 0 ? [] : await Query($@"SELECT CAST(user_id AS bigint) user_id,
 YEAR(checkin_date) visit_year, MONTH(checkin_date) visit_month, COUNT_BIG(*) visit_count
@@ -170,7 +170,7 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
                     && (string.Equals(x.Month, monthStart.ToString("MMM", CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase)
                         || string.Equals(x.Month, monthStart.ToString("MMMM", CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase)))
                     .Sum(x => x.Target ?? 0m);
-                var orderValue = orders.Where(x => x.UserId == user.Id && x.OrderDate >= monthStart && x.OrderDate < monthEnd).Sum(x => x.SubTotal);
+                var orderValue = orders.Where(x => x.UserId == user.Id && x.OrderDate >= monthStart && x.OrderDate < monthEnd).Sum(x => x.Value);
                 var achievement = orderValue > 1m ? Math.Round((orderValue - orderValue / 100m) / 100000m, 2) : 0m;
                     // A closed month is scored against the full targets; the one still running
                     // against the part of them its elapsed days have earned.
@@ -472,7 +472,7 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
 
         using var workbook = new XLWorkbook();
         var sheet = workbook.Worksheets.Add("ASR Performance");
-        var headers = new[] { "Employees Code", "Employees Name", "Daily Visit Target", "Total Working Days", "Total Visit Target", "Total Customers Visited", "Adherance %", "Total Productive Visits", "Productivity %", "New Counter Added", "Total Order Qty", "Total Order Value", "Unique SKU Ordered", "Total Cumulative Counter", "ZONE", "Branch", "Designation", "Reporting Manager" };
+        var headers = new[] { "Employees Code", "Employees Name", "Daily Visit Target", "Total Working Days", "Total Visit Target", "Total Visits", "Adherance %", "Total Productive Visits", "Productivity %", "New Counter Added", "Total Order Qty", "Total Order Value", "Unique SKU Ordered", "Total Cumulative Counter", "ZONE", "Branch", "Designation", "Reporting Manager" };
         for (var column = 0; column < headers.Length; column++) sheet.Cell(1, column + 1).Value = headers[column];
         var outputRow = 2;
         foreach (var zoneGroup in rows.GroupBy(x => x.Zone))
@@ -566,10 +566,15 @@ ORDER BY s.created_at DESC, s.id DESC, sd.id ASC", cancellationToken);
     private static string Str(IReadOnlyDictionary<string, object?> row, string key) => Convert.ToString(Obj(row, key), CultureInfo.InvariantCulture) ?? string.Empty;
     private static ulong ULong(IReadOnlyDictionary<string, object?> row, string key) => Obj(row, key) is null ? 0 : Convert.ToUInt64(Obj(row, key), CultureInfo.InvariantCulture);
 
+    /// <summary>Every check-in is a visit, including a repeat visit to a customer already
+    /// seen. The ASR performance report and the rating report share this one definition so
+    /// the same employee cannot show two different visit totals in two reports.</summary>
     private async Task<Dictionary<ulong, int>> VisitCounts(ulong[] userIds, DateOnly start, DateOnly end, CancellationToken ct)
     {
         if (userIds.Length == 0) return [];
-        var rows = await Query($"SELECT CAST(user_id AS bigint) user_id, COUNT(DISTINCT COALESCE(entity_id, customer_id)) visit_count FROM check_in WHERE deleted_at IS NULL AND checkin_date >= '{start:yyyy-MM-dd}' AND checkin_date <= '{end:yyyy-MM-dd}' AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id", ct);
+        var rows = await Query($@"SELECT CAST(user_id AS bigint) user_id, COUNT_BIG(*) visit_count
+FROM check_in WHERE deleted_at IS NULL AND checkin_date >= '{start:yyyy-MM-dd}' AND checkin_date <= '{end:yyyy-MM-dd}'
+AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id", ct);
         return rows.ToDictionary(x => ULong(x, "user_id"), x => Convert.ToInt32(Obj(x, "visit_count"), CultureInfo.InvariantCulture));
     }
 
@@ -581,15 +586,6 @@ SELECT CAST(executive_id AS bigint) user_id, CAST(id AS bigint) customer_id FROM
 UNION SELECT CAST(user_id AS bigint), CAST(customer_id AS bigint) FROM employee_details WHERE deleted_at IS NULL AND user_id IN ({string.Join(',', userIds)})
 ) assignments GROUP BY user_id", ct);
         return rows.ToDictionary(x => ULong(x, "user_id"), x => Convert.ToInt32(Obj(x, "customer_count"), CultureInfo.InvariantCulture));
-    }
-
-    private async Task<Dictionary<ulong, int>> RatingVisitCounts(ulong[] userIds, DateOnly start, DateOnly end, CancellationToken ct)
-    {
-        if (userIds.Length == 0) return [];
-        var rows = await Query($@"SELECT CAST(user_id AS bigint) user_id, COUNT_BIG(*) visit_count
-FROM check_in WHERE deleted_at IS NULL AND checkin_date >= '{start:yyyy-MM-dd}' AND checkin_date <= '{end:yyyy-MM-dd}'
-AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id", ct);
-        return rows.ToDictionary(x => ULong(x, "user_id"), x => Convert.ToInt32(Obj(x, "visit_count"), CultureInfo.InvariantCulture));
     }
 
     private async Task<List<RetailerAssignmentPeriod>> RetailerAssignmentPeriods(ulong[] userIds, DateTime rangeEnd, CancellationToken ct)
@@ -756,8 +752,8 @@ assigned_at, unassigned_at FROM (
             var targets = await _db.SalesTargetUsers.AsNoTracking().Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value)
                 && x.Year.HasValue && targetYears.Contains(x.Year.Value) && x.Month != null && targetMonths.Contains(x.Month)).Select(x => new { UserId = x.UserId!.Value, x.Year, x.Month, x.Target }).ToListAsync(ct);
             var orders = await _db.Orders.AsNoTracking().Where(x => x.CreatedBy.HasValue && userIds.Contains(x.CreatedBy.Value)
-                && x.OrderDate >= periodStart && x.OrderDate < periodEnd && x.DeletedAt == null).Select(x => new { UserId = x.CreatedBy!.Value, x.SubTotal }).ToListAsync(ct);
-            var visits = await RatingVisitCounts(userIds, DateOnly.FromDateTime(periodStart), DateOnly.FromDateTime(periodEnd.AddDays(-1)), ct);
+                && x.OrderDate >= periodStart && x.OrderDate < periodEnd && x.DeletedAt == null).Select(x => new { UserId = x.CreatedBy!.Value, Value = x.GrandTotal }).ToListAsync(ct);
+            var visits = await VisitCounts(userIds, DateOnly.FromDateTime(periodStart), DateOnly.FromDateTime(periodEnd.AddDays(-1)), ct);
             var assignmentsByUser = users.ToDictionary(x => x.Id,
                 x => RetailerAssignmentsForPeriod(retailerAssignmentPeriods, x.Id, periodStart, periodEnd));
             var periodRetailerIds = assignmentsByUser.Values.SelectMany(x => x).Distinct().ToArray();
@@ -778,7 +774,7 @@ assigned_at, unassigned_at FROM (
                     var monthTarget = userTargets.Where(x => x.Year == monthStart.Year && (string.Equals(x.Month, monthStart.ToString("MMM", CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase) || string.Equals(x.Month, monthStart.ToString("MMMM", CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase))).Sum(x => x.Target ?? 0m);
                     return monthTarget * ElapsedShare(monthStart);
                 });
-                var orderValue = orders.Where(x => x.UserId == user.Id).Sum(x => x.SubTotal);
+                var orderValue = orders.Where(x => x.UserId == user.Id).Sum(x => x.Value);
                 var achievement = orderValue > 1m ? Math.Round((orderValue - orderValue / 100m) / 100000m, 2) : 0m;
                 var assigned = assignmentsByUser.GetValueOrDefault(user.Id, []);
                 var active = assigned.Count(activeRetailerIds.Contains);
