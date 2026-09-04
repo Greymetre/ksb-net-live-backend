@@ -329,7 +329,7 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
             DetailsFilled = document.DetailsFilled,
             DetailSummary = document.DetailSummary,
             Details = document.Details
-                .Select(detail => new CustomerKycDetailDto { Label = detail.Label, Value = detail.Value })
+                .Select(detail => new CustomerKycDetailDto { Label = detail.Label, Value = detail.Value, Field = detail.Field })
                 .ToList(),
             Status = document.Status,
             Remark = document.Remark,
@@ -1193,9 +1193,11 @@ WHERE customer_id IN ({customerIdCsv})
 
     private async Task AttachPointSummaryAsync(CustomerDto customerDto, Customer customer, CancellationToken cancellationToken)
     {
+        // Approved invoices earn points; the ones still moving through approval are what the
+        // customer can expect. Rejected ones earn nothing and are left out of both.
         var rows = await (from invoice in _dbContext.NewInvoices.AsNoTracking()
                           where invoice.SecondaryCustomerId == customer.Id
-                          && invoice.ApprovalStatus == NewInvoice.StatusApprovedHo
+                          && invoice.ApprovalStatus != NewInvoice.StatusRejected
                           join creatorRow in _dbContext.Users.AsNoTracking() on invoice.CreatedBy equals creatorRow.Id into creators
                           from creator in creators.DefaultIfEmpty()
                           join branchRow in _dbContext.Branches.AsNoTracking() on creator.PrimaryBranchId equals branchRow.Id into branches
@@ -1241,16 +1243,35 @@ WHERE customer_id IN ({customerIdCsv})
                 var matchingSchemes = schemes.Where(scheme =>
                     row.Invoice.LoyaltySchemeId == scheme.Id
                     && SchemeMatchesCustomer(scheme, invoiceDate, customer, assignedBranchName ?? row.Branch?.BranchName, zoneName, stateName));
+                var isApproved = row.Invoice.ApprovalStatus == NewInvoice.StatusApprovedHo;
+                // Which invoices set the slab. An approved invoice is measured against the
+                // approved total only - the figure it was actually awarded on, unchanged by
+                // anything still in the queue. One still awaiting approval is measured
+                // against that total plus the rest of the queue, because that is what it
+                // would land on. This is the same rule the invoice screen applies.
+                var periodInvoices = isApproved
+                    ? rows.Where(x => x.Invoice.ApprovalStatus == NewInvoice.StatusApprovedHo).Select(x => x.Invoice)
+                    : rows.Select(x => x.Invoice);
                 foreach (var scheme in matchingSchemes)
                 {
-                    var periodAmount = PeriodAmount(customer.Id, scheme, rows.Select(x => x.Invoice), hoApprovedAmounts);
+                    var periodAmount = PeriodAmount(customer.Id, scheme, periodInvoices, hoApprovedAmounts);
                     var approvedInvoiceAmount = hoApprovedAmounts.GetValueOrDefault(row.Invoice.Id) ?? row.Invoice.Amount;
                     var points = CalculateSchemePoints(approvedInvoiceAmount, periodAmount, scheme);
                     if (points <= 0) continue;
 
-                    customerDto.TotalPoints += points;
-                    if (string.Equals(scheme.SchemeTag, "Booster", StringComparison.OrdinalIgnoreCase)) customerDto.TotalBoosterPoints += points;
-                    else customerDto.TotalRegularPoints += points;
+                    var booster = string.Equals(scheme.SchemeTag, "Booster", StringComparison.OrdinalIgnoreCase);
+                    if (isApproved)
+                    {
+                        customerDto.TotalPoints += points;
+                        if (booster) customerDto.TotalBoosterPoints += points;
+                        else customerDto.TotalRegularPoints += points;
+                    }
+                    else
+                    {
+                        customerDto.TotalExpectedPoints += points;
+                        if (booster) customerDto.TotalExpectedBoosterPoints += points;
+                        else customerDto.TotalExpectedRegularPoints += points;
+                    }
                 }
             }
         }

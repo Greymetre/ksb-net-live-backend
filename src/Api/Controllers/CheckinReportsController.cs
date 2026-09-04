@@ -171,6 +171,7 @@ OUTER APPLY (SELECT SUM(o.total_qty) order_qty,SUM(o.grand_total) order_value,CO
         if(f.StartDate.HasValue){where.Add("ci.checkin_date>=@start");args.Add(("@start",f.StartDate.Value.Date));}
         if(f.EndDate.HasValue){where.Add("ci.checkin_date<=@end");args.Add(("@end",f.EndDate.Value.Date));}
         if(f.UserId.HasValue){where.Add("ci.user_id=@user");args.Add(("@user",(decimal)f.UserId.Value));}
+        if(f.CustomerId.HasValue){where.Add("COALESCE(ci.entity_id,ci.customer_id)=@customer");args.Add(("@customer",(decimal)f.CustomerId.Value));}
         if(f.DivisionId.HasValue){where.Add("u.division_id=@division");args.Add(("@division",(decimal)f.DivisionId.Value));}
         if(f.BranchId.HasValue){where.Add("(u.primary_branch_id=@branch OR ','+REPLACE(COALESCE(u.branch_id,''),' ','')+',' LIKE @branchCsv)");args.Add(("@branch",(decimal)f.BranchId.Value));args.Add(("@branchCsv",$"%,{f.BranchId.Value},%"));}
         if(f.DesignationIds is { Count: > 0 })
@@ -203,6 +204,10 @@ OUTER APPLY (SELECT SUM(o.total_qty) order_qty,SUM(o.grand_total) order_value,CO
         [FromQuery(Name = "user_id")] public ulong? UserId { get; set; }
         [FromQuery(Name = "division_id")] public ulong? DivisionId { get; set; }
         [FromQuery(Name = "branch_id")] public ulong? BranchId { get; set; }
+        /// <summary>One customer's visits, for the customer page. Matches the same column the
+        /// row is built from, so a check-in recorded against either entity_id or the older
+        /// customer_id is found.</summary>
+        [FromQuery(Name = "customer_id")] public ulong? CustomerId { get; set; }
         [FromQuery(Name = "designation_id")] public List<ulong> DesignationIds { get; set; } = [];
     }
     public sealed class CheckinRow { public long Id{get;set;} public DateTime? CheckinDate{get;set;} public string CheckinTime{get;set;}=""; public DateTime? CheckoutDate{get;set;} public string CheckoutTime{get;set;}=""; public string TimeInterval{get;set;}=""; public string CheckinLatitude{get;set;}=""; public string CheckinLongitude{get;set;}=""; public string CheckinAddress{get;set;}=""; public string CheckoutLatitude{get;set;}=""; public string CheckoutLongitude{get;set;}=""; public string CheckoutAddress{get;set;}=""; public string Distance{get;set;}=""; public long UserId{get;set;} public string UserName{get;set;}=""; public string EmployeeCode{get;set;}=""; public string ReportingManager{get;set;}=""; public string Designation{get;set;}=""; public string Division{get;set;}=""; public string Branch{get;set;}=""; public long CustomerId{get;set;} public string CustomerName{get;set;}=""; public string CustomerMobile{get;set;}=""; public string CustomerType{get;set;}=""; public string BeatName{get;set;}=""; public string City{get;set;}=""; public string District{get;set;}=""; public string Pincode{get;set;}=""; public string Address{get;set;}=""; public string VisitType{get;set;}=""; public string VisitRemark{get;set;}=""; public long OrderQty{get;set;} public decimal OrderValue{get;set;} public long UniqueSku{get;set;} public long UniqueOrders{get;set;} }

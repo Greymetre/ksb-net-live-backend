@@ -74,7 +74,7 @@ public sealed class CustomerKycEntry
         {
             var prefix = $"{definition.Key}_kyc";
             var details = definition.Details
-                .Select(row => new CustomerKycDetail { Label = row.Label, Value = First(fields, row.Keys) })
+                .Select(row => new CustomerKycDetail { Label = row.Label, Value = First(fields, row.Keys), Field = row.Keys[0] })
                 .ToList();
 
             // A bank proof is only usable with the account it belongs to, so the IFSC counts
@@ -211,4 +211,8 @@ public sealed class CustomerKycDetail
 {
     public string Label { get; init; } = string.Empty;
     public string? Value { get; init; }
+    /// <summary>The custom_fields key this row is written back to. Live data spells some of
+    /// these more than one way and the reader accepts every spelling, but an edit has to
+    /// land on exactly one - the first, which is the spelling this system writes.</summary>
+    public string Field { get; init; } = string.Empty;
 }

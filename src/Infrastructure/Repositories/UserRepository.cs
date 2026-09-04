@@ -207,6 +207,9 @@ public sealed class UserRepository : IUserRepository
                 ReportingName = row.ReportingName,
                 Mobile = row.user.Mobile,
                 Email = row.user.Email,
+                // Anything other than an explicit "Y" is treated as inactive, which is
+                // how the user list already reads the column.
+                Status = string.Equals(row.user.Active, "Y", StringComparison.OrdinalIgnoreCase) ? "Active" : "Inactive",
                 DateOfJoining = row.details?.DateOfJoining ?? row.user.DateOfJoining,
                 DateOfBirth = row.details?.DateOfBirth,
                 DateOfConfirmation = row.details?.DateOfConfirmation,

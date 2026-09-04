@@ -38,6 +38,13 @@ public sealed class CustomerDto
     public decimal TotalRedeemPoints { get; set; }
     public decimal TotalRejectedPoints { get; set; }
     public decimal TotalBalancePoints { get; set; }
+
+    /// <summary>Points from invoices still moving through approval - what the customer stands
+    /// to earn, kept apart from what is already banked. Rejected invoices count towards
+    /// neither.</summary>
+    public decimal TotalExpectedPoints { get; set; }
+    public decimal TotalExpectedRegularPoints { get; set; }
+    public decimal TotalExpectedBoosterPoints { get; set; }
     public Dictionary<string, string?> CustomFields { get; set; } = [];
 }
 

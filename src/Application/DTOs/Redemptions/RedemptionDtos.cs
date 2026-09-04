@@ -34,6 +34,10 @@ public sealed class RedemptionFilterDto
     public int? Status { get; set; }
     public string? RedeemMode { get; set; }
 
+    /// <summary>One customer's redemptions, for the customer page. Without it that page had
+    /// to fetch the whole module and filter in the browser.</summary>
+    public ulong? CustomerId { get; set; }
+
     /// <summary>Who is asking. A dealer login sees only its own redemptions, the same way
     /// it sees only its own invoices; internal users see everything the permission allows.</summary>
     public ulong? ActorUserId { get; set; }

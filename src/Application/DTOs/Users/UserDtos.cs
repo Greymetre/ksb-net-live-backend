@@ -242,6 +242,9 @@ public sealed class UserExcelRowDto
     public string? ReportingName { get; set; }
     public string? Mobile { get; set; }
     public string? Email { get; set; }
+    /// <summary>"Active" or "Inactive" - the word, not the stored Y/N flag, so the
+    /// exported sheet reads the way the user list does.</summary>
+    public string? Status { get; set; }
     public DateTime? DateOfJoining { get; set; }
     public DateTime? DateOfBirth { get; set; }
     public DateTime? DateOfConfirmation { get; set; }

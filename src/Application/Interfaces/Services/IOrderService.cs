@@ -16,7 +16,7 @@ public interface IOrderService
     Task<LaravelApiResponse> SetActiveAsync(ulong id, OrderActiveRequestDto request, CancellationToken cancellationToken);
     Task<LaravelApiResponse> SetStatusAsync(ulong id, OrderStatusRequestDto request, CancellationToken cancellationToken);
     Task<LaravelApiResponse> DispatchAsync(ulong id, OrderDispatchRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
-    Task<LaravelApiResponse> GetDispatchesAsync(string? mode, ulong? actorUserId, CancellationToken cancellationToken);
+    Task<LaravelApiResponse> GetDispatchesAsync(string? mode, ulong? actorUserId, CancellationToken cancellationToken, ulong? customerId = null);
     Task<LaravelApiResponse> GetDispatchDetailAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
     Task<MasterDataFileDto> ExportOrdersAsync(OrderFilterDto filter, CancellationToken cancellationToken);
 }

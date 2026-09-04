@@ -49,6 +49,7 @@ public sealed class RedemptionRepository : IRedemptionRepository
         var dealerCustomerId = await DealerCustomerIdAsync(filter.ActorUserId, cancellationToken);
         if (dealerCustomerId.HasValue) query = query.Where(x => x.Redemption.CustomerId == dealerCustomerId.Value);
 
+        if (filter.CustomerId.HasValue) query = query.Where(x => x.Redemption.CustomerId == filter.CustomerId.Value);
         if (filter.Status.HasValue) query = query.Where(x => x.Redemption.Status == filter.Status.Value);
         if (!string.IsNullOrWhiteSpace(filter.RedeemMode))
         {

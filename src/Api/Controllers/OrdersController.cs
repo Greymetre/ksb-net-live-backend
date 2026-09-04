@@ -128,8 +128,11 @@ public sealed class OrdersController : ControllerBase
     [Authorize]
     [RequirePermission("order_dispatch.view")]
     [HttpGet("order-dispatches")]
-    public async Task<IActionResult> GetDispatches([FromQuery] string? mode, CancellationToken cancellationToken) =>
-        Ok(await _service.GetDispatchesAsync(mode, CurrentUserId(), cancellationToken));
+    public async Task<IActionResult> GetDispatches(
+        [FromQuery] string? mode,
+        [FromQuery(Name = "customer_id")] ulong? customerId,
+        CancellationToken cancellationToken) =>
+        Ok(await _service.GetDispatchesAsync(mode, CurrentUserId(), cancellationToken, customerId));
 
     [Authorize]
     [RequirePermission("order_dispatch.detail")]

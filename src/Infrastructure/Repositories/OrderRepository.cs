@@ -136,7 +136,7 @@ public sealed class OrderRepository : IOrderRepository
     public async Task<OrderDto?> GetOrderAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken) =>
         (await GetOrdersAsync(new OrderFilterDto { ActorUserId = actorUserId }, cancellationToken)).FirstOrDefault(x => x.Id == id);
 
-    public async Task<IReadOnlyCollection<OrderDispatchDto>> GetDispatchesAsync(string? mode, ulong? actorUserId, CancellationToken cancellationToken)
+    public async Task<IReadOnlyCollection<OrderDispatchDto>> GetDispatchesAsync(string? mode, ulong? actorUserId, CancellationToken cancellationToken, ulong? customerId = null)
     {
         var orders = _dbContext.Orders.AsNoTracking();
         orders = await ApplyVisibilityAsync(orders, actorUserId, cancellationToken);
@@ -147,6 +147,7 @@ public sealed class OrderRepository : IOrderRepository
                           join productRow in _dbContext.Products.AsNoTracking() on detail.ProductId equals productRow.Id into products
                           from product in products.DefaultIfEmpty()
                           where order.StatusId == 4 && detail.Quantity > detail.ShippedQty
+                              && (customerId == null || order.BuyerId == customerId)
                           orderby order.UpdatedAt descending, order.Id descending, detail.Id
                           select new OrderDispatchDto
                           {
@@ -165,7 +166,7 @@ public sealed class OrderRepository : IOrderRepository
         }
         var query = from sale in _dbContext.Sales.AsNoTracking()
                     join order in orders on sale.OrderId equals order.Id
-                    where sale.DeletedAt == null
+                    where sale.DeletedAt == null && (customerId == null || sale.BuyerId == customerId)
                     orderby sale.DispatchDate descending, sale.Id descending
                     select new OrderDispatchDto
                     {

@@ -17,16 +17,34 @@ public sealed class UserService : IUserService
     private static readonly string[] ExportHeadings =
     [
         "ID", "Employees Code", "User Name", "Designation", "Role", "Zone Name", "Location", "Department", "Division",
-        "Reporting To", "Mobile", "Email", "Date Of Joining", "Date Of Birth", "Date of Confirmation", "Date of leaving",
+        "Reporting To", "Mobile", "Email", "Status", "Date Of Joining", "Date Of Birth", "Date of Confirmation", "Date of leaving",
         "Grade", "Designation Code", "Employee Super Code", "Base Location Coordinates (latitude, longitude)",
         "Reporting ID", "Role Ids", "payroll", "designation_id", "branch_id", "division_id", "department_id",
         "Attandance Summary Report"
     ];
 
+    /// <summary>Reads the exported word back into the stored flag. Accepts what people
+    /// actually type in a spreadsheet - Active/Inactive, Y/N, 1/0, true/false - and returns
+    /// null for anything blank or unrecognised so the stored value is left alone.
+    ///
+    /// Distinct from NormalizeActive, which answers "Y" for anything that is not "N" and so
+    /// cannot tell a blank cell from a deliberate one.</summary>
+    private static string? ImportedActiveFlag(string? value)
+    {
+        var text = value?.Trim();
+        if (string.IsNullOrEmpty(text)) return null;
+        return text.ToUpperInvariant() switch
+        {
+            "ACTIVE" or "Y" or "YES" or "1" or "TRUE" => "Y",
+            "INACTIVE" or "N" or "NO" or "0" or "FALSE" => "N",
+            _ => null
+        };
+    }
+
     private static readonly string[] TemplateHeadings =
     [
         "id", "employees_code", "user_name", "designation", "role", "zone_name", "base_location", "department",
-        "division", "reporting_to", "mobile", "password", "email", "date_of_joining", "date_of_birth",
+        "division", "reporting_to", "mobile", "password", "email", "status", "date_of_joining", "date_of_birth",
         "date_of_confirmation", "date_of_leaving", "grade", "designation_code", "employee_super_code",
         "base_location_coordinates_latitude_longitude", "reporting_id", "role_ids", "payroll", "designation_id",
         "branch_id", "division_id", "department_id", "attandance_summary_report"
@@ -237,6 +255,7 @@ public sealed class UserService : IUserService
             x.ReportingName,
             x.Mobile,
             x.Email,
+            x.Status,
             FormatDate(x.DateOfJoining),
             FormatDate(x.DateOfBirth),
             FormatDate(x.DateOfConfirmation),
@@ -303,6 +322,13 @@ public sealed class UserService : IUserService
             // to move together or the list keeps showing the previous password.
             user.Password = _passwordHasher.Hash(importedPassword);
             user.PasswordString = importedPassword;
+        }
+        // Only when the sheet actually carries a value. A file without the column - or with
+        // the cell left empty - must leave the user's status exactly as it was, rather than
+        // having a default written over it.
+        if ((ImportedActiveFlag(row.Value("status")) ?? ImportedActiveFlag(row.Value("active"))) is { } activeFlag)
+        {
+            user.Active = activeFlag;
         }
         user.Gender = row.Value("gender") ?? user.Gender;
         user.ProfileImage = row.Value("profile_image") ?? user.ProfileImage;

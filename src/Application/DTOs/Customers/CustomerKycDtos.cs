@@ -50,6 +50,8 @@ public sealed class CustomerKycDetailDto
 {
     public string Label { get; set; } = string.Empty;
     public string? Value { get; set; }
+    /// <summary>Which stored field an edit to this row should write to.</summary>
+    public string Field { get; set; } = string.Empty;
 }
 
 public sealed class CustomerKycListItemDto

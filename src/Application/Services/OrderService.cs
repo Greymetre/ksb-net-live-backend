@@ -270,8 +270,8 @@ public sealed class OrderService : IOrderService
         return LaravelApiResponse.Success("order", await _repository.GetOrderAsync(id, actorUserId, cancellationToken), completed ? "Order fully dispatched successfully." : "Order partially dispatched successfully.");
     }
 
-    public async Task<LaravelApiResponse> GetDispatchesAsync(string? mode, ulong? actorUserId, CancellationToken cancellationToken) =>
-        LaravelApiResponse.Success("dispatches", await _repository.GetDispatchesAsync(mode, actorUserId, cancellationToken));
+    public async Task<LaravelApiResponse> GetDispatchesAsync(string? mode, ulong? actorUserId, CancellationToken cancellationToken, ulong? customerId = null) =>
+        LaravelApiResponse.Success("dispatches", await _repository.GetDispatchesAsync(mode, actorUserId, cancellationToken, customerId));
 
     public async Task<LaravelApiResponse> GetDispatchDetailAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken) =>
         LaravelApiResponse.Success("dispatch", await _repository.GetDispatchDetailAsync(id, actorUserId, cancellationToken)

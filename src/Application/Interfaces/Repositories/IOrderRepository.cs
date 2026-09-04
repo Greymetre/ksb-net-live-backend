@@ -16,7 +16,9 @@ public interface IOrderRepository
     Task<bool> IsApprovedRetailerAsync(ulong id, CancellationToken cancellationToken);
     Task<Order?> GetOrderEntityAsync(ulong id, CancellationToken cancellationToken);
     Task<IReadOnlyCollection<OrderDetail>> GetOrderDetailEntitiesAsync(ulong orderId, CancellationToken cancellationToken);
-    Task<IReadOnlyCollection<OrderDispatchDto>> GetDispatchesAsync(string? mode, ulong? actorUserId, CancellationToken cancellationToken);
+    /// <summary>Dispatches the actor may see; customerId narrows them to one buyer, which
+    /// is how the customer page shows that customer's own dispatches.</summary>
+    Task<IReadOnlyCollection<OrderDispatchDto>> GetDispatchesAsync(string? mode, ulong? actorUserId, CancellationToken cancellationToken, ulong? customerId = null);
     Task<OrderDispatchDetailDto?> GetDispatchDetailAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
     Task DispatchAsync(Order order, IReadOnlyCollection<OrderDetail> details, OrderDispatchRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
     Task AddOrderAsync(Order order, CancellationToken cancellationToken);

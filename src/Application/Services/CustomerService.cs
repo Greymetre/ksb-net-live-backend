@@ -275,7 +275,11 @@ public sealed class CustomerService : ICustomerService
                 CustomFields = customFields
             };
 
-            NormalizeRequest(request);
+            // Deliberately not normalised here. CreateCustomerAsync and UpdateCustomerAsync
+            // both normalise, and doing it early filled in defaults the sheet had not asked
+            // for - a retailer row with no status column became "PENDING". The merge below
+            // only skips blanks, so that invented default was non-blank and overwrote the
+            // stored status: importing an approved retailer sent it back to pending.
             if ((row.ULong("id") ?? row.ULong("retailer_id")) is { } id)
             {
                 var existing = await _repository.GetCustomerAsync(id, actorUserId, cancellationToken)
