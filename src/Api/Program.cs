@@ -40,6 +40,7 @@ builder.Services.AddSingleton<ISmtpEmailSender, SmtpEmailSender>();
 // One place decides what may be attached to an invoice, for all three screens.
 builder.Services.AddScoped<Api.Services.InvoiceAttachmentStore>();
 builder.Services.AddScoped<Api.Services.RatingTrendService>();
+builder.Services.AddScoped<Api.Services.SchemeAudienceService>();
 builder.Services.AddHttpClient();
 
 var jwt = builder.Configuration.GetSection("Jwt");

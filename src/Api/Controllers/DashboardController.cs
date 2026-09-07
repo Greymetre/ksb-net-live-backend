@@ -8,6 +8,8 @@ using Infrastructure.Data;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Api.Services;
+using Domain.Services;
 
 namespace Api.Controllers;
 
@@ -23,11 +25,13 @@ public sealed class DashboardController : ControllerBase
     private const ulong RetailerCustomerType = 2;
     private readonly AppDbContext _db;
     private readonly INewInvoiceRepository _invoices;
+    private readonly SchemeAudienceService _audiences;
 
-    public DashboardController(AppDbContext db, INewInvoiceRepository invoices)
+    public DashboardController(AppDbContext db, INewInvoiceRepository invoices, SchemeAudienceService audiences)
     {
         _db = db;
         _invoices = invoices;
+        _audiences = audiences;
     }
 
     [RequirePermission("dashboard.view")]
@@ -83,19 +87,30 @@ public sealed class DashboardController : ControllerBase
                 .Distinct()
                 .ToListAsync(ct);
 
-        // The slider shows running schemes first, then upcoming ones, and finally
-        // those that ended in the last month so a dealer can still see what lapsed.
+        // The slider shows running schemes first, then upcoming ones, and finally the
+        // ones that have ended, so a dealer can still open a finished scheme and read
+        // what it paid. There is no cut-off on how long ago it ended: these run for a
+        // season, and a one-month window hid a scheme that closed in July by the second
+        // week of August. The field app has never had that window either.
         var todayOnly = DateOnly.FromDateTime(today);
-        var windowStart = todayOnly.AddMonths(-1);
-        var schemeRows = await _db.LoyaltySchemes.AsNoTracking()
+        // Every published invoice scheme is a candidate; which of them this dealer
+        // actually qualifies for is decided by the same eligibility rules the field
+        // app uses. Without this the strip listed schemes written for other zones and
+        // other customer types - a North dealer was shown a West-zone retailer scheme.
+        var candidates = await _db.LoyaltySchemes.AsNoTracking()
             .Where(x => x.DeletedAt == null && x.Active == "Y"
                 && (x.Status == "Published" || x.Status == "Live")
-                && x.SchemeType == "Invoice"
-                && x.EndDate >= windowStart)
+                && x.SchemeType == "Invoice")
             .OrderBy(x => x.EndDate)
+            .ToListAsync(ct);
+
+        var audiences = await _audiences.ForDealerAsync(dealer, retailers, ct);
+        var schemeRows = candidates
+            .Where(scheme => audiences.Any(audience =>
+                SchemeEligibility.Matches(scheme, MatchDate(scheme, todayOnly), audience)))
             .Select(x => new { x.Id, x.SchemeName, x.SchemeCode, x.SchemeTag, x.AreaScope, x.StartDate, x.EndDate })
             .Take(10)
-            .ToListAsync(ct);
+            .ToList();
 
         var liveSchemes = schemeRows
             .Select(x =>
@@ -186,6 +201,18 @@ public sealed class DashboardController : ControllerBase
                 && (x.Status == "Published" || x.Status == "Live") && x.SchemeType == "Invoice", ct);
         if (scheme is null) return NotFound(new { status = "error", message = "Scheme not found." });
 
+        // The same audience check the strip applies, so a scheme meant for another zone
+        // cannot be opened by putting its id in the address. An expired scheme still
+        // opens - that is the point of listing it - because the match runs against the
+        // scheme's own period rather than today.
+        var detailToday = DateOnly.FromDateTime(IndiaToday());
+        var detailRetailers = await AssignedRetailers(dealer.Id).ToListAsync(ct);
+        var detailAudiences = await _audiences.ForDealerAsync(dealer, detailRetailers, ct);
+        if (!detailAudiences.Any(audience => SchemeEligibility.Matches(scheme, MatchDate(scheme, detailToday), audience)))
+        {
+            return NotFound(new { status = "error", message = "Scheme not found." });
+        }
+
         var invoices = (await _invoices.GetInvoicesAsync(new NewInvoiceFilterDto
         {
             DistributorCustomerId = dealer.Id,
@@ -268,6 +295,14 @@ public sealed class DashboardController : ControllerBase
     /// Retailers whose legacy custom_fields assignment points at this dealer. Mirrors
     /// the mobile dealer APIs so both surfaces count the same set.
     /// </summary>
+    /// <summary>
+    /// A scheme's own period is used when its area and customer type are checked, so a
+    /// scheme that has ended is still matched against the audience rather than being
+    /// dropped on the date. The dealer is meant to see what lapsed in its own area.
+    /// </summary>
+    private static DateOnly MatchDate(LoyaltyScheme scheme, DateOnly today) =>
+        today < scheme.StartDate ? scheme.StartDate : today > scheme.EndDate ? scheme.EndDate : today;
+
     private IQueryable<Customer> AssignedRetailers(ulong dealerId)
     {
         var value = dealerId.ToString(CultureInfo.InvariantCulture);

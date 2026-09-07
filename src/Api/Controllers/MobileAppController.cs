@@ -30,6 +30,7 @@ public sealed class MobileAppController : ControllerBase
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly AppDbContext _dbContext;
     private readonly Api.Services.InvoiceAttachmentStore _attachments;
+    private readonly Api.Services.SchemeAudienceService _schemeAudiences;
     private readonly IMasterDataService _masterDataService;
     private readonly INewInvoiceRepository _invoiceRepository;
     private readonly INewInvoiceService _newInvoiceService;
@@ -40,10 +41,11 @@ public sealed class MobileAppController : ControllerBase
     private readonly IWebHostEnvironment _environment;
     private readonly IConfiguration _configuration;
 
-    public MobileAppController(AppDbContext dbContext, IMasterDataService masterDataService, INewInvoiceRepository invoiceRepository, INewInvoiceService newInvoiceService, ICustomerRepository customerRepository, ITokenService tokenService, IPasswordHasher passwordHasher, ISmtpEmailSender emailSender, IWebHostEnvironment environment, IConfiguration configuration, Api.Services.InvoiceAttachmentStore attachments)
+    public MobileAppController(AppDbContext dbContext, IMasterDataService masterDataService, INewInvoiceRepository invoiceRepository, INewInvoiceService newInvoiceService, ICustomerRepository customerRepository, ITokenService tokenService, IPasswordHasher passwordHasher, ISmtpEmailSender emailSender, IWebHostEnvironment environment, IConfiguration configuration, Api.Services.InvoiceAttachmentStore attachments, Api.Services.SchemeAudienceService schemeAudiences)
     {
         _dbContext = dbContext;
         _attachments = attachments;
+        _schemeAudiences = schemeAudiences;
         _customerRepository = customerRepository;
         _masterDataService = masterDataService;
         _invoiceRepository = invoiceRepository;
@@ -611,60 +613,13 @@ public sealed class MobileAppController : ControllerBase
     /// The dealer's own audience plus one per assigned retailer. Branch, zone and
     /// state lookups are batched because a dealer can have hundreds of retailers.
     /// </summary>
+    /// <summary>The dealer's own audience plus one for every retailer assigned to it,
+    /// built by the shared service so the app and the CRM dashboard agree on who a
+    /// dealer counts as.</summary>
     private async Task<IReadOnlyList<SchemeAudience>> DealerSchemeAudiencesAsync(Customer dealer, CancellationToken cancellationToken)
     {
         var retailers = await DealerAssignedRetailers(dealer.Id).ToListAsync(cancellationToken);
-        var customers = new List<Customer> { dealer };
-        customers.AddRange(retailers);
-
-        var employeeIds = customers
-            .Select(customer =>
-            {
-                var fields = ReadFields(customer);
-                return FirstAssignedId(Field(fields, "employee_id"))
-                    ?? FirstAssignedId(Field(fields, "sales_executive_id"))
-                    ?? customer.ExecutiveId;
-            })
-            .Where(id => id.HasValue).Select(id => id!.Value).Distinct().ToArray();
-
-        var employees = employeeIds.Length == 0
-            ? []
-            : await _dbContext.Users.AsNoTracking().Where(x => employeeIds.Contains(x.Id))
-                .Select(x => new { x.Id, x.PrimaryBranchId, x.BranchId, x.DivisionId })
-                .ToListAsync(cancellationToken);
-
-        var branchIds = employees.Select(x => x.PrimaryBranchId ?? FirstAssignedId(x.BranchId)).Where(x => x.HasValue).Select(x => x!.Value).Distinct().ToArray();
-        var divisionIds = employees.Where(x => x.DivisionId.HasValue).Select(x => x.DivisionId!.Value).Distinct().ToArray();
-        var stateIds = customers.Select(SchemeEligibility.ReadStateId).Where(x => x.HasValue).Select(x => x!.Value).Distinct().ToArray();
-
-        var branches = branchIds.Length == 0 ? [] : await _dbContext.Branches.AsNoTracking()
-            .Where(x => branchIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.BranchName, cancellationToken);
-        var divisions = divisionIds.Length == 0 ? [] : await _dbContext.Divisions.AsNoTracking()
-            .Where(x => divisionIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.DivisionName, cancellationToken);
-        var states = stateIds.Length == 0 ? [] : await _dbContext.States.AsNoTracking()
-            .Where(x => stateIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.StateName, cancellationToken);
-        var employeeById = employees.ToDictionary(x => x.Id);
-
-        return customers.Select(customer =>
-        {
-            var fields = ReadFields(customer);
-            var employeeId = FirstAssignedId(Field(fields, "employee_id"))
-                ?? FirstAssignedId(Field(fields, "sales_executive_id"))
-                ?? customer.ExecutiveId;
-
-            string? branchName = null;
-            string? zoneName = null;
-            if (employeeId.HasValue && employeeById.TryGetValue(employeeId.Value, out var employee))
-            {
-                var branchId = employee.PrimaryBranchId ?? FirstAssignedId(employee.BranchId);
-                if (branchId.HasValue) branchName = branches.GetValueOrDefault(branchId.Value);
-                if (employee.DivisionId.HasValue) zoneName = divisions.GetValueOrDefault(employee.DivisionId.Value);
-            }
-
-            var stateId = SchemeEligibility.ReadStateId(customer);
-            var stateName = stateId.HasValue ? states.GetValueOrDefault(stateId.Value) : null;
-            return new SchemeAudience(customer.CustomerType, customer.Name, customer.CustomerCode, branchName, zoneName, stateName);
-        }).ToList();
+        return await _schemeAudiences.ForDealerAsync(dealer, retailers, cancellationToken);
     }
 
     [Authorize]
