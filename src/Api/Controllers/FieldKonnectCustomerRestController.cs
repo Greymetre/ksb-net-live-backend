@@ -1542,6 +1542,15 @@ AND {customerTypePredicate}", cancellationToken,
         ["billing_city"] = FirstNonEmpty(Str(row, "billing_city_name"), Str(row, "city_name"), Str(row, "billing_city")),
         ["contact_person"] = FirstNonEmpty(Str(row, "contact_person"), Str(row, "owner_name")),
         ["mobile"] = FirstNonEmpty(Str(row, "mobile"), Str(row, "mobile_number")),
+        // Every customer type carries an email and the app's form edits it, so the
+        // detail view needs it too. Its absence here left the field blank for
+        // distributors while retailers showed theirs.
+        ["email"] = Str(row, "email"),
+        // The dealer code was missing for the same reason, and it mattered more: the
+        // app opens its edit form on this very object, so the code came up blank and
+        // the save then refused the record for having no dealer code at all.
+        ["customer_code"] = Str(row, "customer_code"),
+        ["distributor_code"] = FirstNonEmpty(Str(row, "distributor_code"), Str(row, "customer_code")),
         ["billing_pincode_id"] = ULong(row, "pincode_id"),
         ["billing_pincode"] = FirstNonEmpty(Str(row, "billing_pincode_value"), Str(row, "pincode_value"), Str(row, "billing_pincode")),
         ["registration_type"] = FirstNonEmpty(Str(row, "registration_type"), "Distributor"),

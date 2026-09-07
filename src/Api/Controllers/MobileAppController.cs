@@ -16,6 +16,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Shared.Responses;
+using Shared.Json;
 
 namespace Api.Controllers;
 
@@ -308,6 +309,31 @@ public sealed class MobileAppController : ControllerBase
         return Ok(new { status = "success", data = BuildMobileKyc(customer, ReadFields(customer)) });
     }
 
+    // A dealer keeps KYC for the retailers assigned to it. The payload and the
+    // screen are the retailer's own KYC; only the customer is resolved from the
+    // dealer's assignment list instead of from the token.
+    [Authorize]
+    [HttpGet("dealer/retailers/{id}/kyc")]
+    public async Task<IActionResult> GetDealerRetailerKyc(ulong id, CancellationToken cancellationToken)
+    {
+        var retailer = await DealerRetailer(id, cancellationToken);
+        if (retailer.Result is not null) return retailer.Result;
+
+        return Ok(new { status = "success", data = BuildMobileKyc(retailer.Customer!, ReadFields(retailer.Customer!)) });
+    }
+
+    [Authorize]
+    [HttpPost("dealer/retailers/{id}/kyc")]
+    [HttpPut("dealer/retailers/{id}/kyc")]
+    [Consumes("multipart/form-data")]
+    public async Task<IActionResult> UploadDealerRetailerKyc(ulong id, CancellationToken cancellationToken)
+    {
+        var retailer = await DealerRetailer(id, cancellationToken);
+        if (retailer.Result is not null) return retailer.Result;
+
+        return await SaveKycAsync(retailer.Customer!, cancellationToken);
+    }
+
     [Authorize]
     [HttpPost("retailer/kyc")]
     [HttpPut("retailer/kyc")]
@@ -317,16 +343,33 @@ public sealed class MobileAppController : ControllerBase
         var customer = await CurrentCustomer(cancellationToken);
         if (customer is null) return Unauthorized(new { status = "error", message = "Unauthenticated." });
 
+        return await SaveKycAsync(customer, cancellationToken);
+    }
+
+    private async Task<IActionResult> SaveKycAsync(Customer customer, CancellationToken cancellationToken)
+    {
         var fields = ReadFields(customer);
+
+        // An approved document is final: neither its number nor its attachment can be
+        // edited afterwards, by the retailer or by the dealer maintaining that
+        // retailer's KYC. The review bookkeeping keys are never accepted from the
+        // form either, or a client could simply post itself an approval.
+        bool IsApproved(string? documentKey) => !string.IsNullOrWhiteSpace(documentKey)
+            && string.Equals(Field(fields, $"{documentKey}_kyc_status"), "approved", StringComparison.OrdinalIgnoreCase);
+
         var changedDocuments = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var formField in Request.Form)
         {
             var key = formField.Key;
+            if (key.Contains("_kyc_", StringComparison.OrdinalIgnoreCase)) continue;
+
             var value = formField.Value.ToString();
             if (string.Equals(Field(fields, key), value, StringComparison.Ordinal)) continue;
 
-            fields[key] = value;
             var documentKey = KycDocumentKeyForDetail(key);
+            if (IsApproved(documentKey)) continue;
+
+            fields[key] = value;
             if (!string.IsNullOrWhiteSpace(documentKey)) changedDocuments.Add(documentKey);
         }
 
@@ -335,8 +378,11 @@ public sealed class MobileAppController : ControllerBase
             if (file.Length == 0) continue;
 
             var key = KycAttachmentKey(file.Name);
+            var documentKey = KycDocumentKey(key);
+            if (IsApproved(documentKey)) continue;
+
             fields[key] = await SaveFileAsync(file, "customer-kyc", cancellationToken);
-            changedDocuments.Add(KycDocumentKey(key));
+            changedDocuments.Add(documentKey);
         }
 
         foreach (var documentKey in changedDocuments)
@@ -1397,6 +1443,28 @@ public sealed class MobileAppController : ControllerBase
         return (customer, null);
     }
 
+    // Resolves one retailer for the calling dealer. A retailer that is not in the
+    // dealer's own assignment list is reported as missing rather than forbidden,
+    // so the endpoint never confirms that some other dealer's retailer exists.
+    private async Task<(Customer? Customer, IActionResult? Result)> DealerRetailer(ulong retailerId, CancellationToken cancellationToken)
+    {
+        var dealer = await CurrentDealer(cancellationToken);
+        if (dealer.Result is not null) return (null, dealer.Result);
+
+        // The assignment query is deliberately no-tracking, so it only answers whether
+        // this retailer belongs to the dealer. The entity itself has to be loaded
+        // tracked, or a KYC submitted here reports success and saves nothing.
+        var assigned = await DealerAssignedRetailers(dealer.Customer!.Id)
+            .AnyAsync(x => x.Id == retailerId, cancellationToken);
+        var retailer = assigned
+            ? await _dbContext.Customers.FirstOrDefaultAsync(x => x.Id == retailerId, cancellationToken)
+            : null;
+        if (retailer is null)
+            return (null, NotFound(new { status = "error", message = "Retailer not found for this dealer." }));
+
+        return (retailer, null);
+    }
+
     private async Task<ulong?> DealerUserIdAsync(ulong dealerCustomerId, CancellationToken cancellationToken) =>
         await _dbContext.Users.AsNoTracking().IgnoreQueryFilters()
             .Where(x => x.CustomerId == dealerCustomerId && x.DeletedAt == null)
@@ -2381,12 +2449,7 @@ VALUES ('Y', {0}, {1}, {2}, {3}, {4}, {5}, {6}, SYSUTCDATETIME(), SYSUTCDATETIME
         return $"/uploads/{folder}/{filename}";
     }
 
-    private static Dictionary<string, string?> ReadFields(Customer customer)
-    {
-        if (string.IsNullOrWhiteSpace(customer.CustomFields)) return [];
-        try { return JsonSerializer.Deserialize<Dictionary<string, string?>>(customer.CustomFields, JsonOptions) ?? []; }
-        catch { return []; }
-    }
+    private static Dictionary<string, string?> ReadFields(Customer customer) => CustomFieldsJson.Read(customer.CustomFields);
 
     private static Dictionary<string, string?> ToFieldDictionary(Dictionary<string, JsonElement> values)
     {
