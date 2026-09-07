@@ -9,6 +9,7 @@ using Application.Interfaces.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Shared.Exceptions;
+using Shared.Json;
 
 namespace Api.Controllers;
 
@@ -222,18 +223,7 @@ public sealed class CustomersController : ControllerBase
         };
     }
 
-    private static Dictionary<string, string?> ReadCustomFields(string? json)
-    {
-        if (string.IsNullOrWhiteSpace(json)) return [];
-        try
-        {
-            return JsonSerializer.Deserialize<Dictionary<string, string?>>(json, JsonOptions) ?? [];
-        }
-        catch (JsonException)
-        {
-            return [];
-        }
-    }
+    private static Dictionary<string, string?> ReadCustomFields(string? json) => CustomFieldsJson.Read(json);
 
     private async Task<string?> SaveFileAsync(IFormFile? file, string folder, CancellationToken cancellationToken)
     {

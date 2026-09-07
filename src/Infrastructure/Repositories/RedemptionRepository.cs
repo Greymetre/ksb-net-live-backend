@@ -4,6 +4,7 @@ using Application.Interfaces.Repositories;
 using Domain.Entities;
 using Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Shared.Json;
 
 namespace Infrastructure.Repositories;
 
@@ -206,16 +207,8 @@ public sealed class RedemptionRepository : IRedemptionRepository
 
     private static string? ReadField(Customer customer, string key)
     {
-        if (string.IsNullOrWhiteSpace(customer.CustomFields)) return null;
-        try
-        {
-            var fields = JsonSerializer.Deserialize<Dictionary<string, string?>>(customer.CustomFields, JsonOptions);
-            return fields is not null && fields.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value) ? value : null;
-        }
-        catch
-        {
-            return null;
-        }
+        var fields = CustomFieldsJson.Read(customer.CustomFields);
+        return fields.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value) ? value : null;
     }
 
     private static ulong? FirstULong(string? value)

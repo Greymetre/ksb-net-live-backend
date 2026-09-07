@@ -10,6 +10,7 @@ using Domain.Entities;
 using Domain.Services;
 using Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Shared.Json;
 
 namespace Infrastructure.Repositories;
 
@@ -507,7 +508,17 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
         if (request.ManagerName is not null) customer.ManagerName = NormalizeText(request.ManagerName) ?? string.Empty;
         if (request.ManagerPhone is not null) customer.ManagerPhone = NormalizeText(request.ManagerPhone) ?? string.Empty;
         if (request.AssignedUserIds is not null && request.AssignedUserIds.Count > 0) customer.ExecutiveId = FirstAssignedUserId(request.AssignedUserIds);
-        if (request.CustomFields is not null) customer.CustomFields = SerializeFields(request.CustomFields);
+        // An update carries only the fields its caller knows about. The CRM form posts
+        // the whole document, but the apps and any partial API call post a handful, and
+        // assigning the request wholesale silently dropped everything they left out -
+        // KYC approvals and the distributor assignment included. Start from what is
+        // stored and let the request overwrite only the keys it actually names.
+        if (request.CustomFields is not null)
+        {
+            var merged = DeserializeFields(customer.CustomFields);
+            foreach (var (key, value) in request.CustomFields) merged[key] = value;
+            customer.CustomFields = SerializeFields(merged);
+        }
 
         var active = NormalizeActive(request.Active);
         if (active is not null) customer.Active = active;
@@ -1473,35 +1484,7 @@ WHERE customer_id IN ({customerIdCsv})
                 : value;
     }
 
-    private static Dictionary<string, string?> DeserializeFields(string? json)
-    {
-        if (string.IsNullOrWhiteSpace(json)) return [];
-        try
-        {
-            using var document = JsonDocument.Parse(json);
-            if (document.RootElement.ValueKind != JsonValueKind.Object) return [];
-
-            var fields = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-            foreach (var property in document.RootElement.EnumerateObject())
-            {
-                fields[property.Name] = property.Value.ValueKind switch
-                {
-                    JsonValueKind.String => property.Value.GetString(),
-                    JsonValueKind.Number => property.Value.GetRawText(),
-                    JsonValueKind.True => "true",
-                    JsonValueKind.False => "false",
-                    JsonValueKind.Null or JsonValueKind.Undefined => null,
-                    _ => property.Value.GetRawText()
-                };
-            }
-
-            return fields;
-        }
-        catch
-        {
-            return [];
-        }
-    }
+    private static Dictionary<string, string?> DeserializeFields(string? json) => CustomFieldsJson.Read(json);
 
     private static string? SerializeFields(Dictionary<string, string?>? fields) =>
         fields is null ? null : JsonSerializer.Serialize(fields.Where(x => !string.IsNullOrWhiteSpace(x.Value)).ToDictionary(x => x.Key, x => x.Value), JsonOptions);

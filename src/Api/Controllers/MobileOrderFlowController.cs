@@ -9,6 +9,7 @@ using Infrastructure.Data;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Shared.Json;
 
 namespace Api.Controllers;
 
@@ -680,18 +681,7 @@ WHERE deleted_at IS NULL AND customer_id IN ({idList})", cancellationToken);
         return fields.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value) ? value.Trim() : null;
     }
 
-    private static Dictionary<string, string?> DeserializeFields(string? json)
-    {
-        if (string.IsNullOrWhiteSpace(json)) return [];
-        try
-        {
-            return JsonSerializer.Deserialize<Dictionary<string, string?>>(json, JsonOptions) ?? [];
-        }
-        catch (JsonException)
-        {
-            return [];
-        }
-    }
+    private static Dictionary<string, string?> DeserializeFields(string? json) => CustomFieldsJson.Read(json);
 
     private static string? FirstNonEmpty(params string?[] values) =>
         values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim();
