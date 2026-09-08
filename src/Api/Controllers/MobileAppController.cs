@@ -592,7 +592,8 @@ public sealed class MobileAppController : ControllerBase
                     is_live = !expired && !upcoming,
                     days_remaining = expired || upcoming ? 0 : scheme.EndDate.DayNumber - today.DayNumber,
                     area_scope = scheme.AreaScope,
-                    customer_type = scheme.CustomerType
+                    customer_type = scheme.CustomerType,
+                    brochure_path = scheme.BrochurePath
                 };
             })
             .OrderByDescending(x => x.is_live)
@@ -682,6 +683,7 @@ public sealed class MobileAppController : ControllerBase
                 based_on = scheme.BasedOn,
                 area_scope = scheme.AreaScope,
                 customer_type = scheme.CustomerType,
+                brochure_path = scheme.BrochurePath,
                 start_date = scheme.StartDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
                 end_date = scheme.EndDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
                 status = expired ? "expired" : upcoming ? "upcoming" : "live",
