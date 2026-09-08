@@ -6,6 +6,8 @@ public sealed class FieldSchemeDto
     public ulong Id { get; set; }
     public string Name { get; set; } = string.Empty;
     public string? Code { get; set; }
+    /// <summary>The couple of lines the scheme creator wrote, shown under the dates.</summary>
+    public string? SchemeNote { get; set; }
     public string? Tag { get; set; }
     /// <summary>Regular or Booster, which is the wallet the points land in.</summary>
     public string WalletType { get; set; } = "Regular";

@@ -54,7 +54,7 @@ public sealed class LoyaltySchemeRepository : ILoyaltySchemeRepository
             .Take(MaxRows)
             .ToListAsync(cancellationToken);
 
-        var creators = await LoadCreatorsAsync(schemes.Select(x => x.CreatedBy), cancellationToken);
+        var creators = await LoadCreatorsAsync(schemes.SelectMany(SchemePeopleIds), cancellationToken);
         return schemes.Select(x => ToDto(x, creators)).ToList();
     }
 
@@ -65,7 +65,7 @@ public sealed class LoyaltySchemeRepository : ILoyaltySchemeRepository
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
 
         if (scheme is null) return null;
-        var creators = await LoadCreatorsAsync([scheme.CreatedBy], cancellationToken);
+        var creators = await LoadCreatorsAsync(SchemePeopleIds(scheme), cancellationToken);
         return ToDto(scheme, creators);
     }
 
@@ -168,15 +168,26 @@ public sealed class LoyaltySchemeRepository : ILoyaltySchemeRepository
     private IQueryable<LoyaltyScheme> BaseQuery() =>
         _dbContext.LoyaltySchemes.AsNoTracking().Where(x => x.DeletedAt == null);
 
+    /// <summary>Everyone a scheme records: who wrote it, who sent it on, who approved or
+    /// rejected it, and who published it. One lookup covers all of them.</summary>
+    private static IEnumerable<ulong?> SchemePeopleIds(LoyaltyScheme scheme) =>
+        [scheme.CreatedBy, scheme.SubmittedBy, scheme.ApprovedBy, scheme.RejectedBy, scheme.PublishedBy];
+
     private async Task<Dictionary<ulong, string>> LoadCreatorsAsync(IEnumerable<ulong?> ids, CancellationToken cancellationToken)
     {
         var userIds = ids.Where(x => x.HasValue).Select(x => x!.Value).Distinct().ToArray();
         if (userIds.Length == 0) return [];
 
+        // A user who has since been removed still has to be named here: this is the
+        // record of who did what, and a blank would read as nobody having done it.
         return await _dbContext.Users.AsNoTracking()
+            .IgnoreQueryFilters()
             .Where(x => userIds.Contains(x.Id))
             .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
     }
+
+    private static string? PersonName(ulong? id, IReadOnlyDictionary<ulong, string> people) =>
+        id.HasValue && people.TryGetValue(id.Value, out var name) ? name : null;
 
     private static LoyaltySchemeDto ToDto(LoyaltyScheme scheme, IReadOnlyDictionary<ulong, string> creators)
     {
@@ -188,6 +199,7 @@ public sealed class LoyaltySchemeRepository : ILoyaltySchemeRepository
             SchemeName = scheme.SchemeName,
             SchemeCode = scheme.SchemeCode,
             SchemeDescription = scheme.SchemeDescription,
+            SchemeNote = scheme.SchemeNote,
             SchemeTag = scheme.SchemeTag,
             CustomerType = scheme.CustomerType,
             AreaScope = scheme.AreaScope,
@@ -202,12 +214,21 @@ public sealed class LoyaltySchemeRepository : ILoyaltySchemeRepository
             WorkflowStatus = scheme.Status,
             BrochurePath = scheme.BrochurePath,
             SubmittedAt = scheme.SubmittedAt,
+            SubmittedBy = scheme.SubmittedBy,
+            SubmittedByName = PersonName(scheme.SubmittedBy, creators),
             ApprovedAt = scheme.ApprovedAt,
+            ApprovedBy = scheme.ApprovedBy,
+            ApprovedByName = PersonName(scheme.ApprovedBy, creators),
             ApprovalRemark = scheme.ApprovalRemark,
             RejectedAt = scheme.RejectedAt,
+            RejectedBy = scheme.RejectedBy,
+            RejectedByName = PersonName(scheme.RejectedBy, creators),
             RejectionRemark = scheme.RejectionRemark,
+            PublishedAt = scheme.PublishedAt,
+            PublishedBy = scheme.PublishedBy,
+            PublishedByName = PersonName(scheme.PublishedBy, creators),
             CreatedBy = scheme.CreatedBy,
-            CreatedByName = scheme.CreatedBy.HasValue && creators.TryGetValue(scheme.CreatedBy.Value, out var creator) ? creator : null,
+            CreatedByName = PersonName(scheme.CreatedBy, creators),
             CreatedAt = scheme.CreatedAt,
             Slabs = scheme.Slabs
                 .Where(x => x.DeletedAt == null)

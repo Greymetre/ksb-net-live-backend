@@ -77,6 +77,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         var approvals = await LoadApprovalStageSummariesAsync(rows.Select(x => x.Invoice.Id), cancellationToken);
         var items = rows.SelectMany(x => ToSchemeDtos(x.Invoice, x.Customer, CityName(x.Customer, cities), AssignedZoneName(x.Customer, assignedZones), AssignedBranchName(x.Customer, assignedBranches) ?? x.Branch?.BranchName, DealerName(x.Invoice, x.Customer, assignedDistributors), AssignedEmployeeName(x.Customer, assignedEmployees), AssignedEmployeeMobile(x.Customer, assignedEmployees), x.Creator, x.Branch, schemes, schemeInvoices, ApprovalSummary(x.Invoice.Id, approvals))).ToList();
         await ApplyCreatedByLabelsAsync(items, rows.Select(x => x.Creator), cancellationToken);
+        await ApplyApproverNamesAsync(items, cancellationToken);
         await ApplyAttachmentsAsync(items, cancellationToken);
         return new PagedResult<NewInvoiceDto>(items, total, page, filter.Unpaged ? items.Count : pageSize);
     }
@@ -119,6 +120,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         var approvals = await LoadApprovalStageSummariesAsync([row.Invoice.Id], cancellationToken);
         var dto = ToSchemeDtos(row.Invoice, row.Customer, CityName(row.Customer, cities), AssignedZoneName(row.Customer, assignedZones), AssignedBranchName(row.Customer, assignedBranches) ?? row.Branch?.BranchName, DealerName(row.Invoice, row.Customer, assignedDistributors), AssignedEmployeeName(row.Customer, assignedEmployees), AssignedEmployeeMobile(row.Customer, assignedEmployees), row.Creator, row.Branch, schemes, schemeInvoices, ApprovalSummary(row.Invoice.Id, approvals)).First();
         await ApplyCreatedByLabelsAsync([dto], [row.Creator], cancellationToken);
+        await ApplyApproverNamesAsync([dto], cancellationToken);
         await ApplyAttachmentsAsync([dto], cancellationToken);
         dto.ApprovalLogs = await GetApprovalLogsAsync(id, cancellationToken);
         return dto;
@@ -309,6 +311,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
             Id = scheme.Id,
             Name = scheme.SchemeName,
             Code = scheme.SchemeCode,
+            SchemeNote = scheme.SchemeNote,
             Tag = scheme.SchemeTag,
             WalletType = scheme.SchemeTag?.Contains("booster", StringComparison.OrdinalIgnoreCase) == true ? "Booster" : "Regular",
             BasedOn = scheme.BasedOn,
@@ -1170,6 +1173,37 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
         }
     }
 
+    /// <summary>
+    /// Puts a name against each approval stage. The invoice stores only the user id, and
+    /// the three stages are usually three different people, so they are collected across
+    /// every row and looked up once rather than per invoice.
+    /// </summary>
+    private async Task ApplyApproverNamesAsync(IReadOnlyCollection<NewInvoiceDto> items, CancellationToken cancellationToken)
+    {
+        if (items.Count == 0) return;
+
+        var ids = items
+            .SelectMany(item => new[] { item.SsApprovedBy, item.SalesApprovedBy, item.HoApprovedBy })
+            .Where(id => id.HasValue && id.Value > 0)
+            .Select(id => id!.Value)
+            .Distinct()
+            .ToArray();
+        if (ids.Length == 0) return;
+
+        var names = await _dbContext.Users.AsNoTracking()
+            .IgnoreQueryFilters()
+            .Where(x => ids.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
+
+        string? nameFor(ulong? id) => id.HasValue ? names.GetValueOrDefault(id.Value) : null;
+        foreach (var item in items)
+        {
+            item.SsApprovedByName = nameFor(item.SsApprovedBy);
+            item.SalesApprovedByName = nameFor(item.SalesApprovedBy);
+            item.HoApprovedByName = nameFor(item.HoApprovedBy);
+        }
+    }
+
     private async Task ApplyCreatedByLabelsAsync(IReadOnlyCollection<NewInvoiceDto> items, IEnumerable<User?> creators, CancellationToken cancellationToken)
     {
         if (items.Count == 0) return;
@@ -1384,6 +1418,7 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
             SchemeId = scheme?.Id,
             SchemeName = scheme?.SchemeName,
             SchemeCode = scheme?.SchemeCode,
+            SchemeNote = scheme?.SchemeNote,
             SchemeTag = scheme?.SchemeTag,
             SchemeBasedOn = scheme?.BasedOn,
             SchemeRewardValue = schemeResult?.RewardValue,
@@ -1399,10 +1434,16 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
             ApprovalRemark = invoice.ApprovalRemark,
             SsApprovedAmount = approvalSummary.SsApprovedAmount,
             SsApprovalRemark = approvalSummary.SsApprovalRemark,
+            SsApprovedBy = invoice.ApprovedSsBy,
+            SsApprovedAt = invoice.ApprovedSsAt,
             SalesApprovedAmount = approvalSummary.SalesApprovedAmount,
             SalesApprovalRemark = approvalSummary.SalesApprovalRemark,
+            SalesApprovedBy = invoice.ApprovedSalesBy,
+            SalesApprovedAt = invoice.ApprovedSalesAt,
             HoApprovedAmount = approvalSummary.HoApprovedAmount,
             HoApprovalRemark = approvalSummary.HoApprovalRemark,
+            HoApprovedBy = invoice.ApprovedHoBy,
+            HoApprovedAt = invoice.ApprovedHoAt,
             HoldRemark = approvalSummary.HoldRemark,
             CreatedBy = invoice.CreatedBy,
             CreatedByName = creator?.Name,

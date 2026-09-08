@@ -108,7 +108,7 @@ public sealed class DashboardController : ControllerBase
         var schemeRows = candidates
             .Where(scheme => audiences.Any(audience =>
                 SchemeEligibility.Matches(scheme, MatchDate(scheme, todayOnly), audience)))
-            .Select(x => new { x.Id, x.SchemeName, x.SchemeCode, x.SchemeTag, x.AreaScope, x.StartDate, x.EndDate })
+            .Select(x => new { x.Id, x.SchemeName, x.SchemeCode, x.SchemeNote, x.SchemeTag, x.AreaScope, x.StartDate, x.EndDate })
             .Take(10)
             .ToList();
 
@@ -121,6 +121,7 @@ public sealed class DashboardController : ControllerBase
                     id = x.Id,
                     name = x.SchemeName,
                     code = x.SchemeCode,
+                    scheme_note = x.SchemeNote,
                     tag = string.IsNullOrWhiteSpace(x.SchemeTag) ? "Regular" : x.SchemeTag,
                     area_scope = x.AreaScope,
                     start_date = x.StartDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
@@ -236,6 +237,7 @@ public sealed class DashboardController : ControllerBase
                 name = scheme.SchemeName,
                 code = scheme.SchemeCode,
                 description = scheme.SchemeDescription,
+                scheme_note = scheme.SchemeNote,
                 tag = string.IsNullOrWhiteSpace(scheme.SchemeTag) ? "Regular" : scheme.SchemeTag,
                 based_on = scheme.BasedOn,
                 area_scope = scheme.AreaScope,

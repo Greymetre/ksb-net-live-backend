@@ -6,6 +6,8 @@ public sealed class LoyaltyScheme : BaseEntity
     public string SchemeName { get; set; } = string.Empty;
     public string SchemeCode { get; set; } = string.Empty;
     public string? SchemeDescription { get; set; }
+    /// <summary>A short note the scheme creator writes, shown under the scheme dates everywhere the scheme appears.</summary>
+    public string? SchemeNote { get; set; }
     public string SchemeTag { get; set; } = "Regular";
     public string CustomerType { get; set; } = string.Empty;
     public string AreaScope { get; set; } = "All";
@@ -24,6 +26,11 @@ public sealed class LoyaltyScheme : BaseEntity
     public string? ApprovalRemark { get; set; }
     public DateTime? RejectedAt { get; set; }
     public ulong? RejectedBy { get; set; }
+    /// <summary>Publishing is what puts a scheme in front of customers, so it is stamped
+    /// like submission and approval rather than being read off UpdatedBy, which any later
+    /// edit would overwrite.</summary>
+    public DateTime? PublishedAt { get; set; }
+    public ulong? PublishedBy { get; set; }
     public string? RejectionRemark { get; set; }
     public ulong? CreatedBy { get; set; }
     public ulong? UpdatedBy { get; set; }

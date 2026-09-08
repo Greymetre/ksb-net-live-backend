@@ -193,6 +193,7 @@ public sealed class FieldInvoiceController : ControllerBase
         id = scheme.Id,
         name = scheme.Name,
         code = scheme.Code,
+        scheme_note = scheme.SchemeNote,
         tag = scheme.Tag,
         wallet_type = scheme.WalletType,
         based_on = scheme.BasedOn,
@@ -368,6 +369,7 @@ public sealed class FieldInvoiceController : ControllerBase
         mobile = invoice.MobileNumber,
         dealer_name = invoice.AssignedDistributorName,
         scheme_name = invoice.SchemeName,
+        scheme_note = invoice.SchemeNote,
         created_by_name = invoice.CreatedByName,
         created_at = invoice.CreatedAt
     };
@@ -389,6 +391,7 @@ public sealed class FieldInvoiceController : ControllerBase
         city = invoice.CityName,
         dealer_name = invoice.AssignedDistributorName,
         scheme_name = invoice.SchemeName,
+        scheme_note = invoice.SchemeNote,
         attachment = string.IsNullOrWhiteSpace(invoice.Attachment) ? null : $"{Request.PublicBaseUrl()}{invoice.Attachment}",
         created_by_name = invoice.CreatedByName,
         created_at = invoice.CreatedAt,

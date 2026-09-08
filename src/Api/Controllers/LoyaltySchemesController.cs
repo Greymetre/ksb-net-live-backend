@@ -29,6 +29,14 @@ public sealed class LoyaltySchemesController : ControllerBase
         return Ok(response);
     }
 
+    [RequirePermission("scheme.export")]
+    [HttpGet("export")]
+    public async Task<IActionResult> ExportSchemes([FromQuery] LoyaltySchemeFilterDto filter, CancellationToken cancellationToken)
+    {
+        var file = await _loyaltySchemeService.ExportSchemesAsync(filter, cancellationToken);
+        return File(file.Content, file.ContentType, file.FileName);
+    }
+
     [HttpGet("options")]
     public async Task<IActionResult> GetOptions(CancellationToken cancellationToken)
     {

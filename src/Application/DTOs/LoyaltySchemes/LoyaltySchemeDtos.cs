@@ -7,6 +7,7 @@ public sealed class LoyaltySchemeDto
     public string SchemeName { get; set; } = string.Empty;
     public string SchemeCode { get; set; } = string.Empty;
     public string? SchemeDescription { get; set; }
+    public string? SchemeNote { get; set; }
     public string SchemeTag { get; set; } = "Regular";
     public string CustomerType { get; set; } = string.Empty;
     public string AreaScope { get; set; } = "All";
@@ -21,10 +22,21 @@ public sealed class LoyaltySchemeDto
     public string WorkflowStatus { get; set; } = "Draft";
     public string? BrochurePath { get; set; }
     public DateTime? SubmittedAt { get; set; }
+    public ulong? SubmittedBy { get; set; }
+    public string? SubmittedByName { get; set; }
     public DateTime? ApprovedAt { get; set; }
+    public ulong? ApprovedBy { get; set; }
+    public string? ApprovedByName { get; set; }
     public string? ApprovalRemark { get; set; }
     public DateTime? RejectedAt { get; set; }
+    public ulong? RejectedBy { get; set; }
+    public string? RejectedByName { get; set; }
     public string? RejectionRemark { get; set; }
+    /// <summary>Set when the scheme was published. Blank on anything published before
+    /// the column existed - that moment was never recorded and is not guessed at here.</summary>
+    public DateTime? PublishedAt { get; set; }
+    public ulong? PublishedBy { get; set; }
+    public string? PublishedByName { get; set; }
     public ulong? CreatedBy { get; set; }
     public string? CreatedByName { get; set; }
     public DateTime? CreatedAt { get; set; }
@@ -49,6 +61,7 @@ public sealed class LoyaltySchemeRequestDto
     public string? SchemeName { get; set; }
     public string? SchemeCode { get; set; }
     public string? SchemeDescription { get; set; }
+    public string? SchemeNote { get; set; }
     public string? SchemeTag { get; set; }
     public string? CustomerType { get; set; }
     public string? AreaScope { get; set; }

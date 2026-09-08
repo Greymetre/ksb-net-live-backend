@@ -71,7 +71,7 @@ public sealed class NewInvoiceService : INewInvoiceService
 
         // Hold takes a remark and no amount, so it contributes one column, not two.
         return CreateWorkbook(fileName,
-            ["id", "retailer_id", "customer", "shop", "mobile", "assigned_distributor", "assigned_employee", "city", "zone", "branch", "invoice_date", "invoice_number", "amount", "hold_remark", "ss_approved_amount", "ss_remark", "sales_approved_amount", "sales_remark", "ho_approved_amount", "ho_remark", "scheme_name", "points", "scheme_hint", "attachment", "status", "created_by", "created_at"],
+            ["id", "retailer_id", "customer", "shop", "mobile", "assigned_distributor", "assigned_employee", "city", "zone", "branch", "invoice_date", "invoice_number", "amount", "hold_remark", "ss_approved_amount", "ss_remark", "ss_approved_by", "ss_approved_at", "sales_approved_amount", "sales_remark", "sales_approved_by", "sales_approved_at", "ho_approved_amount", "ho_remark", "ho_approved_by", "ho_approved_at", "scheme_name", "points", "scheme_hint", "attachment", "status", "created_by", "created_at"],
             invoices.Select(x => new object?[]
             {
                 x.Id,
@@ -90,10 +90,16 @@ public sealed class NewInvoiceService : INewInvoiceService
                 x.HoldRemark,
                 x.SsApprovedAmount,
                 x.SsApprovalRemark,
+                x.SsApprovedByName,
+                x.SsApprovedAt,
                 x.SalesApprovedAmount,
                 x.SalesApprovalRemark,
+                x.SalesApprovedByName,
+                x.SalesApprovedAt,
                 x.HoApprovedAmount,
                 x.HoApprovalRemark,
+                x.HoApprovedByName,
+                x.HoApprovedAt,
                 x.SchemeName,
                 x.SchemePoints,
                 x.SchemeHintMessage,

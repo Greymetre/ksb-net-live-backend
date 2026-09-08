@@ -270,6 +270,7 @@ public static class PermissionCatalog
         new("scheme.approve", "Approve", "scheme", "Scheme Creation", "loyalty", "Loyalty Management", "approve", 1980, ["scheme_approve"], []),
         new("scheme.reject", "Reject", "scheme", "Scheme Creation", "loyalty", "Loyalty Management", "reject", 1990, ["scheme_reject"], []),
         new("scheme.publish", "Publish", "scheme", "Scheme Creation", "loyalty", "Loyalty Management", "publish", 2000, ["scheme_publish"], []),
+        new("scheme.export", "Export", "scheme", "Scheme Creation", "loyalty", "Loyalty Management", "export", 2010, ["scheme_export"], []),
         // Redemption
         new("redemption.view", "View Listing", "redemption", "Redemption", "loyalty", "Loyalty Management", "view", 2010, ["redemption_access"], []),
         new("redemption.export", "Export", "redemption", "Redemption", "loyalty", "Loyalty Management", "export", 2020, ["redemption_download"], []),

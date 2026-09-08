@@ -1433,6 +1433,14 @@ namespace Infrastructure.Migrations
                         .HasColumnType("nvarchar(1000)")
                         .HasColumnName("rejection_remark");
 
+                    b.Property<DateTime?>("PublishedAt")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("published_at");
+
+                    b.Property<decimal?>("PublishedBy")
+                        .HasColumnType("decimal(20,0)")
+                        .HasColumnName("published_by");
+
                     b.Property<string>("SchemeCode")
                         .IsRequired()
                         .HasMaxLength(100)
@@ -1448,6 +1456,11 @@ namespace Infrastructure.Migrations
                         .HasMaxLength(250)
                         .HasColumnType("nvarchar(250)")
                         .HasColumnName("scheme_name");
+
+                    b.Property<string>("SchemeNote")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("scheme_note");
 
                     b.Property<string>("SchemeTag")
                         .IsRequired()

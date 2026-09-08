@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Application.Common;
 using Application.DTOs.LoyaltySchemes;
+using Application.DTOs.MasterData;
 using Application.Interfaces.Repositories;
 using Application.Interfaces.Services;
 using Domain.Entities;
@@ -17,6 +18,8 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
     private static readonly string[] CustomerTypes = ["Dealer", "Retailer", "Influencer"];
     private static readonly string[] AreaScopes = ["All", "Branch", "Zone", "State", "Customer"];
     private static readonly string[] BasedOnOptions = [SchemeReward.Value, SchemeReward.Percentage, SchemeReward.Mixed];
+
+    private const int SchemeNoteMaxLength = 500;
     private readonly ILoyaltySchemeRepository _repository;
 
     public LoyaltySchemeService(ILoyaltySchemeRepository repository)
@@ -26,6 +29,53 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
 
     public async Task<LaravelApiResponse> GetSchemesAsync(LoyaltySchemeFilterDto filter, CancellationToken cancellationToken) =>
         LaravelApiResponse.Success("schemes", await _repository.GetSchemesAsync(filter, cancellationToken));
+
+    /// <summary>
+    /// The scheme listing as a workbook, carrying the whole trail: who wrote the scheme,
+    /// who sent it on, who approved or rejected it, and who published it, each with the
+    /// moment it happened. Published by and at are blank on anything published before
+    /// those columns existed; that moment was never recorded and is not guessed at.
+    /// </summary>
+    public async Task<MasterDataFileDto> ExportSchemesAsync(LoyaltySchemeFilterDto filter, CancellationToken cancellationToken)
+    {
+        var schemes = await _repository.GetSchemesAsync(filter, cancellationToken);
+        var fileName = $"loyalty-schemes-{IndiaToday():yyyy-MM-dd}.xlsx";
+
+        return ExportWorkbook.Create(fileName,
+            ["scheme_name", "scheme_code", "scheme_tag", "customer_type", "area", "scheme_type", "based_on",
+             "start_date", "end_date", "status", "slabs", "note",
+             "created_by", "created_at", "submitted_by", "submitted_at",
+             "approved_by", "approved_at", "approval_remark",
+             "published_by", "published_at",
+             "rejected_by", "rejected_at", "rejection_remark"],
+            schemes.Select(x => new object?[]
+            {
+                x.SchemeName,
+                x.SchemeCode,
+                x.SchemeTag,
+                x.CustomerType,
+                x.AreaDisplay,
+                x.SchemeType,
+                x.BasedOn,
+                x.StartDate,
+                x.EndDate,
+                x.Status,
+                x.Slabs.Count,
+                x.SchemeNote,
+                x.CreatedByName,
+                x.CreatedAt,
+                x.SubmittedByName,
+                x.SubmittedAt,
+                x.ApprovedByName,
+                x.ApprovedAt,
+                x.ApprovalRemark,
+                x.PublishedByName,
+                x.PublishedAt,
+                x.RejectedByName,
+                x.RejectedAt,
+                x.RejectionRemark
+            }));
+    }
 
     public async Task<LaravelApiResponse> GetSchemeAsync(ulong id, CancellationToken cancellationToken) =>
         LaravelApiResponse.Success("scheme", await GetOrThrowAsync(id, cancellationToken));
@@ -69,6 +119,7 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
             SchemeName = request.SchemeName!.Trim(),
             SchemeCode = schemeCode,
             SchemeDescription = NormalizeText(request.SchemeDescription),
+            SchemeNote = NormalizeText(request.SchemeNote),
             SchemeTag = NormalizeChoice(request.SchemeTag, "Regular", SchemeTags),
             CustomerType = NormalizeChoice(request.CustomerType, string.Empty, CustomerTypes),
             AreaScope = NormalizeChoice(request.AreaScope, "All", AreaScopes),
@@ -102,6 +153,7 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
         scheme.Active = NormalizeActive(request.Active);
         scheme.SchemeName = request.SchemeName!.Trim();
         scheme.SchemeDescription = NormalizeText(request.SchemeDescription);
+        scheme.SchemeNote = NormalizeText(request.SchemeNote);
         scheme.SchemeTag = NormalizeChoice(request.SchemeTag, "Regular", SchemeTags);
         scheme.CustomerType = NormalizeChoice(request.CustomerType, string.Empty, CustomerTypes);
         scheme.AreaScope = NormalizeChoice(request.AreaScope, "All", AreaScopes);
@@ -222,6 +274,8 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
             throw Http(LaravelStatusCodes.NoContentLikeValidation, "An expired scheme cannot be published.");
 
         scheme.Status = "Published";
+        scheme.PublishedAt = DateTime.UtcNow;
+        scheme.PublishedBy = actorUserId;
         scheme.UpdatedBy = actorUserId;
         var updated = await _repository.SaveSchemeAsync(scheme, cancellationToken);
         return LaravelApiResponse.Success("scheme", updated, "Scheme published successfully");
@@ -264,6 +318,13 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
         if (!string.IsNullOrWhiteSpace(request.SchemeType) && !string.Equals(request.SchemeType.Trim(), "Invoice", StringComparison.OrdinalIgnoreCase))
         {
             errors["scheme_type"] = ["Only Invoice scheme type is currently supported."];
+        }
+
+        // The note is meant to be a couple of lines under the scheme dates, and the
+        // column holds 500 characters. Saying so beats a truncation error from SQL.
+        if (request.SchemeNote is { Length: > SchemeNoteMaxLength })
+        {
+            errors["scheme_note"] = [$"Note cannot be longer than {SchemeNoteMaxLength} characters."];
         }
 
         var areaScope = NormalizeChoice(request.AreaScope, "All", AreaScopes);

@@ -22,6 +22,7 @@ public sealed class NewInvoiceDto
     public ulong? SchemeId { get; set; }
     public string? SchemeName { get; set; }
     public string? SchemeCode { get; set; }
+    public string? SchemeNote { get; set; }
     public string? SchemeTag { get; set; }
     public string? SchemeBasedOn { get; set; }
     public decimal? SchemeRewardValue { get; set; }
@@ -40,10 +41,19 @@ public sealed class NewInvoiceDto
     public string? ApprovalRemark { get; set; }
     public decimal? SsApprovedAmount { get; set; }
     public string? SsApprovalRemark { get; set; }
+    public ulong? SsApprovedBy { get; set; }
+    public string? SsApprovedByName { get; set; }
+    public DateTime? SsApprovedAt { get; set; }
     public decimal? SalesApprovedAmount { get; set; }
     public string? SalesApprovalRemark { get; set; }
+    public ulong? SalesApprovedBy { get; set; }
+    public string? SalesApprovedByName { get; set; }
+    public DateTime? SalesApprovedAt { get; set; }
     public decimal? HoApprovedAmount { get; set; }
     public string? HoApprovalRemark { get; set; }
+    public ulong? HoApprovedBy { get; set; }
+    public string? HoApprovedByName { get; set; }
+    public DateTime? HoApprovedAt { get; set; }
 
     /// <summary>Reason given the last time the invoice was put on hold. Kept even
     /// after the hold is released, so the export still explains the delay.</summary>

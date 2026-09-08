@@ -593,6 +593,7 @@ public sealed class MobileAppController : ControllerBase
                     days_remaining = expired || upcoming ? 0 : scheme.EndDate.DayNumber - today.DayNumber,
                     area_scope = scheme.AreaScope,
                     customer_type = scheme.CustomerType,
+                    scheme_note = scheme.SchemeNote,
                     brochure_path = scheme.BrochurePath
                 };
             })
@@ -683,6 +684,7 @@ public sealed class MobileAppController : ControllerBase
                 based_on = scheme.BasedOn,
                 area_scope = scheme.AreaScope,
                 customer_type = scheme.CustomerType,
+                scheme_note = scheme.SchemeNote,
                 brochure_path = scheme.BrochurePath,
                 start_date = scheme.StartDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
                 end_date = scheme.EndDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
@@ -1577,6 +1579,7 @@ public sealed class MobileAppController : ControllerBase
                         FileSize = file.FileSize
                     }).ToList(),
                     SchemeName = invoice.SchemeName,
+                    SchemeNote = invoice.SchemeNote,
                     SchemeNames = group.Where(x => !string.IsNullOrWhiteSpace(x.SchemeName)).Select(x => x.SchemeName!).Distinct().ToArray()
                 };
             })
@@ -1927,22 +1930,40 @@ public sealed class MobileAppController : ControllerBase
         Customer? audienceCustomer = null)
     {
         var today = CurrentBusinessDate();
+        // A scheme that has ended is still worth showing to the customer it belonged to:
+        // it is the only way to look back at what was billed under it and what it paid.
+        // Only to that customer, though - the anonymous lists stay as they were, because
+        // without a customer there is no achievement to look back at, just old adverts.
+        var includeEnded = audienceCustomer is not null;
         var query = _dbContext.LoyaltySchemes.AsNoTracking().Include(x => x.Slabs)
             .Where(x => x.DeletedAt == null
                 && x.Active == "Y"
                 && (x.Status == "Published" || x.Status == "Live")
                 && x.SchemeType == "Invoice"
                 && x.StartDate <= today
-                && x.EndDate >= today);
+                && (includeEnded || x.EndDate >= today));
         if (walletType == "Booster") query = query.Where(x => x.SchemeTag == "Booster");
         if (walletType == "Regular") query = query.Where(x => x.SchemeTag != "Booster");
 
-        var schemes = await query.OrderBy(x => x.SchemeTag).ThenBy(x => x.SchemeName).ToListAsync(cancellationToken);
+        var schemes = await query.ToListAsync(cancellationToken);
         if (audienceCustomer is not null)
         {
             var audience = await BuildSchemeAudienceAsync(audienceCustomer, cancellationToken);
-            schemes = schemes.Where(scheme => SchemeEligibility.Matches(scheme, today, audience)).ToList();
+            // An ended scheme is matched against the last day it ran. Measured against
+            // today it would fall outside its own dates and never match at all.
+            schemes = schemes
+                .Where(scheme => SchemeEligibility.Matches(scheme, EffectiveMatchDate(scheme, today), audience))
+                .ToList();
         }
+
+        // Running schemes first, then the ones that ended, most recent first - the
+        // retailer's own order of interest.
+        schemes = schemes
+            .OrderBy(scheme => scheme.EndDate >= today ? 0 : 1)
+            .ThenByDescending(scheme => scheme.EndDate >= today ? DateOnly.MinValue : scheme.EndDate)
+            .ThenBy(scheme => scheme.SchemeTag)
+            .ThenBy(scheme => scheme.SchemeName)
+            .ToList();
 
         return schemes.Select(scheme =>
         {
@@ -1966,6 +1987,7 @@ public sealed class MobileAppController : ControllerBase
             SchemeName = scheme.SchemeName,
             SchemeCode = scheme.SchemeCode,
             SchemeDescription = scheme.SchemeDescription,
+            SchemeNote = scheme.SchemeNote,
             SchemeTag = scheme.SchemeTag,
             WalletType = IsBooster(scheme.SchemeTag) ? "Booster" : "Regular",
             CustomerType = scheme.CustomerType,
@@ -1976,6 +1998,9 @@ public sealed class MobileAppController : ControllerBase
             BasedOn = scheme.BasedOn,
             RedemptionEnabled = scheme.RedemptionEnabled,
             Status = scheme.Status,
+            SchemeStatus = scheme.EndDate >= today ? "live" : "expired",
+            StatusLabel = scheme.EndDate >= today ? "Live" : "Expired",
+            IsLive = scheme.EndDate >= today,
             BrochurePath = scheme.BrochurePath,
             DaysLeft = Math.Max(0, (scheme.EndDate.ToDateTime(TimeOnly.MinValue).Date - DateTime.UtcNow.AddHours(5.5).Date).Days),
             AchievementValue = achievementValue,
@@ -2853,6 +2878,7 @@ VALUES ('Y', {0}, {1}, {2}, {3}, {4}, {5}, {6}, SYSUTCDATETIME(), SYSUTCDATETIME
         /// <summary>Every file on the invoice; `Attachment` is just the first of them.</summary>
         public IReadOnlyCollection<MobileInvoiceAttachmentDto> Attachments { get; set; } = [];
         public string? SchemeName { get; set; }
+        public string? SchemeNote { get; set; }
         public IReadOnlyCollection<string> SchemeNames { get; set; } = [];
     }
 
@@ -2977,6 +3003,12 @@ VALUES ('Y', {0}, {1}, {2}, {3}, {4}, {5}, {6}, SYSUTCDATETIME(), SYSUTCDATETIME
         public string BasedOn { get; set; } = string.Empty;
         public bool RedemptionEnabled { get; set; }
         public string Status { get; set; } = string.Empty;
+        /// <summary>Where the scheme sits against today: live or expired. Status above is
+        /// the workflow state ("Published"), which says nothing about the dates.</summary>
+        public string SchemeStatus { get; set; } = "live";
+        public string StatusLabel { get; set; } = "Live";
+        public bool IsLive { get; set; }
+        public string? SchemeNote { get; set; }
         public string? BrochurePath { get; set; }
         public int DaysLeft { get; set; }
         public decimal AchievementValue { get; set; }
