@@ -6,6 +6,7 @@ using Application.Interfaces.Services;
 using Domain.Entities;
 using Shared.Exceptions;
 using Shared.Responses;
+using Domain.Services;
 
 namespace Application.Services;
 
@@ -15,7 +16,7 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
     private static readonly string[] SchemeTags = ["Regular", "Booster"];
     private static readonly string[] CustomerTypes = ["Dealer", "Retailer", "Influencer"];
     private static readonly string[] AreaScopes = ["All", "Branch", "Zone", "State", "Customer"];
-    private static readonly string[] BasedOnOptions = ["Value", "Percentage"];
+    private static readonly string[] BasedOnOptions = [SchemeReward.Value, SchemeReward.Percentage, SchemeReward.Mixed];
     private readonly ILoyaltySchemeRepository _repository;
 
     public LoyaltySchemeService(ILoyaltySchemeRepository repository)
@@ -75,14 +76,14 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
             StartDate = request.StartDate!.Value,
             EndDate = request.EndDate!.Value,
             SchemeType = "Invoice",
-            BasedOn = NormalizeChoice(request.BasedOn, "Value", BasedOnOptions),
+            BasedOn = NormalizeChoice(request.BasedOn, SchemeReward.Value, BasedOnOptions),
             RedemptionEnabled = request.RedemptionEnabled,
             Status = "Draft",
             CreatedBy = actorUserId,
             UpdatedBy = actorUserId,
             CreatedAt = now,
             UpdatedAt = now,
-            Slabs = MapSlabs(request.Slabs, now)
+            Slabs = MapSlabs(request.Slabs, NormalizeChoice(request.BasedOn, SchemeReward.Value, BasedOnOptions), now)
         };
 
         var created = await _repository.CreateSchemeAsync(scheme, cancellationToken);
@@ -108,7 +109,7 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
         scheme.StartDate = request.StartDate!.Value;
         scheme.EndDate = request.EndDate!.Value;
         scheme.SchemeType = "Invoice";
-        scheme.BasedOn = NormalizeChoice(request.BasedOn, "Value", BasedOnOptions);
+        scheme.BasedOn = NormalizeChoice(request.BasedOn, SchemeReward.Value, BasedOnOptions);
         scheme.RedemptionEnabled = request.RedemptionEnabled;
         // Approval is a separate permission-gated action. Editing must never
         // publish or demote a scheme through a client-supplied status.
@@ -119,7 +120,7 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
             existingSlab.DeletedAt = now;
             existingSlab.UpdatedAt = now;
         }
-        foreach (var slab in MapSlabs(request.Slabs, now))
+        foreach (var slab in MapSlabs(request.Slabs, scheme.BasedOn, now))
         {
             scheme.Slabs.Add(slab);
         }
@@ -259,7 +260,7 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
         AddChoiceError(errors, "scheme_tag", request.SchemeTag, "Regular", SchemeTags, "Invalid scheme tag.");
         AddChoiceError(errors, "customer_type", request.CustomerType, string.Empty, CustomerTypes, "Invalid customer type.");
         AddChoiceError(errors, "area_scope", request.AreaScope, "All", AreaScopes, "Invalid area scope.");
-        AddChoiceError(errors, "based_on", request.BasedOn, "Value", BasedOnOptions, "Invalid based on value.");
+        AddChoiceError(errors, "based_on", request.BasedOn, SchemeReward.Value, BasedOnOptions, "Invalid based on value.");
         if (!string.IsNullOrWhiteSpace(request.SchemeType) && !string.Equals(request.SchemeType.Trim(), "Invoice", StringComparison.OrdinalIgnoreCase))
         {
             errors["scheme_type"] = ["Only Invoice scheme type is currently supported."];
@@ -286,15 +287,25 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
                 if (!slab.ValueFrom.HasValue || slab.ValueFrom.Value < 0) errors[$"{prefix}.value_from"] = ["Value from is required and cannot be negative."];
                 if (slab.ValueTo.HasValue && slab.ValueFrom.HasValue && slab.ValueTo.Value < slab.ValueFrom.Value) errors[$"{prefix}.value_to"] = ["Value to must be greater than or equal to value from."];
                 if (!slab.RewardValue.HasValue || slab.RewardValue.Value < 0) errors[$"{prefix}.reward_value"] = ["Reward value is required and cannot be negative."];
-                if (string.Equals(request.BasedOn, "Percentage", StringComparison.OrdinalIgnoreCase)
-                    && slab.RewardValue.HasValue
-                    && slab.RewardValue.Value > 99.9m)
+                // A mixed scheme is checked slab by slab, since the one below it may be
+                // a flat amount and the one above a percentage.
+                var slabIsPercentage = SchemeReward.IsMixedScheme(request.BasedOn)
+                    ? SchemeReward.IsPercentage(slab.RewardType)
+                    : SchemeReward.IsPercentage(request.BasedOn);
+
+                if (SchemeReward.IsMixedScheme(request.BasedOn)
+                    && !string.IsNullOrWhiteSpace(slab.RewardType)
+                    && !SchemeReward.IsPercentage(slab.RewardType)
+                    && !string.Equals(slab.RewardType.Trim(), SchemeReward.Value, StringComparison.OrdinalIgnoreCase))
+                {
+                    errors[$"{prefix}.reward_type"] = ["Reward type must be Value or Percentage."];
+                }
+
+                if (slabIsPercentage && slab.RewardValue.HasValue && slab.RewardValue.Value > 99.9m)
                 {
                     errors[$"{prefix}.reward_value"] = ["Reward percentage can contain a maximum of four characters including the decimal (maximum 99.9)."];
                 }
-                if (!string.Equals(request.BasedOn, "Percentage", StringComparison.OrdinalIgnoreCase)
-                    && slab.RewardValue.HasValue
-                    && slab.RewardValue.Value > 10000000)
+                if (!slabIsPercentage && slab.RewardValue.HasValue && slab.RewardValue.Value > 10000000)
                 {
                     errors[$"{prefix}.reward_value"] = ["Reward amount cannot be greater than 1,00,00,000."];
                 }
@@ -315,17 +326,26 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
         }
     }
 
-    private static List<LoyaltySchemeSlab> MapSlabs(IEnumerable<LoyaltySchemeSlabRequestDto> slabs, DateTime now) =>
-        slabs.Select((slab, index) => new LoyaltySchemeSlab
+    /// <summary>A slab only carries its own reward type when the scheme is mixed. Any
+    /// other scheme stores nothing, so a type left over from an edit cannot change how
+    /// that scheme pays.</summary>
+    private static List<LoyaltySchemeSlab> MapSlabs(IEnumerable<LoyaltySchemeSlabRequestDto> slabs, string? basedOn, DateTime now)
+    {
+        var mixed = SchemeReward.IsMixedScheme(basedOn);
+        return slabs.Select((slab, index) => new LoyaltySchemeSlab
         {
             TierName = slab.TierName!.Trim(),
             ValueFrom = slab.ValueFrom!.Value,
             ValueTo = slab.ValueTo,
             RewardValue = slab.RewardValue!.Value,
+            RewardType = mixed
+                ? (SchemeReward.IsPercentage(slab.RewardType) ? SchemeReward.Percentage : SchemeReward.Value)
+                : null,
             SortOrder = index + 1,
             CreatedAt = now,
             UpdatedAt = now
         }).ToList();
+    }
 
     private async Task<LoyaltySchemeDto> GetOrThrowAsync(ulong id, CancellationToken cancellationToken) =>
         await _repository.GetSchemeAsync(id, cancellationToken) ?? throw Http(LaravelStatusCodes.NotFound, "Scheme not found");
@@ -372,7 +392,8 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
     {
         var tagPart = string.Equals(schemeTag, "Booster", StringComparison.OrdinalIgnoreCase) ? "BST" : "REG";
         var namePart = Abbr(schemeName);
-        var basisPart = string.Equals(basedOn, "Percentage", StringComparison.OrdinalIgnoreCase) ? "PCT" : "VAL";
+        var basisPart = SchemeReward.IsMixedScheme(basedOn) ? "MIX"
+            : SchemeReward.IsPercentage(basedOn) ? "PCT" : "VAL";
         return $"{tagPart}-{namePart}-INV-{basisPart}-{year}".ToUpperInvariant();
     }
 

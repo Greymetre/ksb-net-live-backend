@@ -220,6 +220,7 @@ public sealed class LoyaltySchemeRepository : ILoyaltySchemeRepository
                     ValueFrom = x.ValueFrom,
                     ValueTo = x.ValueTo,
                     RewardValue = x.RewardValue,
+                    RewardType = x.RewardType,
                     SortOrder = x.SortOrder
                 })
                 .ToList()

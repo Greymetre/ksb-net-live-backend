@@ -38,6 +38,8 @@ public sealed class LoyaltySchemeSlabDto
     public decimal ValueFrom { get; set; }
     public decimal? ValueTo { get; set; }
     public decimal RewardValue { get; set; }
+    /// <summary>Only meaningful on a mixed scheme; blank elsewhere.</summary>
+    public string? RewardType { get; set; }
     public int SortOrder { get; set; }
 }
 
@@ -66,6 +68,8 @@ public sealed class LoyaltySchemeSlabRequestDto
     public decimal? ValueFrom { get; set; }
     public decimal? ValueTo { get; set; }
     public decimal? RewardValue { get; set; }
+    /// <summary>Read only when the scheme itself is mixed.</summary>
+    public string? RewardType { get; set; }
 }
 
 public sealed class LoyaltySchemeFilterDto

@@ -7,6 +7,7 @@ using Infrastructure.Data;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Domain.Services;
 
 namespace Api.Controllers;
 
@@ -201,6 +202,8 @@ public sealed class FieldKonnectLoyaltyController : ControllerBase
                     value_from = x.ValueFrom,
                     value_to = x.ValueTo,
                     reward_value = x.RewardValue,
+                    reward_type = SchemeReward.TypeFor(scheme, x),
+                    reward_label = SchemeReward.Label(scheme, x),
                     is_achieved = achieved >= x.ValueFrom
                 }),
                 invoices = invoices

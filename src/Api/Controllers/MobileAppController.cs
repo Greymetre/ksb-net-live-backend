@@ -702,7 +702,7 @@ public sealed class MobileAppController : ControllerBase
                     points_expected = pointsExpected
                 },
                 slabs = scheme.Slabs.Where(x => x.DeletedAt == null).OrderBy(x => x.ValueFrom).ThenBy(x => x.SortOrder)
-                    .Select(x => new { tier_name = x.TierName, value_from = x.ValueFrom, value_to = x.ValueTo, reward_value = x.RewardValue }),
+                    .Select(x => new { tier_name = x.TierName, value_from = x.ValueFrom, value_to = x.ValueTo, reward_value = x.RewardValue, reward_type = SchemeReward.TypeFor(scheme, x), reward_label = SchemeReward.Label(scheme, x) }),
                 retailers = retailerGroups
                     .Select(group => new
                     {
@@ -1831,15 +1831,15 @@ public sealed class MobileAppController : ControllerBase
             InvoiceAmount = invoiceAmount,
             InvoiceAmountShort = FormatIndianShortAmount(invoiceAmount),
             AchievedReward = achieved?.RewardValue ?? 0,
-            AchievedLabel = achieved is null ? "0" : FormatReward(achieved.RewardValue, scheme.BasedOn),
+            AchievedLabel = achieved is null ? "0" : SchemeReward.Label(scheme, achieved),
             AchievedTierName = achieved?.TierName,
             NextReward = next?.RewardValue,
-            NextRewardLabel = next is null ? null : FormatReward(next.RewardValue, scheme.BasedOn),
+            NextRewardLabel = next is null ? null : SchemeReward.Label(scheme, next),
             NextTierName = next?.TierName,
             AmountMoreForNextSlab = amountMore,
             NextMessage = next is null
                 ? "Highest slab achieved."
-                : $"{FormatIndianCurrency(amountMore)} more for {FormatReward(next.RewardValue, scheme.BasedOn)} slab",
+                : $"{FormatIndianCurrency(amountMore)} more for {SchemeReward.Label(scheme, next)} slab",
             DaysLeft = daysLeft,
             DaysLeftMessage = daysLeft == 1 ? "You have 1 day left to reach it" : $"You have {daysLeft} days left to reach it",
             StartDate = scheme.StartDate,
@@ -1855,7 +1855,7 @@ public sealed class MobileAppController : ControllerBase
                 ValueFrom = slab.ValueFrom,
                 ValueTo = slab.ValueTo,
                 RewardValue = slab.RewardValue,
-                RewardLabel = FormatReward(slab.RewardValue, scheme.BasedOn),
+                RewardLabel = SchemeReward.Label(scheme, slab),
                 Achieved = invoiceAmount >= slab.ValueFrom,
                 Current = achieved?.Id == slab.Id
             }).ToList(),
@@ -1906,7 +1906,7 @@ public sealed class MobileAppController : ControllerBase
                 ValueFrom = slab.ValueFrom,
                 ValueTo = slab.ValueTo,
                 RewardValue = slab.RewardValue,
-                RewardLabel = FormatReward(slab.RewardValue, scheme.BasedOn),
+                RewardLabel = SchemeReward.Label(scheme, slab),
                 Achieved = invoiceAmount >= slab.ValueFrom
             }).ToList() ?? []
         };
@@ -1990,7 +1990,7 @@ public sealed class MobileAppController : ControllerBase
                     ValueFrom = slab.ValueFrom,
                     ValueTo = slab.ValueTo,
                     RewardValue = slab.RewardValue,
-                    RewardLabel = FormatReward(slab.RewardValue, scheme.BasedOn),
+                    RewardLabel = SchemeReward.Label(scheme, slab),
                     SortOrder = slab.SortOrder
                 })
                 .ToList()
@@ -2664,8 +2664,7 @@ VALUES ('Y', {0}, {1}, {2}, {3}, {4}, {5}, {6}, SYSUTCDATETIME(), SYSUTCDATETIME
         return ulong.TryParse(first?.Trim('"'), out var parsed) && parsed > 0 ? parsed : null;
     }
 
-    private static string FormatReward(decimal value, string? basedOn) =>
-        string.Equals(basedOn, "Percentage", StringComparison.OrdinalIgnoreCase) ? $"{value:0.##}%" : $"Rs. {value:0.##}";
+    private static string FormatReward(decimal value, string? basedOn) => SchemeReward.Format(value, basedOn);
 
     private static IReadOnlyCollection<string> ReadSchemeAreaValues(string? json) => SchemeEligibility.ReadAreaValues(json);
 

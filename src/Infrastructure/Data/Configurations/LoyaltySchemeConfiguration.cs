@@ -59,6 +59,7 @@ public sealed class LoyaltySchemeSlabConfiguration : IEntityTypeConfiguration<Lo
         builder.Property(x => x.ValueFrom).HasColumnName("value_from").HasPrecision(15, 2);
         builder.Property(x => x.ValueTo).HasColumnName("value_to").HasPrecision(15, 2);
         builder.Property(x => x.RewardValue).HasColumnName("reward_value").HasPrecision(15, 2);
+        builder.Property(x => x.RewardType).HasColumnName("reward_type").HasMaxLength(50);
         builder.Property(x => x.SortOrder).HasColumnName("sort_order");
         builder.Property(x => x.CreatedAt).HasColumnName("created_at");
         builder.Property(x => x.UpdatedAt).HasColumnName("updated_at");

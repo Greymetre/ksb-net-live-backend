@@ -1405,9 +1405,7 @@ WHERE customer_id IN ({customerIdCsv})
 
         if (achieved is null) return 0;
 
-        return string.Equals(scheme.BasedOn, "Percentage", StringComparison.OrdinalIgnoreCase)
-            ? Math.Round(invoiceAmount * achieved.RewardValue / 100, 2)
-            : achieved.RewardValue;
+        return SchemeReward.PointsFor(invoiceAmount, periodAmount, scheme, achieved);
     }
 
     private static CustomerDto ToCustomerDto(Customer customer, string? createdByName, string? parentName)

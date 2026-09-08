@@ -75,7 +75,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         var schemes = await LoadSchemesAsync(rows.Select(x => x.Invoice.InvoiceDate), cancellationToken);
         var schemeInvoices = await LoadSchemeInvoicesAsync(rows.Select(x => x.Customer.Id), schemes, cancellationToken);
         var approvals = await LoadApprovalStageSummariesAsync(rows.Select(x => x.Invoice.Id), cancellationToken);
-        var items = rows.SelectMany(x => ToSchemeDtos(x.Invoice, x.Customer, CityName(x.Customer, cities), AssignedZoneName(x.Customer, assignedZones), AssignedBranchName(x.Customer, assignedBranches) ?? x.Branch?.BranchName, DealerName(x.Invoice, x.Customer, assignedDistributors), AssignedEmployeeName(x.Customer, assignedEmployees), x.Creator, x.Branch, schemes, schemeInvoices, ApprovalSummary(x.Invoice.Id, approvals))).ToList();
+        var items = rows.SelectMany(x => ToSchemeDtos(x.Invoice, x.Customer, CityName(x.Customer, cities), AssignedZoneName(x.Customer, assignedZones), AssignedBranchName(x.Customer, assignedBranches) ?? x.Branch?.BranchName, DealerName(x.Invoice, x.Customer, assignedDistributors), AssignedEmployeeName(x.Customer, assignedEmployees), AssignedEmployeeMobile(x.Customer, assignedEmployees), x.Creator, x.Branch, schemes, schemeInvoices, ApprovalSummary(x.Invoice.Id, approvals))).ToList();
         await ApplyCreatedByLabelsAsync(items, rows.Select(x => x.Creator), cancellationToken);
         await ApplyAttachmentsAsync(items, cancellationToken);
         return new PagedResult<NewInvoiceDto>(items, total, page, filter.Unpaged ? items.Count : pageSize);
@@ -117,7 +117,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         var schemes = await LoadSchemesAsync([row.Invoice.InvoiceDate], cancellationToken);
         var schemeInvoices = await LoadSchemeInvoicesAsync([row.Customer.Id], schemes, cancellationToken);
         var approvals = await LoadApprovalStageSummariesAsync([row.Invoice.Id], cancellationToken);
-        var dto = ToSchemeDtos(row.Invoice, row.Customer, CityName(row.Customer, cities), AssignedZoneName(row.Customer, assignedZones), AssignedBranchName(row.Customer, assignedBranches) ?? row.Branch?.BranchName, DealerName(row.Invoice, row.Customer, assignedDistributors), AssignedEmployeeName(row.Customer, assignedEmployees), row.Creator, row.Branch, schemes, schemeInvoices, ApprovalSummary(row.Invoice.Id, approvals)).First();
+        var dto = ToSchemeDtos(row.Invoice, row.Customer, CityName(row.Customer, cities), AssignedZoneName(row.Customer, assignedZones), AssignedBranchName(row.Customer, assignedBranches) ?? row.Branch?.BranchName, DealerName(row.Invoice, row.Customer, assignedDistributors), AssignedEmployeeName(row.Customer, assignedEmployees), AssignedEmployeeMobile(row.Customer, assignedEmployees), row.Creator, row.Branch, schemes, schemeInvoices, ApprovalSummary(row.Invoice.Id, approvals)).First();
         await ApplyCreatedByLabelsAsync([dto], [row.Creator], cancellationToken);
         await ApplyAttachmentsAsync([dto], cancellationToken);
         dto.ApprovalLogs = await GetApprovalLogsAsync(id, cancellationToken);
@@ -1075,7 +1075,7 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
             .ToDictionary(x => x.CustomerId, x => byEmployee[x.EmployeeId!.Value]);
     }
 
-    private async Task<Dictionary<ulong, string>> LoadAssignedEmployeeNamesAsync(IEnumerable<Customer> customers, CancellationToken cancellationToken)
+    private async Task<Dictionary<ulong, AssignedEmployee>> LoadAssignedEmployeeNamesAsync(IEnumerable<Customer> customers, CancellationToken cancellationToken)
     {
         var customerEmployeeIds = customers
             .Select(customer => new { CustomerId = customer.Id, EmployeeId = AssignedEmployeeId(customer) })
@@ -1087,13 +1087,14 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
         var employeeIds = customerEmployeeIds.Select(x => x.EmployeeId!.Value).Distinct().ToArray();
         if (employeeIds.Length == 0) return [];
 
-        var employeeNames = await _dbContext.Users.AsNoTracking()
+        var employees = await _dbContext.Users.AsNoTracking()
             .Where(x => employeeIds.Contains(x.Id))
-            .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
+            .Select(x => new { x.Id, x.Name, x.Mobile })
+            .ToDictionaryAsync(x => x.Id, x => new AssignedEmployee(x.Name, x.Mobile), cancellationToken);
 
         return customerEmployeeIds
-            .Where(x => x.EmployeeId.HasValue && employeeNames.ContainsKey(x.EmployeeId.Value))
-            .ToDictionary(x => x.CustomerId, x => employeeNames[x.EmployeeId!.Value]);
+            .Where(x => x.EmployeeId.HasValue && employees.ContainsKey(x.EmployeeId.Value))
+            .ToDictionary(x => x.CustomerId, x => employees[x.EmployeeId!.Value]);
     }
 
     /// <summary>Turns the creating user id into something readable. A dealer login is
@@ -1332,7 +1333,7 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
     private static ApprovalStageSummary ApprovalSummary(ulong invoiceId, IReadOnlyDictionary<ulong, ApprovalStageSummary> approvals) =>
         approvals.TryGetValue(invoiceId, out var summary) ? summary : new ApprovalStageSummary();
 
-    private static IReadOnlyCollection<NewInvoiceDto> ToSchemeDtos(NewInvoice invoice, Customer customer, string? cityName, string? zoneName, string? branchName, string? assignedDistributorName, string? assignedEmployeeName, User? creator, Branch? branch, IReadOnlyCollection<LoyaltyScheme> schemes, IReadOnlyCollection<SchemeInvoiceAmount> schemeInvoices, ApprovalStageSummary approvalSummary)
+    private static IReadOnlyCollection<NewInvoiceDto> ToSchemeDtos(NewInvoice invoice, Customer customer, string? cityName, string? zoneName, string? branchName, string? assignedDistributorName, string? assignedEmployeeName, string? assignedEmployeeMobile, User? creator, Branch? branch, IReadOnlyCollection<LoyaltyScheme> schemes, IReadOnlyCollection<SchemeInvoiceAmount> schemeInvoices, ApprovalStageSummary approvalSummary)
     {
         var invoiceDate = DateOnly.FromDateTime(invoice.InvoiceDate.Date);
         var selectedScheme = invoice.LoyaltySchemeId.HasValue
@@ -1342,7 +1343,7 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
                 && invoiceDate <= scheme.EndDate)
             : null;
         if (selectedScheme is null)
-            return [ToDto(invoice, customer, cityName, zoneName, branchName, assignedDistributorName, assignedEmployeeName, creator, branch, null, null, approvalSummary)];
+            return [ToDto(invoice, customer, cityName, zoneName, branchName, assignedDistributorName, assignedEmployeeName, assignedEmployeeMobile, creator, branch, null, null, approvalSummary)];
 
         // An HO-approved invoice is paid on finalized turnover only. An invoice still in
         // approval is previewed against every non-rejected invoice of the period, so the
@@ -1353,10 +1354,10 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
         var rewardBaseAmount = invoice.ApprovalStatus == NewInvoice.StatusApprovedHo
             ? approvalSummary.HoApprovedAmount ?? invoice.Amount
             : invoice.Amount;
-        return [ToDto(invoice, customer, cityName, zoneName, branchName, assignedDistributorName, assignedEmployeeName, creator, branch, selectedScheme, CalculateSchemeResult(rewardBaseAmount, periodAmount, selectedScheme), approvalSummary)];
+        return [ToDto(invoice, customer, cityName, zoneName, branchName, assignedDistributorName, assignedEmployeeName, assignedEmployeeMobile, creator, branch, selectedScheme, CalculateSchemeResult(rewardBaseAmount, periodAmount, selectedScheme), approvalSummary)];
     }
 
-    private static NewInvoiceDto ToDto(NewInvoice invoice, Customer customer, string? cityName, string? zoneName, string? branchName, string? assignedDistributorName, string? assignedEmployeeName, User? creator, Branch? branch, LoyaltyScheme? scheme, SchemeResult? schemeResult, ApprovalStageSummary approvalSummary)
+    private static NewInvoiceDto ToDto(NewInvoice invoice, Customer customer, string? cityName, string? zoneName, string? branchName, string? assignedDistributorName, string? assignedEmployeeName, string? assignedEmployeeMobile, User? creator, Branch? branch, LoyaltyScheme? scheme, SchemeResult? schemeResult, ApprovalStageSummary approvalSummary)
     {
         var pointsCreated = invoice.ApprovalStatus == NewInvoice.StatusApprovedHo;
         var schemePoints = pointsCreated ? schemeResult?.Points ?? 0 : 0;
@@ -1375,6 +1376,7 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
             AssignedDistributorId = InvoiceDealerId(invoice, customer),
             AssignedDistributorName = assignedDistributorName,
             AssignedEmployeeName = assignedEmployeeName,
+            AssignedEmployeeMobile = assignedEmployeeMobile,
             InvoiceNumber = invoice.InvoiceNumber,
             InvoiceDate = invoice.InvoiceDate,
             Amount = invoice.Amount,
@@ -1440,9 +1442,7 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
         var achieved = slabs.LastOrDefault(slab => cumulativeAmount >= slab.ValueFrom && (!slab.ValueTo.HasValue || cumulativeAmount <= slab.ValueTo.Value));
         if (achieved is not null)
         {
-            var points = string.Equals(scheme.BasedOn, "Percentage", StringComparison.OrdinalIgnoreCase)
-                ? Math.Round(invoiceAmount * achieved.RewardValue / 100, 2)
-                : achieved.RewardValue;
+            var points = SchemeReward.PointsFor(invoiceAmount, cumulativeAmount, scheme, achieved);
 
             return new SchemeResult(points, achieved.RewardValue, achieved.TierName, null);
         }
@@ -1451,9 +1451,7 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
         if (next is null) return new SchemeResult(0, null, null, null);
 
         var remaining = next.ValueFrom - cumulativeAmount;
-        var rewardText = string.Equals(scheme.BasedOn, "Percentage", StringComparison.OrdinalIgnoreCase)
-            ? $"{next.RewardValue:0.##}%"
-            : $"Rs. {next.RewardValue:0.##}";
+        var rewardText = SchemeReward.Label(scheme, next);
         return new SchemeResult(0, null, null, $"Add Rs. {remaining:0.##} more to get {rewardText}");
     }
 
@@ -1522,8 +1520,15 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
     private static string? AssignedBranchName(Customer customer, IReadOnlyDictionary<ulong, string> branches) =>
         branches.TryGetValue(customer.Id, out var branchName) ? branchName : null;
 
-    private static string? AssignedEmployeeName(Customer customer, IReadOnlyDictionary<ulong, string> employees) =>
-        employees.TryGetValue(customer.Id, out var employeeName) ? employeeName : null;
+    /// <summary>The employee a customer is assigned to, with their mobile number, so
+    /// whoever is reviewing the invoice can call them without leaving the screen.</summary>
+    private sealed record AssignedEmployee(string? Name, string? Mobile);
+
+    private static string? AssignedEmployeeName(Customer customer, IReadOnlyDictionary<ulong, AssignedEmployee> employees) =>
+        employees.TryGetValue(customer.Id, out var employee) ? employee.Name : null;
+
+    private static string? AssignedEmployeeMobile(Customer customer, IReadOnlyDictionary<ulong, AssignedEmployee> employees) =>
+        employees.TryGetValue(customer.Id, out var employee) ? employee.Mobile : null;
 
     private static string? DealerName(NewInvoice invoice, Customer customer, IReadOnlyDictionary<ulong, string> dealerNames)
     {

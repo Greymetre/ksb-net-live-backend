@@ -260,7 +260,7 @@ public sealed class DashboardController : ControllerBase
                     points_expected = awaiting.Sum(x => x.ExpectedSchemePoints)
                 },
                 slabs = scheme.Slabs.Where(x => x.DeletedAt == null).OrderBy(x => x.ValueFrom).ThenBy(x => x.SortOrder)
-                    .Select(x => new { tier_name = x.TierName, value_from = x.ValueFrom, value_to = x.ValueTo, reward_value = x.RewardValue }),
+                    .Select(x => new { tier_name = x.TierName, value_from = x.ValueFrom, value_to = x.ValueTo, reward_value = x.RewardValue, reward_type = SchemeReward.TypeFor(scheme, x), reward_label = SchemeReward.Label(scheme, x) }),
                 retailers = distinct.GroupBy(x => x.SecondaryCustomerId)
                     .Select(group => new
                     {

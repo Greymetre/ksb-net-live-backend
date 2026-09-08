@@ -38,7 +38,7 @@ public sealed class PrivacyPolicyController : ControllerBase
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Privacy Policy - Vriddhi KSB</title>
+<title>Privacy Policy - KSB-VRiDDHi</title>
 <style>
   :root { color-scheme: light; }
   * { box-sizing: border-box; }
@@ -66,12 +66,12 @@ public sealed class PrivacyPolicyController : ControllerBase
 <body>
 <header><div class="inner">
   <h1>Privacy Policy</h1>
-  <p>Vriddhi KSB retailer loyalty app &middot; Last updated 1 September 2026</p>
+  <p>KSB-VRiDDHi retailer loyalty app &middot; Last updated 1 September 2026</p>
 </div></header>
 
 <div class="wrap">
 
-<p>This policy explains what the Vriddhi KSB mobile application collects, why it is
+<p>This policy explains what the KSB-VRiDDHi mobile application collects, why it is
 collected, who it is shared with and how long it is kept. It applies to the app on
 Android and iOS and to the loyalty programme it serves.</p>
 
@@ -175,14 +175,14 @@ directed at children. We do not knowingly collect information from anyone under 
 your data, contact the programme's grievance officer:</p>
 
 <div class="note">
-  <p style="margin:0 0 6px">The Vriddhi KSB loyalty programme is operated by <strong>KSB Limited</strong>.</p>
+  <p style="margin:0 0 6px">The KSB-VRiDDHi loyalty programme is operated by <strong>KSB Limited</strong>.</p>
   <p style="margin:0 0 10px">Privacy and data requests are handled on its behalf by <strong>Greymetre Consultants Private Limited</strong>.</p>
   <p style="margin:0 0 6px">Email: <a href="mailto:info@greymetre.io">info@greymetre.io</a></p>
   <p style="margin:0">Address: 591, Scheme 114 Part I, Dewas Naka, Niranjanpur, Indore, Madhya Pradesh 452010</p>
 </div>
 
 <footer>
-  Vriddhi KSB &middot; This policy covers the mobile application only. Version of 1 September 2026.
+  KSB-VRiDDHi &middot; This policy covers the mobile application only. Version of 1 September 2026.
 </footer>
 
 </div>
@@ -196,7 +196,7 @@ your data, contact the programme's grievance officer:</p>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Delete your account - Vriddhi KSB</title>
+<title>Delete your account - KSB-VRiDDHi</title>
 <style>
   :root { color-scheme: light; }
   * { box-sizing: border-box; }
@@ -223,19 +223,19 @@ your data, contact the programme's grievance officer:</p>
 <body>
 <header><div class="inner">
   <h1>Delete your account</h1>
-  <p>Vriddhi KSB retailer loyalty app &middot; KSB Limited &middot; Last updated 1 September 2026</p>
+  <p>KSB-VRiDDHi retailer loyalty app &middot; KSB Limited &middot; Last updated 1 September 2026</p>
 </div></header>
 
 <div class="wrap">
 
-<p>This page explains how to have your <strong>Vriddhi KSB</strong> account, and the personal
+<p>This page explains how to have your <strong>KSB-VRiDDHi</strong> account, and the personal
 data held with it, deleted. It applies to the account you sign in to with your registered
 mobile number.</p>
 
 <h2>How to request deletion</h2>
 <ol>
   <li>Send an email to <a href="mailto:info@greymetre.io">info@greymetre.io</a> from the email address registered on your account.</li>
-  <li>Use the subject line <strong>Account deletion request - Vriddhi KSB</strong>.</li>
+  <li>Use the subject line <strong>Account deletion request - KSB-VRiDDHi</strong>.</li>
   <li>In the message, give your <strong>registered mobile number</strong> and your <strong>firm or shop name</strong>, so we can identify the account.</li>
 </ol>
 <p>We may contact you on your registered number to confirm the request is genuine. Once
@@ -289,7 +289,7 @@ The old account, its points and its history cannot be brought back.</p>
 
 <h2>Contact</h2>
 <div class="note">
-  <p style="margin:0 0 6px">The Vriddhi KSB loyalty programme is operated by <strong>KSB Limited</strong>.</p>
+  <p style="margin:0 0 6px">The KSB-VRiDDHi loyalty programme is operated by <strong>KSB Limited</strong>.</p>
   <p style="margin:0 0 10px">Privacy and data requests are handled on its behalf by <strong>Greymetre Consultants Private Limited</strong>.</p>
   <p style="margin:0 0 6px">Email: <a href="mailto:info@greymetre.io">info@greymetre.io</a></p>
   <p style="margin:0">Address: 591, Scheme 114 Part I, Dewas Naka, Niranjanpur, Indore, Madhya Pradesh 452010</p>
