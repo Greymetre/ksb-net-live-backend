@@ -1,4 +1,5 @@
 using System.Globalization;
+using Api.Extensions;
 using System.Text.Json;
 using Application.DTOs.NewInvoices;
 using Application.Interfaces.Repositories;
@@ -67,6 +68,7 @@ public sealed class FieldKonnectLoyaltyController : ControllerBase
                     name = scheme.SchemeName,
                     code = scheme.SchemeCode,
                     scheme_note = scheme.SchemeNote,
+                    brochure_url = string.IsNullOrWhiteSpace(scheme.BrochurePath) ? null : $"{Request.PublicBaseUrl()}{scheme.BrochurePath}",
                     tag = string.IsNullOrWhiteSpace(scheme.SchemeTag) ? "Regular" : scheme.SchemeTag,
                     based_on = scheme.BasedOn,
                     start_date = scheme.StartDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
@@ -165,6 +167,7 @@ public sealed class FieldKonnectLoyaltyController : ControllerBase
                 code = scheme.SchemeCode,
                 description = scheme.SchemeDescription,
                 scheme_note = scheme.SchemeNote,
+                brochure_url = string.IsNullOrWhiteSpace(scheme.BrochurePath) ? null : $"{Request.PublicBaseUrl()}{scheme.BrochurePath}",
                 tag = string.IsNullOrWhiteSpace(scheme.SchemeTag) ? "Regular" : scheme.SchemeTag,
                 based_on = scheme.BasedOn,
                 area_scope = scheme.AreaScope,

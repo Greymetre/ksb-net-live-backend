@@ -34,6 +34,11 @@ public sealed class CustomerConfiguration : IEntityTypeConfiguration<Customer>
         builder.Property(x => x.CreatedBy).HasColumnName("created_by");
         builder.Property(x => x.UpdatedBy).HasColumnName("updated_by");
         builder.Property(x => x.ExecutiveId).HasColumnName("executive_id");
+        // Computed by the database. Never written, and never sent on an insert or
+        // update, or SQL Server rejects the statement.
+        builder.Property(x => x.AssignedEmployeeId).HasColumnName("assigned_employee_id").ValueGeneratedOnAddOrUpdate();
+        builder.Property(x => x.AssignedSalesExecutiveId).HasColumnName("assigned_sales_executive_id").ValueGeneratedOnAddOrUpdate();
+        builder.Property(x => x.AssignedFallbackEmployeeId).HasColumnName("assigned_fallback_employee_id").ValueGeneratedOnAddOrUpdate();
         builder.Property(x => x.BeatScheduleId).HasColumnName("beatscheduleid");
         builder.Property(x => x.ManagerName).HasColumnName("manager_name").HasMaxLength(250).HasDefaultValue("");
         builder.Property(x => x.ManagerPhone).HasColumnName("manager_phone").HasMaxLength(50).HasDefaultValue("");

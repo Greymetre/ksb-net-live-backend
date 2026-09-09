@@ -2018,6 +2018,7 @@ public sealed class MobileAppController : ControllerBase
                     ValueTo = slab.ValueTo,
                     RewardValue = slab.RewardValue,
                     RewardLabel = SchemeReward.Label(scheme, slab),
+                    RewardType = SchemeReward.TypeFor(scheme, slab),
                     SortOrder = slab.SortOrder
                 })
                 .ToList()
@@ -3028,6 +3029,9 @@ VALUES ('Y', {0}, {1}, {2}, {3}, {4}, {5}, {6}, SYSUTCDATETIME(), SYSUTCDATETIME
         public decimal? ValueTo { get; set; }
         public decimal RewardValue { get; set; }
         public string RewardLabel { get; set; } = string.Empty;
+        /// <summary>Value or Percentage, for this slab. A mixed scheme decides per slab,
+        /// so the scheme's own Based On cannot answer it.</summary>
+        public string RewardType { get; set; } = string.Empty;
         public int SortOrder { get; set; }
     }
     public sealed class DealerInvoiceForm

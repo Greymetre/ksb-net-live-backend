@@ -8,6 +8,8 @@ public sealed class FieldSchemeDto
     public string? Code { get; set; }
     /// <summary>The couple of lines the scheme creator wrote, shown under the dates.</summary>
     public string? SchemeNote { get; set; }
+    /// <summary>The scheme brochure the CRM uploaded, stored as a server path.</summary>
+    public string? BrochurePath { get; set; }
     public string? Tag { get; set; }
     /// <summary>Regular or Booster, which is the wallet the points land in.</summary>
     public string WalletType { get; set; } = "Regular";
@@ -32,7 +34,13 @@ public sealed class FieldSchemeSlabDto
     public decimal FromAmount { get; set; }
     public decimal ToAmount { get; set; }
     public decimal Value { get; set; }
+    /// <summary>How THIS slab pays - Value or Percentage. It used to be the scheme's own
+    /// Based On, which on a mixed scheme reads "Value + Percentage" for every slab and so
+    /// says nothing about any of them.</summary>
     public string? ValueType { get; set; }
+    /// <summary>The figure written out the way it should be read: "2.8%" or "Rs. 1400".
+    /// Worked out on the server so every screen says the same thing.</summary>
+    public string? RewardLabel { get; set; }
 }
 
 /// <summary>A scheme opened from the card, with what this user's retailers have done under it.</summary>

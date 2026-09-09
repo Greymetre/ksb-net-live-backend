@@ -156,7 +156,7 @@ public sealed class FieldInvoiceController : ControllerBase
     public async Task<IActionResult> GetSchemes(CancellationToken cancellationToken)
     {
         var schemes = await _newInvoiceRepository.GetFieldSchemesAsync(CurrentUserId(), Today(), cancellationToken);
-        return Ok(new { status = "success", schemes = schemes.Select(ToSchemeCard) });
+        return Ok(new { status = "success", schemes = schemes.Select(scheme => ToSchemeCard(scheme, Request.PublicBaseUrl())) });
     }
 
     [HttpGet("schemes/{id:long}")]
@@ -168,13 +168,14 @@ public sealed class FieldInvoiceController : ControllerBase
         return Ok(new
         {
             status = "success",
-            scheme = ToSchemeCard(detail.Scheme),
+            scheme = ToSchemeCard(detail.Scheme, Request.PublicBaseUrl()),
             slabs = detail.Slabs.Select(slab => new
             {
                 from_amount = slab.FromAmount,
                 to_amount = slab.ToAmount,
                 value = slab.Value,
-                value_type = slab.ValueType
+                value_type = slab.ValueType,
+                reward_label = slab.RewardLabel
             }),
             performance = new
             {
@@ -188,12 +189,15 @@ public sealed class FieldInvoiceController : ControllerBase
         });
     }
 
-    private static object ToSchemeCard(FieldSchemeDto scheme) => new
+    private static object ToSchemeCard(FieldSchemeDto scheme, string baseUrl) => new
     {
         id = scheme.Id,
         name = scheme.Name,
         code = scheme.Code,
         scheme_note = scheme.SchemeNote,
+        // Absolute, like the invoice attachment on this controller, so the app can
+        // open it without knowing where the API lives.
+        brochure_url = string.IsNullOrWhiteSpace(scheme.BrochurePath) ? null : $"{baseUrl}{scheme.BrochurePath}",
         tag = scheme.Tag,
         wallet_type = scheme.WalletType,
         based_on = scheme.BasedOn,

@@ -549,6 +549,21 @@ namespace Infrastructure.Migrations
                         .HasColumnType("decimal(20,0)")
                         .HasColumnName("executive_id");
 
+                    b.Property<decimal?>("AssignedEmployeeId")
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("decimal(20,0)")
+                        .HasColumnName("assigned_employee_id");
+
+                    b.Property<decimal?>("AssignedFallbackEmployeeId")
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("decimal(20,0)")
+                        .HasColumnName("assigned_fallback_employee_id");
+
+                    b.Property<decimal?>("AssignedSalesExecutiveId")
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("decimal(20,0)")
+                        .HasColumnName("assigned_sales_executive_id");
+
                     b.Property<decimal?>("FirmType")
                         .HasColumnType("decimal(20,0)")
                         .HasColumnName("firmtype");

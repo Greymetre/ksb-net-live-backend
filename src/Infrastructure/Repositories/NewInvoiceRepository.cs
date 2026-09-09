@@ -281,7 +281,8 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
                 FromAmount = slab.ValueFrom,
                 ToAmount = slab.ValueTo ?? 0,
                 Value = slab.RewardValue,
-                ValueType = scheme.BasedOn
+                ValueType = SchemeReward.TypeFor(scheme, slab),
+                RewardLabel = SchemeReward.Label(scheme, slab)
             }).ToList(),
             InvoiceCount = distinct.Count,
             RetailerCount = distinct.Select(x => x.SecondaryCustomerId).Distinct().Count(),
@@ -312,6 +313,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
             Name = scheme.SchemeName,
             Code = scheme.SchemeCode,
             SchemeNote = scheme.SchemeNote,
+            BrochurePath = scheme.BrochurePath,
             Tag = scheme.SchemeTag,
             WalletType = scheme.SchemeTag?.Contains("booster", StringComparison.OrdinalIgnoreCase) == true ? "Booster" : "Regular",
             BasedOn = scheme.BasedOn,
@@ -758,22 +760,25 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         return query;
     }
 
+    /// <summary>
+    /// Narrows the listing to invoices whose retailer is handled by one of these
+    /// employees - which is how the zone and branch filters work, since neither is
+    /// stored on the invoice.
+    ///
+    /// The assignment is in customers.custom_fields as JSON. This used to be read with
+    /// ten leading-wildcard LIKEs per employee, evaluated per row: on the live data a
+    /// single zone filter cost 197 seconds of CPU and the screen timed out at twenty.
+    /// The same JSON is now exposed as indexed computed columns, so this is three index
+    /// seeks. The result is the same set of customers - the rule is still "the first id
+    /// in employee_id, or the first in sales_executive_id, or executive_id when the JSON
+    /// names neither" - and it was checked zone by zone against the old predicate before
+    /// being changed.
+    /// </summary>
     private static IQueryable<InvoiceRow> ApplyAssignedEmployeeFilter(IQueryable<InvoiceRow> query, IQueryable<ulong> employeeIds) =>
-        query.Where(x => (x.Customer.ExecutiveId.HasValue && employeeIds.Contains(x.Customer.ExecutiveId.Value)
-                && (x.Customer.CustomFields == null
-                    || (!EF.Functions.Like(x.Customer.CustomFields, "%\"employee_id\":%")
-                        && !EF.Functions.Like(x.Customer.CustomFields, "%\"sales_executive_id\":%"))))
-            || employeeIds.Any(employeeId => x.Customer.CustomFields != null
-                && (EF.Functions.Like(x.Customer.CustomFields, "%\"employee_id\":\"" + employeeId + "\"%")
-                    || EF.Functions.Like(x.Customer.CustomFields, "%\"employee_id\": \"" + employeeId + "\"%")
-                    || EF.Functions.Like(x.Customer.CustomFields, "%\"employee_id\":\"" + employeeId + ",%")
-                    || EF.Functions.Like(x.Customer.CustomFields, "%\"employee_id\": \"" + employeeId + ",%")
-                    || EF.Functions.Like(x.Customer.CustomFields, "%\"employee_id\":" + employeeId + "%")
-                    || EF.Functions.Like(x.Customer.CustomFields, "%\"sales_executive_id\":\"" + employeeId + "\"%")
-                    || EF.Functions.Like(x.Customer.CustomFields, "%\"sales_executive_id\": \"" + employeeId + "\"%")
-                    || EF.Functions.Like(x.Customer.CustomFields, "%\"sales_executive_id\":\"" + employeeId + ",%")
-                    || EF.Functions.Like(x.Customer.CustomFields, "%\"sales_executive_id\": \"" + employeeId + ",%")
-                    || EF.Functions.Like(x.Customer.CustomFields, "%\"sales_executive_id\":" + employeeId + "%"))));
+        query.Where(x =>
+            (x.Customer.AssignedEmployeeId.HasValue && employeeIds.Contains(x.Customer.AssignedEmployeeId.Value))
+            || (x.Customer.AssignedSalesExecutiveId.HasValue && employeeIds.Contains(x.Customer.AssignedSalesExecutiveId.Value))
+            || (x.Customer.AssignedFallbackEmployeeId.HasValue && employeeIds.Contains(x.Customer.AssignedFallbackEmployeeId.Value)));
 
     private IQueryable<InvoiceRow> BaseQuery(ulong? distributorCustomerId)
     {
