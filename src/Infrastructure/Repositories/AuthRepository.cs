@@ -33,11 +33,16 @@ public sealed class AuthRepository : IAuthRepository
             .FirstOrDefaultAsync(x => x.Email == username || x.Mobile == username || x.Mobile == normalized, cancellationToken);
     }
 
+    // Sign-up asks whether a mobile or email is taken. A user that was deleted is not
+    // using it any more, so it must not be counted - IgnoreQueryFilters here meant a
+    // deleted account reserved its number for good and the person could never register
+    // again. The unique indexes behind these columns skip deleted rows too, so the two
+    // now agree; before, one said taken and the other let it through.
     public Task<bool> UserMobileExistsAsync(string mobile, CancellationToken cancellationToken) =>
-        _dbContext.Users.IgnoreQueryFilters().AnyAsync(x => x.Mobile == mobile, cancellationToken);
+        _dbContext.Users.AnyAsync(x => x.Mobile == mobile, cancellationToken);
 
     public Task<bool> UserEmailExistsAsync(string email, CancellationToken cancellationToken) =>
-        _dbContext.Users.IgnoreQueryFilters().AnyAsync(x => x.Email == email, cancellationToken);
+        _dbContext.Users.AnyAsync(x => x.Email == email, cancellationToken);
 
     public async Task<User> AddUserAsync(User user, CancellationToken cancellationToken)
     {

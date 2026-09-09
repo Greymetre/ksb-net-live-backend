@@ -1327,8 +1327,12 @@ public sealed class MobileAppController : ControllerBase
     private IQueryable<Customer> FindMobileCustomer(string mobile) =>
         _dbContext.Customers.Where(x => x.Active == "Y" && (x.CustomerType == DealerType || x.CustomerType == RetailerType || x.CustomerType == InfluencerType) && (x.Mobile == mobile || x.ContactNumber == mobile || (x.CustomFields != null && x.CustomFields.Contains(mobile))));
 
+    // A customer that was deleted is not using its email any more, so it must not be
+    // counted here. IgnoreQueryFilters meant a deleted account held its address for
+    // good; the unique index behind the column skips deleted rows, so the check and
+    // the database now agree instead of one refusing what the other would allow.
     private Task<bool> EmailInUseAsync(string email, ulong? exceptCustomerId, CancellationToken cancellationToken) =>
-        _dbContext.Customers.IgnoreQueryFilters().AnyAsync(
+        _dbContext.Customers.AnyAsync(
             x => x.Email != null && x.Email.ToLower() == email && (!exceptCustomerId.HasValue || x.Id != exceptCustomerId.Value),
             cancellationToken);
 
