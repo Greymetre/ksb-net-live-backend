@@ -2684,7 +2684,8 @@ VALUES ('Y', {0}, {1}, {2}, {3}, {4}, {5}, {6}, SYSUTCDATETIME(), SYSUTCDATETIME
             ? await _dbContext.States.AsNoTracking().Where(x => x.Id == stateId.Value).Select(x => x.StateName).FirstOrDefaultAsync(cancellationToken)
             : null;
 
-        return new SchemeAudience(customer.CustomerType, customer.Name, customer.CustomerCode, branchName, zoneName, stateName);
+        return new SchemeAudience(customer.CustomerType, customer.Name, customer.CustomerCode, branchName, zoneName, stateName,
+            SchemeEligibility.ReadDealerId(customer));
     }
 
     private static ulong? FirstAssignedId(string? value)

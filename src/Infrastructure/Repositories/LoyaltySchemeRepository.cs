@@ -5,6 +5,7 @@ using Domain.Entities;
 using Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Domain.Services;
+using Shared.Json;
 
 namespace Infrastructure.Repositories;
 
@@ -54,8 +55,32 @@ public sealed class LoyaltySchemeRepository : ILoyaltySchemeRepository
             .Take(MaxRows)
             .ToListAsync(cancellationToken);
 
+        // A dealer login carries scheme.view, so it reaches this listing too. A scheme that
+        // names that dealer in Excluded dealers must not appear here either - it is meant to
+        // be invisible to them everywhere, and this is the one screen that was not going
+        // through the audience check.
+        var actorDealerId = await DealerCustomerIdAsync(filter.ActorUserId, cancellationToken);
+        if (actorDealerId.HasValue)
+        {
+            schemes = schemes
+                .Where(scheme => !SchemeEligibility.ReadExcludedDealerIds(scheme.ExcludedDealerIds).Contains(actorDealerId.Value))
+                .ToList();
+        }
+
         var creators = await LoadCreatorsAsync(schemes.SelectMany(SchemePeopleIds), cancellationToken);
         return schemes.Select(x => ToDto(x, creators)).ToList();
+    }
+
+    /// <summary>The customer a dealer login belongs to, or null for an internal user.</summary>
+    private async Task<ulong?> DealerCustomerIdAsync(ulong? actorUserId, CancellationToken cancellationToken)
+    {
+        if (!actorUserId.HasValue) return null;
+        return await _dbContext.Users.AsNoTracking()
+            .Where(x => x.Id == actorUserId.Value && x.CustomerId.HasValue)
+            .Join(_dbContext.Customers.AsNoTracking(), x => x.CustomerId, x => x.Id, (_, customer) => customer)
+            .Where(x => x.DeletedAt == null && x.CustomerType == SchemeEligibility.DealerCustomerType)
+            .Select(x => (ulong?)x.Id)
+            .FirstOrDefaultAsync(cancellationToken);
     }
 
     public async Task<LoyaltySchemeDto?> GetSchemeAsync(ulong id, CancellationToken cancellationToken)
@@ -204,6 +229,7 @@ public sealed class LoyaltySchemeRepository : ILoyaltySchemeRepository
             CustomerType = scheme.CustomerType,
             AreaScope = scheme.AreaScope,
             AreaValues = areaValues,
+            ExcludedDealerIds = ReadExcludedDealerIds(scheme.ExcludedDealerIds),
             AreaDisplay = AreaDisplay(scheme.AreaScope, areaValues),
             StartDate = scheme.StartDate,
             EndDate = scheme.EndDate,
@@ -246,6 +272,117 @@ public sealed class LoyaltySchemeRepository : ILoyaltySchemeRepository
                 })
                 .ToList()
         };
+    }
+
+    /// <summary>
+    /// Every dealer, for the scheme form's picker. There are a few hundred of them, so the
+    /// whole list goes in one response and the screen searches and narrows it without
+    /// asking again - which is what keeps the box instant.
+    ///
+    /// Branch and zone come from the dealer's assigned employee, the same rule
+    /// SchemeAudienceService applies when it decides who a scheme reaches; reading them off
+    /// the dealer row instead would offer dealers the scheme would never actually reach.
+    /// The assignment is read through the indexed columns rather than by searching the JSON.
+    /// </summary>
+    public async Task<IReadOnlyCollection<SchemeDealerOptionDto>> GetDealerOptionsAsync(CancellationToken cancellationToken)
+    {
+        const ulong distributorCustomerType = 1;
+
+        var dealers = await _dbContext.Customers.AsNoTracking()
+            .Where(x => x.DeletedAt == null && x.CustomerType == distributorCustomerType && x.Active == "Y")
+            .Select(x => new
+            {
+                x.Id,
+                x.Name,
+                x.CustomerCode,
+                x.Mobile,
+                x.Email,
+                x.CustomFields,
+                EmployeeId = x.AssignedEmployeeId ?? x.AssignedSalesExecutiveId ?? x.AssignedFallbackEmployeeId
+            })
+            .ToListAsync(cancellationToken);
+        if (dealers.Count == 0) return [];
+
+        var employeeIds = dealers.Where(x => x.EmployeeId.HasValue).Select(x => (decimal)x.EmployeeId!.Value).Distinct().ToArray();
+        var employees = employeeIds.Length == 0
+            ? []
+            : await _dbContext.Users.AsNoTracking()
+                .Where(x => employeeIds.Contains(x.Id))
+                .Select(x => new { x.Id, x.PrimaryBranchId, x.BranchId, x.DivisionId })
+                .ToDictionaryAsync(x => x.Id, x => x, cancellationToken);
+
+        var branchIds = employees.Values
+            .Select(x => x.PrimaryBranchId ?? FirstAssignedId(x.BranchId))
+            .Where(x => x.HasValue).Select(x => x!.Value).Distinct().ToArray();
+        var branches = branchIds.Length == 0 ? [] : await _dbContext.Branches.AsNoTracking()
+            .Where(x => branchIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, x => x.BranchName, cancellationToken);
+
+        var divisionIds = employees.Values.Where(x => x.DivisionId.HasValue)
+            .Select(x => x.DivisionId!.Value).Distinct().ToArray();
+        var divisions = divisionIds.Length == 0 ? [] : await _dbContext.Divisions.AsNoTracking()
+            .Where(x => divisionIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, x => x.DivisionName, cancellationToken);
+
+        var stateIds = dealers.Select(x => ReadStateId(x.CustomFields))
+            .Where(x => x.HasValue).Select(x => x!.Value).Distinct().ToArray();
+        var states = stateIds.Length == 0 ? [] : await _dbContext.States.AsNoTracking()
+            .Where(x => stateIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, x => x.StateName, cancellationToken);
+
+        return dealers.Select(dealer =>
+        {
+            string? branch = null;
+            string? zone = null;
+            if (dealer.EmployeeId.HasValue && employees.TryGetValue((ulong)dealer.EmployeeId.Value, out var employee))
+            {
+                var branchId = employee.PrimaryBranchId ?? FirstAssignedId(employee.BranchId);
+                if (branchId.HasValue) branch = branches.GetValueOrDefault(branchId.Value);
+                if (employee.DivisionId.HasValue) zone = divisions.GetValueOrDefault(employee.DivisionId.Value);
+            }
+
+            var stateId = ReadStateId(dealer.CustomFields);
+            return new SchemeDealerOptionDto
+            {
+                Id = dealer.Id,
+                Name = dealer.Name,
+                Code = dealer.CustomerCode,
+                Mobile = dealer.Mobile,
+                Email = dealer.Email,
+                Branch = branch,
+                Zone = zone,
+                State = stateId.HasValue ? states.GetValueOrDefault(stateId.Value) : null
+            };
+        })
+        .OrderBy(x => x.Name)
+        .ToList();
+    }
+
+    private static ulong? ReadStateId(string? customFields)
+    {
+        var fields = CustomFieldsJson.Read(customFields);
+        return FirstAssignedId(fields.GetValueOrDefault("state_id")) ?? FirstAssignedId(fields.GetValueOrDefault("billing_state"));
+    }
+
+    /// <summary>A user can carry several branches as a comma list; the first is the one that counts.</summary>
+    private static ulong? FirstAssignedId(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var first = value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault();
+        return ulong.TryParse(first, out var parsed) && parsed > 0 ? parsed : null;
+    }
+
+    private static ulong[] ReadExcludedDealerIds(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return [];
+        try
+        {
+            return JsonSerializer.Deserialize<ulong[]>(json, JsonOptions) ?? [];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
     }
 
     private static string[] ReadAreaValues(string? json)

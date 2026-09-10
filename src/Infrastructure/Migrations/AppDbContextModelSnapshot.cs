@@ -1396,6 +1396,11 @@ namespace Infrastructure.Migrations
                         .HasColumnType("nvarchar(max)")
                         .HasColumnName("area_values");
 
+                    b.Property<string>("ExcludedDealerIds")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("excluded_dealer_ids");
+
                     b.Property<string>("BasedOn")
                         .IsRequired()
                         .HasMaxLength(50)

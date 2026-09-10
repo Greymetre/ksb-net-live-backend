@@ -85,7 +85,8 @@ public sealed class SchemeAudienceService
 
             var stateId = SchemeEligibility.ReadStateId(customer);
             var stateName = stateId.HasValue ? states.GetValueOrDefault(stateId.Value) : null;
-            return new SchemeAudience(customer.CustomerType, customer.Name, customer.CustomerCode, branchName, zoneName, stateName);
+            return new SchemeAudience(customer.CustomerType, customer.Name, customer.CustomerCode, branchName, zoneName, stateName,
+                SchemeEligibility.ReadDealerId(customer));
         }).ToList();
     }
 

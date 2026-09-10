@@ -14,7 +14,11 @@ public sealed record SchemeAudience(
     string? CustomerCode,
     string? BranchName,
     string? ZoneName,
-    string? StateName);
+    string? StateName,
+    /// <summary>The dealer this audience belongs to: a dealer's own id, or the dealer a
+    /// retailer is mapped to. A scheme that excludes that dealer does not apply to either
+    /// of them - see SchemeEligibility.Matches.</summary>
+    ulong? DealerId);
 
 /// <summary>
 /// Single source of truth for deciding whether a loyalty scheme applies. Every
@@ -38,12 +42,56 @@ public static class SchemeEligibility
         && scheme.StartDate <= date
         && scheme.EndDate >= date;
 
-    /// <summary>Full check: period, customer type and area scope.</summary>
+    /// <summary>Full check: period, customer type, area scope, and the excluded dealers.</summary>
     public static bool Matches(LoyaltyScheme scheme, DateOnly date, SchemeAudience audience) =>
         date >= scheme.StartDate
         && date <= scheme.EndDate
+        && !IsExcludedDealer(scheme, audience)
         && CustomerTypeMatches(scheme.CustomerType, audience.CustomerType)
         && AreaMatches(scheme, audience);
+
+    /// <summary>
+    /// A scheme can name dealers it deliberately leaves out. It then applies neither to
+    /// that dealer nor to the retailers mapped to it - so it is not offered on any invoice
+    /// form, does not appear on any screen either of them can see, and earns nothing.
+    ///
+    /// The check sits here rather than at each screen because "earns nothing" and "is not
+    /// shown" have to be the same decision: a scheme still quietly paying points while
+    /// being invisible is worse than either.
+    /// </summary>
+    public static bool IsExcludedDealer(LoyaltyScheme scheme, SchemeAudience audience)
+    {
+        if (!audience.DealerId.HasValue) return false;
+        var excluded = ReadExcludedDealerIds(scheme.ExcludedDealerIds);
+        return excluded.Count > 0 && excluded.Contains(audience.DealerId.Value);
+    }
+
+    public static IReadOnlyCollection<ulong> ReadExcludedDealerIds(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return [];
+        try
+        {
+            return JsonSerializer.Deserialize<ulong[]>(json) ?? [];
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+    }
+
+    /// <summary>
+    /// The dealer an audience belongs to. A dealer is its own; a retailer takes the dealer
+    /// it is mapped to, read from the same custom fields the rest of the system uses for
+    /// that link. Live data records it under two different keys.
+    /// </summary>
+    public static ulong? ReadDealerId(Customer customer)
+    {
+        if (customer.CustomerType == DealerCustomerType) return customer.Id;
+
+        return ReadCustomFieldULong(customer, "distributor_name")
+            ?? ReadCustomFieldULong(customer, "agri_distributor")
+            ?? ReadCustomFieldULong(customer, "dealer_name");
+    }
 
     /// <summary>
     /// Compares the scheme's target audience against the customer's own type.

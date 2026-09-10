@@ -10,6 +10,7 @@ public interface ILoyaltySchemeService
     Task<MasterDataFileDto> ExportSchemesAsync(LoyaltySchemeFilterDto filter, CancellationToken cancellationToken);
     Task<LaravelApiResponse> GetSchemeAsync(ulong id, CancellationToken cancellationToken);
     Task<LaravelApiResponse> GetOptionsAsync(CancellationToken cancellationToken);
+    Task<LaravelApiResponse> GetDealerOptionsAsync(CancellationToken cancellationToken);
     Task<LaravelApiResponse> GenerateSchemeCodeAsync(string? schemeName, string? schemeTag, string? basedOn, CancellationToken cancellationToken);
     Task<LaravelApiResponse> CreateSchemeAsync(LoyaltySchemeRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> UpdateSchemeAsync(ulong id, LoyaltySchemeRequestDto request, ulong? actorUserId, bool isSuperAdmin, CancellationToken cancellationToken);

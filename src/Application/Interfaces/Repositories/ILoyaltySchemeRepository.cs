@@ -14,4 +14,5 @@ public interface ILoyaltySchemeRepository
     Task<LoyaltySchemeDto> SaveSchemeAsync(LoyaltyScheme scheme, CancellationToken cancellationToken);
     Task<bool> DeleteSchemeAsync(LoyaltyScheme scheme, CancellationToken cancellationToken);
     Task<LoyaltySchemeOptionsDto> GetOptionsAsync(CancellationToken cancellationToken);
+    Task<IReadOnlyCollection<SchemeDealerOptionDto>> GetDealerOptionsAsync(CancellationToken cancellationToken);
 }

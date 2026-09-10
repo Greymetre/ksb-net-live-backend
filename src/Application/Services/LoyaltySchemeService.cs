@@ -83,6 +83,9 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
     public async Task<LaravelApiResponse> GetOptionsAsync(CancellationToken cancellationToken) =>
         LaravelApiResponse.Success("options", await _repository.GetOptionsAsync(cancellationToken));
 
+    public async Task<LaravelApiResponse> GetDealerOptionsAsync(CancellationToken cancellationToken) =>
+        LaravelApiResponse.Success("dealers", await _repository.GetDealerOptionsAsync(cancellationToken));
+
     public async Task<LaravelApiResponse> GenerateSchemeCodeAsync(string? schemeName, string? schemeTag, string? basedOn, CancellationToken cancellationToken)
     {
         var prefix = BuildSchemeCodePrefix(schemeName, schemeTag, basedOn, DateTime.UtcNow.Year);
@@ -124,6 +127,7 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
             CustomerType = NormalizeChoice(request.CustomerType, string.Empty, CustomerTypes),
             AreaScope = NormalizeChoice(request.AreaScope, "All", AreaScopes),
             AreaValues = SerializeAreaValues(request.AreaScope, request.AreaValues),
+            ExcludedDealerIds = SerializeExcludedDealerIds(request.ExcludedDealerIds),
             StartDate = request.StartDate!.Value,
             EndDate = request.EndDate!.Value,
             SchemeType = "Invoice",
@@ -158,6 +162,7 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
         scheme.CustomerType = NormalizeChoice(request.CustomerType, string.Empty, CustomerTypes);
         scheme.AreaScope = NormalizeChoice(request.AreaScope, "All", AreaScopes);
         scheme.AreaValues = SerializeAreaValues(request.AreaScope, request.AreaValues);
+        scheme.ExcludedDealerIds = SerializeExcludedDealerIds(request.ExcludedDealerIds);
         scheme.StartDate = request.StartDate!.Value;
         scheme.EndDate = request.EndDate!.Value;
         scheme.SchemeType = "Invoice";
@@ -413,6 +418,14 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
 
     private async Task<LoyaltyScheme> FindOrThrowAsync(ulong id, CancellationToken cancellationToken) =>
         await _repository.FindSchemeEntityAsync(id, cancellationToken) ?? throw Http(LaravelStatusCodes.NotFound, "Scheme not found");
+
+    /// <summary>The excluded dealers, as their customer ids. Ids rather than names because a
+    /// dealer can be renamed and the scheme must still leave out the same dealers.</summary>
+    private static string SerializeExcludedDealerIds(ulong[]? dealerValues)
+    {
+        var ids = (dealerValues ?? []).Where(x => x > 0).Distinct().OrderBy(x => x).ToArray();
+        return ids.Length == 0 ? "[]" : JsonSerializer.Serialize(ids);
+    }
 
     private static string SerializeAreaValues(string? areaScope, string[]? areaValues)
     {

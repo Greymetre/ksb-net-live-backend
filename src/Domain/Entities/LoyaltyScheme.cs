@@ -12,6 +12,10 @@ public sealed class LoyaltyScheme : BaseEntity
     public string CustomerType { get; set; } = string.Empty;
     public string AreaScope { get; set; } = "All";
     public string AreaValues { get; set; } = "[]";
+    /// <summary>Dealers this scheme deliberately leaves out - "Exclusion Dealers" on the
+    /// form - as a JSON array of customer ids. Stored like AreaValues, and empty when none
+    /// were picked. Ids rather than names, so renaming a dealer changes nothing.</summary>
+    public string ExcludedDealerIds { get; set; } = "[]";
     public DateOnly StartDate { get; set; }
     public DateOnly EndDate { get; set; }
     public string SchemeType { get; set; } = "Invoice";

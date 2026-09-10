@@ -135,6 +135,15 @@ public sealed class FieldKonnectLoyaltyController : ControllerBase
             .FirstOrDefaultAsync(x => x.Id == schemeId && x.DeletedAt == null, ct);
         if (scheme is null) return NotFound(new { status = "error", message = "Scheme not found." });
 
+        // A scheme that excludes this retailer's dealer is not this retailer's scheme. The
+        // listing already leaves it out; without this the page still opened from a link.
+        if (SchemeEligibility.IsExcludedDealer(scheme, new SchemeAudience(
+                retailer.CustomerType, retailer.Name, retailer.CustomerCode, null, null, null,
+                SchemeEligibility.ReadDealerId(retailer))))
+        {
+            return NotFound(new { status = "error", message = "Scheme not found." });
+        }
+
         var invoices = await RetailerInvoicesAsync(retailerId, schemeId, ct);
         var approved = invoices.Where(x => x.ApprovalStatus == NewInvoice.StatusApprovedHo).ToList();
         var awaiting = invoices.Where(x => x.ApprovalStatus is not NewInvoice.StatusApprovedHo and not NewInvoice.StatusRejected).ToList();

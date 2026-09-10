@@ -388,9 +388,10 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
 
             // The area part of a scheme only ever looks at one of these, so retailers sharing
             // a branch, zone and state collapse into a single audience.
-            audiences.Add(new SchemeAudience(customer.CustomerType, null, null, branchName, zoneName, stateName));
+            var dealerId = SchemeEligibility.ReadDealerId(customer);
+            audiences.Add(new SchemeAudience(customer.CustomerType, null, null, branchName, zoneName, stateName, dealerId));
             // A scheme aimed at named customers needs the retailer itself.
-            audiences.Add(new SchemeAudience(customer.CustomerType, customer.Name, customer.CustomerCode, branchName, zoneName, stateName));
+            audiences.Add(new SchemeAudience(customer.CustomerType, customer.Name, customer.CustomerCode, branchName, zoneName, stateName, dealerId));
         }
 
         return audiences.ToList();
@@ -495,7 +496,8 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
             customer.CustomerCode,
             branch?.BranchName,
             zoneName,
-            stateNames.GetValueOrDefault(customer.Id));
+            stateNames.GetValueOrDefault(customer.Id),
+            SchemeEligibility.ReadDealerId(customer));
 
         return schemes
             .Where(x => SchemeMatches(x, date, audience))
@@ -1381,6 +1383,20 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
                 && invoiceDate >= scheme.StartDate
                 && invoiceDate <= scheme.EndDate)
             : null;
+
+        // A scheme that excludes this invoice's dealer pays it nothing, even though the
+        // invoice was stamped with that scheme before the exclusion was set. Hiding the
+        // scheme while it quietly kept paying would be the worst of both.
+        //
+        // Only the exclusion is re-checked here, not the whole eligibility rule: an invoice
+        // raised legitimately must not lose its reward because the retailer has since moved
+        // branch or the scheme's area was edited.
+        if (selectedScheme is not null)
+        {
+            var dealerAudience = new SchemeAudience(customer.CustomerType, customer.Name, customer.CustomerCode,
+                branchName, zoneName, null, SchemeEligibility.ReadDealerId(customer));
+            if (SchemeEligibility.IsExcludedDealer(selectedScheme, dealerAudience)) selectedScheme = null;
+        }
         if (selectedScheme is null)
             return [ToDto(invoice, customer, cityName, zoneName, branchName, assignedDistributorName, assignedEmployeeName, assignedEmployeeMobile, creator, branch, null, null, approvalSummary)];
 

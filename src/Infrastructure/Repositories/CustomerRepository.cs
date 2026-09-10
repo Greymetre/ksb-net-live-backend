@@ -43,20 +43,9 @@ public sealed class CustomerRepository : ICustomerRepository
         var query = _dbContext.Customers.AsNoTracking().Where(x => x.DeletedAt == null);
 
         var dealerCustomerId = await DealerCustomerIdAsync(filter.ActorUserId, cancellationToken);
-        if (dealerCustomerId.HasValue)
-        {
-            var id = dealerCustomerId.Value.ToString();
-            query = query.Where(x => x.Id == dealerCustomerId.Value ||
-                (x.CustomerType != DistributorCustomerType && x.CustomFields != null &&
-                 (EF.Functions.Like(x.CustomFields, $"%\"distributor_name\":\"{id}\"%") ||
-                  EF.Functions.Like(x.CustomFields, $"%\"distributor_name\":{id}%") ||
-                  EF.Functions.Like(x.CustomFields, $"%\"dealer_name\":\"{id}\"%") ||
-                  EF.Functions.Like(x.CustomFields, $"%\"dealer_name\":{id}%") ||
-                  EF.Functions.Like(x.CustomFields, $"%\"agri_distributor\":\"{id}\"%") ||
-                  EF.Functions.Like(x.CustomFields, $"%\"agri_distributor\":{id}%"))));
-        }
+        query = PinToDealer(query, dealerCustomerId);
 
-        query = await ApplyReportingScopeAsync(query, filter.ActorUserId, cancellationToken);
+        query = await ApplyReportingScopeAsync(query, filter.ActorUserId, dealerCustomerId, cancellationToken);
 
         if (filter.CustomerType.HasValue) query = query.Where(x => x.CustomerType == filter.CustomerType);
         if (!string.IsNullOrWhiteSpace(filter.Active)) query = query.Where(x => x.Active == NormalizeActive(filter.Active));
@@ -364,19 +353,54 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
         if (await ReportingVisibility.HasUnrestrictedDataScopeAsync(_dbContext, actorUserId, cancellationToken))
             return candidateIds.Distinct().ToArray();
 
+        // This one is not pinned by its caller, so it is pinned here. Standing the
+        // reporting scope aside without pinning would have widened what a dealer sees,
+        // which is the opposite mistake to the one being fixed.
+        var dealerCustomerId = await DealerCustomerIdAsync(actorUserId, cancellationToken);
         var scoped = await ApplyReportingScopeAsync(
-            _dbContext.Customers.AsNoTracking().Where(x => candidateIds.Contains(x.Id)),
+            PinToDealer(_dbContext.Customers.AsNoTracking().Where(x => candidateIds.Contains(x.Id)), dealerCustomerId),
             actorUserId,
+            dealerCustomerId,
             cancellationToken);
 
         return await scoped.Select(x => x.Id).Distinct().ToArrayAsync(cancellationToken);
     }
 
+    /// <summary>
+    /// The customers a dealer login may see: itself, and the retailers whose custom_fields
+    /// name it. Live data records that link under three different keys, so all three are
+    /// matched. Written once here because the listing, the detail and the reporting filter
+    /// all need exactly the same rule - the detail used to leave out dealer_name, so a
+    /// retailer linked that way appeared in the list and then could not be opened.
+    /// </summary>
+    private static IQueryable<Customer> PinToDealer(IQueryable<Customer> query, ulong? dealerCustomerId)
+    {
+        if (!dealerCustomerId.HasValue) return query;
+
+        var id = dealerCustomerId.Value.ToString();
+        return query.Where(x => x.Id == dealerCustomerId.Value ||
+            (x.CustomerType != DistributorCustomerType && x.CustomFields != null &&
+             (EF.Functions.Like(x.CustomFields, $"%\"distributor_name\":\"{id}\"%") ||
+              EF.Functions.Like(x.CustomFields, $"%\"distributor_name\":{id}%") ||
+              EF.Functions.Like(x.CustomFields, $"%\"dealer_name\":\"{id}\"%") ||
+              EF.Functions.Like(x.CustomFields, $"%\"dealer_name\":{id}%") ||
+              EF.Functions.Like(x.CustomFields, $"%\"agri_distributor\":\"{id}\"%") ||
+              EF.Functions.Like(x.CustomFields, $"%\"agri_distributor\":{id}%"))));
+    }
+
     private async Task<IQueryable<Customer>> ApplyReportingScopeAsync(
         IQueryable<Customer> query,
         ulong? actorUserId,
+        ulong? dealerCustomerId,
         CancellationToken cancellationToken)
     {
+        // A dealer login has already been pinned to its own customers by the caller.
+        // Running the reporting scope over that as well narrowed it a second time, down
+        // to the retailers of whichever of the dealer's people carry an ASR or DSR
+        // designation - so a dealer whose employee is a TM or a BDM simply lost that
+        // employee's retailers. The pin above is the dealer's scope; this one is not.
+        if (dealerCustomerId.HasValue) return query;
+
         if (await ReportingVisibility.HasUnrestrictedDataScopeAsync(_dbContext, actorUserId, cancellationToken)) return query;
 
         // Resolved once per request; the repository is scoped to the request.
@@ -418,18 +442,9 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
     {
         var query = _dbContext.Customers.AsNoTracking().Where(x => x.Id == id && x.DeletedAt == null);
         var dealerCustomerId = await DealerCustomerIdAsync(actorUserId, cancellationToken);
-        if (dealerCustomerId.HasValue)
-        {
-            var dealerId = dealerCustomerId.Value.ToString();
-            query = query.Where(x => x.Id == dealerCustomerId.Value ||
-                (x.CustomerType != DistributorCustomerType && x.CustomFields != null &&
-                 (EF.Functions.Like(x.CustomFields, $"%\"distributor_name\":\"{dealerId}\"%") ||
-                  EF.Functions.Like(x.CustomFields, $"%\"distributor_name\":{dealerId}%") ||
-                  EF.Functions.Like(x.CustomFields, $"%\"agri_distributor\":\"{dealerId}\"%") ||
-                  EF.Functions.Like(x.CustomFields, $"%\"agri_distributor\":{dealerId}%"))));
-        }
+        query = PinToDealer(query, dealerCustomerId);
 
-        query = await ApplyReportingScopeAsync(query, actorUserId, cancellationToken);
+        query = await ApplyReportingScopeAsync(query, actorUserId, dealerCustomerId, cancellationToken);
 
         var row = await query
             .Select(x => new
@@ -1377,7 +1392,8 @@ WHERE customer_id IN ({customerIdCsv})
     // what the invoice screen and the mobile apps consider eligible.
     private static bool SchemeMatchesCustomer(LoyaltyScheme scheme, DateOnly invoiceDate, Customer customer, string? branchName, string? zoneName, string? stateName) =>
         SchemeEligibility.Matches(scheme, invoiceDate, new SchemeAudience(
-            customer.CustomerType, customer.Name, customer.CustomerCode, branchName, zoneName, stateName));
+            customer.CustomerType, customer.Name, customer.CustomerCode, branchName, zoneName, stateName,
+            SchemeEligibility.ReadDealerId(customer)));
 
     private static decimal PeriodAmount(
         ulong customerId,

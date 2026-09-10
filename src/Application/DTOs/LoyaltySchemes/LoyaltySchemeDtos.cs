@@ -13,6 +13,8 @@ public sealed class LoyaltySchemeDto
     public string AreaScope { get; set; } = "All";
     public string[] AreaValues { get; set; } = [];
     public string AreaDisplay { get; set; } = "All India";
+    /// <summary>Customer ids of the dealers excluded from this scheme.</summary>
+    public ulong[] ExcludedDealerIds { get; set; } = [];
     public DateOnly StartDate { get; set; }
     public DateOnly EndDate { get; set; }
     public string SchemeType { get; set; } = "Invoice";
@@ -43,6 +45,26 @@ public sealed class LoyaltySchemeDto
     public List<LoyaltySchemeSlabDto> Slabs { get; set; } = [];
 }
 
+/// <summary>
+/// One dealer for the scheme form's dealer picker. Carries the area it belongs to so the
+/// screen can narrow the list to the chosen zone, branch or state without asking the
+/// server again, and the code, mobile and email so the box can be searched by any of them.
+/// </summary>
+public sealed class SchemeDealerOptionDto
+{
+    public ulong Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public string? Code { get; set; }
+    public string? Mobile { get; set; }
+    public string? Email { get; set; }
+    /// <summary>Branch and zone come from the dealer's assigned employee, which is the same
+    /// rule the scheme audience uses - anything else would offer dealers the scheme would
+    /// not actually reach.</summary>
+    public string? Branch { get; set; }
+    public string? Zone { get; set; }
+    public string? State { get; set; }
+}
+
 public sealed class LoyaltySchemeSlabDto
 {
     public ulong Id { get; set; }
@@ -66,6 +88,7 @@ public sealed class LoyaltySchemeRequestDto
     public string? CustomerType { get; set; }
     public string? AreaScope { get; set; }
     public string[]? AreaValues { get; set; }
+    public ulong[]? ExcludedDealerIds { get; set; }
     public DateOnly? StartDate { get; set; }
     public DateOnly? EndDate { get; set; }
     public string? SchemeType { get; set; }
@@ -89,6 +112,9 @@ public sealed class LoyaltySchemeFilterDto
 {
     public string? Search { get; set; }
     public string? Status { get; set; }
+    /// <summary>Who is asking. A dealer login holds scheme.view, so it reaches this listing
+    /// too - and must not be shown a scheme that names it in Excluded dealers.</summary>
+    public ulong? ActorUserId { get; set; }
 }
 
 public sealed class LoyaltySchemeDecisionDto

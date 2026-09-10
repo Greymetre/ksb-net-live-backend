@@ -25,6 +25,7 @@ public sealed class LoyaltySchemesController : ControllerBase
     [HttpGet]
     public async Task<IActionResult> GetSchemes([FromQuery] LoyaltySchemeFilterDto filter, CancellationToken cancellationToken)
     {
+        filter.ActorUserId = CurrentUserId();
         var response = await _loyaltySchemeService.GetSchemesAsync(filter, cancellationToken);
         return Ok(response);
     }
@@ -33,8 +34,18 @@ public sealed class LoyaltySchemesController : ControllerBase
     [HttpGet("export")]
     public async Task<IActionResult> ExportSchemes([FromQuery] LoyaltySchemeFilterDto filter, CancellationToken cancellationToken)
     {
+        filter.ActorUserId = CurrentUserId();
         var file = await _loyaltySchemeService.ExportSchemesAsync(filter, cancellationToken);
         return File(file.Content, file.ContentType, file.FileName);
+    }
+
+    /// <summary>Every dealer, for the scheme form's dealer picker. Authentication only, like
+    /// the other dropdown routes - a user who may open the scheme form needs its options.</summary>
+    [HttpGet("dealer-options")]
+    public async Task<IActionResult> GetDealerOptions(CancellationToken cancellationToken)
+    {
+        var response = await _loyaltySchemeService.GetDealerOptionsAsync(cancellationToken);
+        return Ok(response);
     }
 
     [HttpGet("options")]
