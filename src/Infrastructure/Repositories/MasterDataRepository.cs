@@ -422,7 +422,27 @@ public sealed class MasterDataRepository : IMasterDataRepository
     public async Task<CityDto?> GetCityAsync(ulong id, CancellationToken cancellationToken)
     {
         var city = await _dbContext.Cities.AsNoTracking().FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
-        return city is null ? null : ToCityDto(city);
+        if (city is null) return null;
+
+        var dto = ToCityDto(city);
+        dto.StateId = await ResolveCityStateIdAsync(city.StateId, city.DistrictId, cancellationToken);
+        return dto;
+    }
+
+    /// <summary>
+    /// A city's state: its own when it has one, otherwise its district's.
+    ///
+    /// The city form sends a district and no state, so every city added through the CRM
+    /// stored a blank state_id - 869 of them on the live data. A district always carries a
+    /// state, so nothing is guessed at here; the value is simply read from one row up.
+    /// </summary>
+    private async Task<ulong?> ResolveCityStateIdAsync(ulong? stateId, ulong? districtId, CancellationToken cancellationToken)
+    {
+        if (stateId.HasValue || !districtId.HasValue) return stateId;
+        return await _dbContext.Districts.AsNoTracking()
+            .Where(x => x.Id == districtId.Value)
+            .Select(x => x.StateId)
+            .FirstOrDefaultAsync(cancellationToken);
     }
 
     public async Task<IReadOnlyCollection<CityExportRowDto>> ExportCitiesAsync(CancellationToken cancellationToken)
@@ -464,7 +484,7 @@ public sealed class MasterDataRepository : IMasterDataRepository
             Active = NormalizeActive(request.Active) ?? "Y",
             CityName = request.CityName!.Trim(),
             DistrictId = request.DistrictId,
-            StateId = request.StateId,
+            StateId = await ResolveCityStateIdAsync(request.StateId, request.DistrictId, cancellationToken),
             Grade = NormalizeText(request.Grade),
             CreatedBy = actorUserId,
             CreatedAt = DateTime.UtcNow,
@@ -484,6 +504,10 @@ public sealed class MasterDataRepository : IMasterDataRepository
         if (!string.IsNullOrWhiteSpace(request.CityName)) city.CityName = request.CityName.Trim();
         if (request.DistrictId.HasValue) city.DistrictId = request.DistrictId;
         if (request.StateId.HasValue) city.StateId = request.StateId;
+        // The form sends a district and no state, so a row that has none - or that has just
+        // been moved to a district in another state - takes the district's.
+        else if (request.DistrictId.HasValue || !city.StateId.HasValue)
+            city.StateId = await ResolveCityStateIdAsync(null, city.DistrictId, cancellationToken);
         if (request.Grade is not null) city.Grade = NormalizeText(request.Grade);
         var active = NormalizeActive(request.Active);
         if (active is not null) city.Active = active;
@@ -1109,7 +1133,9 @@ public sealed class MasterDataRepository : IMasterDataRepository
             from city in cityJoin.DefaultIfEmpty()
             join district in _dbContext.Districts.AsNoTracking() on city.DistrictId equals district.Id into districtJoin
             from district in districtJoin.DefaultIfEmpty()
-            join state in _dbContext.States.AsNoTracking() on city.StateId equals state.Id into stateJoin
+            // The state is read through the district when the city has none of its own,
+            // otherwise a blank city.state_id loses the state and the country with it.
+            join state in _dbContext.States.AsNoTracking() on (city.StateId ?? district.StateId) equals state.Id into stateJoin
             from state in stateJoin.DefaultIfEmpty()
             join country in _dbContext.Countries.AsNoTracking() on state.CountryId equals country.Id into countryJoin
             from country in countryJoin.DefaultIfEmpty()
@@ -1128,7 +1154,7 @@ public sealed class MasterDataRepository : IMasterDataRepository
             from cityRow in _dbContext.Cities.AsNoTracking()
             join district in _dbContext.Districts.AsNoTracking() on cityRow.DistrictId equals district.Id into districtJoin
             from district in districtJoin.DefaultIfEmpty()
-            join state in _dbContext.States.AsNoTracking() on cityRow.StateId equals state.Id into stateJoin
+            join state in _dbContext.States.AsNoTracking() on (cityRow.StateId ?? district.StateId) equals state.Id into stateJoin
             from state in stateJoin.DefaultIfEmpty()
             join country in _dbContext.Countries.AsNoTracking() on state.CountryId equals country.Id into countryJoin
             from country in countryJoin.DefaultIfEmpty()
@@ -1160,11 +1186,11 @@ public sealed class MasterDataRepository : IMasterDataRepository
             from cityRow in _dbContext.Cities.AsNoTracking()
             join district in _dbContext.Districts.AsNoTracking() on cityRow.DistrictId equals district.Id into districtJoin
             from district in districtJoin.DefaultIfEmpty()
-            join state in _dbContext.States.AsNoTracking() on cityRow.StateId equals state.Id into stateJoin
+            join state in _dbContext.States.AsNoTracking() on (cityRow.StateId ?? district.StateId) equals state.Id into stateJoin
             from state in stateJoin.DefaultIfEmpty()
             join country in _dbContext.Countries.AsNoTracking() on state.CountryId equals country.Id into countryJoin
             from country in countryJoin.DefaultIfEmpty()
-            where cityRow.Active == "Y" && cityRow.StateId == stateId
+            where cityRow.Active == "Y" && (cityRow.StateId ?? district.StateId) == stateId
             orderby cityRow.CityName
             select new { city = cityRow, district, state, country })
             .Take(MaxCityRows)
@@ -1196,12 +1222,15 @@ public sealed class MasterDataRepository : IMasterDataRepository
 
     private static LocationDetailsDto ToLocationDetails(Domain.Entities.Country? country, Domain.Entities.State? state, Domain.Entities.District? district, Domain.Entities.City? city, IEnumerable<PincodeDto> pincodes)
     {
+        var cityDto = city is null ? null : ToCityDto(city);
+        if (cityDto is not null && !cityDto.StateId.HasValue) cityDto.StateId = state?.Id;
+
         return new LocationDetailsDto
         {
             Country = country is null ? null : ToCountryDto(country),
             State = state is null ? null : ToStateDto(state),
             District = district is null ? null : ToDistrictDto(district),
-            City = city is null ? null : ToCityDto(city),
+            City = cityDto,
             Pincodes = pincodes.ToArray()
         };
     }

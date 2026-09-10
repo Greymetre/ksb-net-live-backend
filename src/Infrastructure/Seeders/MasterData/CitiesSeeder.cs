@@ -10060,5 +10060,23 @@ ON DUPLICATE KEY UPDATE `active` = VALUES(`active`), `city_name` = VALUES(`city_
 """"""";
         await SqlServerSeedSql.ExecuteUpsertAsync(db, sql21, cancellationToken);
 
+        await FillStateFromDistrictAsync(db, cancellationToken);
     }
+
+    /// <summary>
+    /// Gives every city the state its own district names, where the city has none.
+    ///
+    /// The snapshot above carries state_id exactly as the table held it, and 869 of those
+    /// rows are blank - the city form has always sent a district and no state. A blank one
+    /// costs the customer form its Country and State when a pincode is searched, because
+    /// that lookup reads the state from the city and the country from the state. Districts
+    /// are seeded before cities, so the value is there to be read; nothing is invented, and
+    /// a city that already names a state is left alone.
+    /// </summary>
+    private static Task FillStateFromDistrictAsync(AppDbContext db, CancellationToken cancellationToken) =>
+        db.Database.ExecuteSqlRawAsync(
+            "UPDATE c SET c.state_id = d.state_id " +
+            "FROM cities c JOIN districts d ON d.id = c.district_id " +
+            "WHERE c.state_id IS NULL AND d.state_id IS NOT NULL;",
+            cancellationToken);
 }
