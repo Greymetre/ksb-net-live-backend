@@ -117,6 +117,19 @@ public sealed class FieldKonnectCustomerRestController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// The first id out of a custom field that holds one, or a comma separated list of them.
+    ///
+    /// A retailer's dealer is stored as an id in custom_fields; its code is not stored at all
+    /// any more, it is read from the dealer's own row. This is the join key for that.
+    /// </summary>
+    private static string FirstIdSql(string jsonPath)
+    {
+        var raw = $"NULLIF(JSON_VALUE(c.custom_fields, '{jsonPath}'), '')";
+        return $@"TRY_CONVERT(decimal(20,0), NULLIF(LTRIM(RTRIM(
+            CASE WHEN CHARINDEX(',', {raw}) > 0 THEN LEFT({raw}, CHARINDEX(',', {raw}) - 1) ELSE {raw} END)), ''))";
+    }
+
     private async Task<(IReadOnlyList<Dictionary<string, object?>> Rows, long Total)> SqlServerSecondaryCustomers(string type, int page, int perPage, CancellationToken cancellationToken, ulong? requestedId = null)
     {
         var offset = (page - 1) * perPage;
@@ -149,7 +162,9 @@ LEFT JOIN pincodes p ON p.id = COALESCE(a.pincode_id, TRY_CONVERT(decimal(20,0),
 OUTER APPLY (SELECT TOP (1) candidate.beat_id FROM beat_customers candidate WHERE candidate.customer_id = c.id ORDER BY candidate.beat_id) bc
 LEFT JOIN beats b ON b.id = bc.beat_id
 LEFT JOIN users creator ON creator.id = c.created_by
-LEFT JOIN users approver ON approver.id = TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.approve_reject_by'), ''))";
+LEFT JOIN users approver ON approver.id = TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.approve_reject_by'), ''))
+LEFT JOIN customers dealer ON dealer.id = " + FirstIdSql("$.distributor_name") + @" AND dealer.deleted_at IS NULL
+LEFT JOIN customers agri_dealer ON agri_dealer.id = " + FirstIdSql("$.agri_distributor") + @" AND agri_dealer.deleted_at IS NULL";
 
         var total = await QueryScalarLong($"SELECT COUNT_BIG(DISTINCT c.id) {filterJoins} WHERE {where}", cancellationToken, parameters.ToArray());
         var rows = await QueryRows($@"WITH page_customers AS (
@@ -164,7 +179,12 @@ COALESCE(NULLIF(JSON_VALUE(c.custom_fields, '$.owner_name'), ''), NULLIF(c.name,
 COALESCE(NULLIF(JSON_VALUE(c.custom_fields, '$.shop_name'), ''), NULLIF(c.name, '')) AS shop_name,
 COALESCE(NULLIF(JSON_VALUE(c.custom_fields, '$.legal_name'), ''), NULLIF(c.name, '')) AS legal_name,
 COALESCE(NULLIF(JSON_VALUE(c.custom_fields, '$.trade_name'), ''), NULLIF(c.name, '')) AS trade_name,
-COALESCE(NULLIF(JSON_VALUE(c.custom_fields, '$.distributor_code'), ''), NULLIF(c.customer_code, '')) AS distributor_code,
+CASE WHEN NULLIF(JSON_VALUE(c.custom_fields, '$.distributor_name'), '') IS NOT NULL
+     THEN NULLIF(dealer.customer_code, '')
+     ELSE COALESCE(NULLIF(JSON_VALUE(c.custom_fields, '$.distributor_code'), ''), NULLIF(c.customer_code, ''))
+END AS distributor_code,
+NULLIF(agri_dealer.customer_code, '') AS agri_distributor_code,
+dealer.name AS distributor_name_name, agri_dealer.name AS agri_distributor_name,
 COALESCE(NULLIF(JSON_VALUE(c.custom_fields, '$.mobile_number'), ''), NULLIF(c.mobile, '')) AS mobile_number,
 c.contact_number AS whatsapp_number, c.email, c.active, c.customer_code, c.sap_code, c.customertype, c.custom_fields,
 ctype.customertype_name, ctype.type_name, NULLIF(JSON_VALUE(c.custom_fields, '$.sub_type'), '') AS sub_type,
@@ -742,6 +762,14 @@ ORDER BY city.city_name ASC", cancellationToken);
         var (firstName, lastName) = SplitName(contactName);
         var (latitude, longitude) = SplitGps(Value(body, "gps_location"));
         var customerType = ULongValue(body, "customertype") ?? ULongValue(body, "customer_type_id") ?? await CustomerTypeId(isDistributor ? "DISTRIBUTOR" : typeName, isDistributor, cancellationToken);
+        // Only a dealer has a code of its own, and for a dealer that code doubles as the
+        // login password. A retailer's customer_code is not a dealer code, so a dealer code
+        // arriving with a retailer must never be written into it - and a caller that sends no
+        // code at all has to leave the column exactly as it is. The app's retailer form sends
+        // neither field, and this line used to blank the column on every edit.
+        var ownsCustomerCode = isDistributor || IsDealerTypeName(typeName);
+        var customerCodeSent = ownsCustomerCode && !string.IsNullOrWhiteSpace(dealerCode);
+
         var assignedUserIds = AssignedUserIdsFromBody(body, id.HasValue ? null : CurrentUserId());
         var executiveId = assignedUserIds.FirstOrDefault();
         if (executiveId == 0) executiveId = ULongValue(body, "sales_executive_id[0]") ?? ULongValue(body, "sales_executive_id") ?? ULongValue(body, "supervisor_id") ?? ULongValue(body, "employee_id") ?? 0;
@@ -763,7 +791,7 @@ ORDER BY city.city_name ASC", cancellationToken);
             ["aadhar_attachment"] = aadharAttachment,
             ["mou_file"] = mouFile,
             ["documents"] = documentFiles.Count > 0 ? documentFiles : null
-        });
+        }, ownsCustomerCode ? null : DealerCodeCopies);
 
         var parameters = new List<(string, object?)>
         {
@@ -781,7 +809,8 @@ ORDER BY city.city_name ASC", cancellationToken);
             ("@longitude", longitude),
             ("@profile_image", profileImage),
             ("@shop_image", shopImage),
-            ("@customer_code", dealerCode ?? string.Empty),
+            ("@customer_code", customerCodeSent ? dealerCode : string.Empty),
+            ("@customer_code_sent", customerCodeSent ? 1 : 0),
             ("@status_id", ULongValue(body, "status_id") ?? 2),
             ("@customertype", customerType),
             ("@firmtype", ULongValue(body, "firmtype")),
@@ -803,7 +832,8 @@ ORDER BY city.city_name ASC", cancellationToken);
 mobile = @mobile, contact_number = @contact_number,
 email = CASE WHEN @email_sent = 1 THEN @email ELSE email END, latitude = @latitude, longitude = @longitude,
 profile_image = COALESCE(@profile_image, profile_image), shop_image = COALESCE(@shop_image, shop_image),
-customer_code = @customer_code, status_id = @status_id, customertype = @customertype, firmtype = @firmtype,
+customer_code = CASE WHEN @customer_code_sent = 1 THEN @customer_code ELSE customer_code END,
+status_id = @status_id, customertype = @customertype, firmtype = @firmtype,
 updated_by = @updated_by, executive_id = @executive_id, manager_name = @manager_name, manager_phone = @manager_phone,
 sap_code = @sap_code, custom_fields = @custom_fields, updated_at = @now WHERE id = @id", cancellationToken,
                 parameters.Append(("@id", customerId)).ToArray());
@@ -815,7 +845,8 @@ sap_code = @sap_code, custom_fields = @custom_fields, updated_at = @now WHERE id
 mobile = @mobile, contact_number = @contact_number,
 email = CASE WHEN @email_sent = 1 THEN @email ELSE email END, latitude = @latitude, longitude = @longitude,
 profile_image = COALESCE(@profile_image, profile_image), shop_image = COALESCE(@shop_image, shop_image),
-customer_code = @customer_code, status_id = @status_id, customertype = @customertype, firmtype = @firmtype,
+customer_code = CASE WHEN @customer_code_sent = 1 THEN @customer_code ELSE customer_code END,
+status_id = @status_id, customertype = @customertype, firmtype = @firmtype,
 updated_by = @updated_by, executive_id = @executive_id, manager_name = @manager_name, manager_phone = @manager_phone,
 sap_code = @sap_code, custom_fields = @custom_fields, updated_at = @now WHERE id = @id", cancellationToken,
                 parameters.Append(("@id", customerId)).ToArray());
@@ -1550,7 +1581,14 @@ AND {customerTypePredicate}", cancellationToken,
         // app opens its edit form on this very object, so the code came up blank and
         // the save then refused the record for having no dealer code at all.
         ["customer_code"] = Str(row, "customer_code"),
-        ["distributor_code"] = FirstNonEmpty(Str(row, "distributor_code"), Str(row, "customer_code")),
+        // No fallback to customer_code. On a dealer the query has already read the dealer's
+        // own code into this column; on a retailer it holds the assigned dealer's code, and
+        // the retailer's own customer_code is not a dealer code - falling back to it is what
+        // put one customer's code on another customer's screen.
+        ["distributor_code"] = Str(row, "distributor_code"),
+        ["agri_distributor_code"] = Str(row, "agri_distributor_code"),
+        ["distributor_name_name"] = Str(row, "distributor_name_name"),
+        ["agri_distributor_name"] = Str(row, "agri_distributor_name"),
         ["billing_pincode_id"] = ULong(row, "pincode_id"),
         ["billing_pincode"] = FirstNonEmpty(Str(row, "billing_pincode_value"), Str(row, "pincode_value"), Str(row, "billing_pincode")),
         ["registration_type"] = FirstNonEmpty(Str(row, "registration_type"), "Distributor"),
@@ -1618,6 +1656,13 @@ AND {customerTypePredicate}", cancellationToken,
     private Dictionary<string, object?> CuratedRetailerDetails(Dictionary<string, object?> row) => new(StringComparer.OrdinalIgnoreCase)
     {
         ["id"] = ULong(row, "id"),
+        // Read from the dealer's own row by the query above, and set here so that a copy
+        // left behind in custom_fields by an older save cannot win. A retailer has no
+        // dealer code of its own, so there is no fallback to its customer_code.
+        ["distributor_code"] = Str(row, "distributor_code"),
+        ["agri_distributor_code"] = Str(row, "agri_distributor_code"),
+        ["distributor_name_name"] = Str(row, "distributor_name_name"),
+        ["agri_distributor_name"] = Str(row, "agri_distributor_name"),
         ["shop_photo"] = MobileStoragePath(FirstNonEmpty(Str(row, "shop_photo"), Str(row, "shop_image"))),
         ["shop_name"] = Str(row, "shop_name"),
         ["address_line"] = Str(row, "address_line"),
@@ -1996,13 +2041,29 @@ WHERE id = @user_id AND deleted_at IS NULL", cancellationToken, ("@user_id", cur
         return parts.Length >= 2 ? (parts[0], parts[1]) : (null, null);
     }
 
-    private static string BuildCustomFields(IReadOnlyDictionary<string, object?> existing, IReadOnlyDictionary<string, string> body, IReadOnlyDictionary<string, object?> extras)
+    private static string BuildCustomFields(IReadOnlyDictionary<string, object?> existing, IReadOnlyDictionary<string, string> body, IReadOnlyDictionary<string, object?> extras, IReadOnlyCollection<string>? drop = null)
     {
         var values = new Dictionary<string, object?>(existing, StringComparer.OrdinalIgnoreCase);
         foreach (var item in body) values[item.Key] = item.Value;
         foreach (var item in extras.Where(item => item.Value is not null)) values[item.Key] = item.Value;
+        // Dropped last, so a key cannot come back in through the body or through what the
+        // record already carried.
+        if (drop is not null) foreach (var key in drop) values.Remove(key);
         return JsonSerializer.Serialize(values);
     }
+
+    /// <summary>
+    /// A dealer code belongs to the dealer. Keeping a copy of it on the retailer is what let
+    /// the two drift: changing a retailer's dealer moved the id and left the copy behind, so
+    /// the CRM and the app read two different dealers off the same record. The copy is not
+    /// stored any more - every screen reads it from the dealer's own row.
+    /// </summary>
+    private static readonly string[] DealerCodeCopies =
+        ["distributor_code", "agri_distributor_code", "distributor_name_name", "agri_distributor_name"];
+
+    private static bool IsDealerTypeName(string? typeName) =>
+        typeName is not null
+        && new[] { "DEALER", "DISTRIBUTOR", "MASTER_DISTRIBUTOR" }.Contains(typeName.Trim().ToUpperInvariant());
 
     private static object? JsonValue(JsonElement value) => value.ValueKind switch
     {

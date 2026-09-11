@@ -44,10 +44,18 @@ public sealed class MobileTeamReportsController : ControllerBase
             _ => true
         }).ToList();
 
+        // Zones NEWS, then inside a zone by branch A to Z and inside a branch by employee A
+        // to Z, so a branch's people read as one block. Case is ignored - names arrive as
+        // "Sunil Kumar singh" and "Pradeep kumar Mishra" - and an employee with no branch
+        // goes after the named branches rather than filing under "N/A" among them.
         var zones = rows.GroupBy(x => x.user.Zone ?? "Unknown").ByZone(x => x.Key).Select(zone => new
         {
             zone = zone.Key,
-            users = zone.Select(x => new
+            users = zone
+                .OrderBy(x => string.IsNullOrWhiteSpace(x.user.Branch) ? 1 : 0)
+                .ThenBy(x => x.user.Branch?.Trim(), StringComparer.OrdinalIgnoreCase)
+                .ThenBy(x => x.user.Name?.Trim(), StringComparer.OrdinalIgnoreCase)
+                .Select(x => new
             {
                 id = x.user.Id, name = x.user.Name, branch = x.user.Branch ?? "N/A",
                 reporting = new { id = x.user.ReportingId, name = x.user.ReportingName, mobile = x.user.ReportingMobile },

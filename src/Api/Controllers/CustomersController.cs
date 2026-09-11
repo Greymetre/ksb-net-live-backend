@@ -37,9 +37,10 @@ public sealed class CustomersController : ControllerBase
         [FromQuery(Name = "city_id")] ulong? cityId,
         [FromQuery(Name = "pincode_id")] ulong? pincodeId,
         [FromQuery(Name = "user_id")] ulong? userId,
+        [FromQuery(Name = "dealer_id")] ulong? dealerId,
         CancellationToken cancellationToken)
     {
-        ApplyQueryAliases(filter, customerType, stateId, cityId, pincodeId, userId);
+        ApplyQueryAliases(filter, customerType, stateId, cityId, pincodeId, userId, dealerId);
         filter.ActorUserId = CurrentUserId();
         var response = await _customerService.GetCustomersAsync(filter, cancellationToken);
         return Ok(response);
@@ -54,9 +55,10 @@ public sealed class CustomersController : ControllerBase
         [FromQuery(Name = "city_id")] ulong? cityId,
         [FromQuery(Name = "pincode_id")] ulong? pincodeId,
         [FromQuery(Name = "user_id")] ulong? userId,
+        [FromQuery(Name = "dealer_id")] ulong? dealerId,
         CancellationToken cancellationToken)
     {
-        ApplyQueryAliases(filter, customerType, stateId, cityId, pincodeId, userId);
+        ApplyQueryAliases(filter, customerType, stateId, cityId, pincodeId, userId, dealerId);
         filter.ActorUserId = CurrentUserId();
         var file = await _customerService.ExportCustomersAsync(filter, BackendBaseUrl(), cancellationToken);
         return File(file.Content, file.ContentType, file.FileName);
@@ -170,13 +172,14 @@ public sealed class CustomersController : ControllerBase
 
     private string BackendBaseUrl() => Request.PublicBaseUrl();
 
-    private static void ApplyQueryAliases(CustomerListFilterDto filter, ulong? customerType, ulong? stateId, ulong? cityId, ulong? pincodeId, ulong? userId)
+    private static void ApplyQueryAliases(CustomerListFilterDto filter, ulong? customerType, ulong? stateId, ulong? cityId, ulong? pincodeId, ulong? userId, ulong? dealerId)
     {
         filter.CustomerType ??= customerType;
         filter.StateId ??= stateId;
         filter.CityId ??= cityId;
         filter.PincodeId ??= pincodeId;
         filter.UserId ??= userId;
+        filter.DealerId ??= dealerId;
     }
 
     private async Task<CustomerRequestDto> ToCustomerRequestAsync(CustomerFormRequestDto form, CancellationToken cancellationToken)

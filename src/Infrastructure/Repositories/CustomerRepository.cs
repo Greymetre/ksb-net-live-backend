@@ -89,6 +89,25 @@ public sealed class CustomerRepository : ICustomerRepository
         if (filter.StartDate.HasValue) query = query.Where(x => x.CreatedAt >= filter.StartDate.Value.Date);
         if (filter.EndDate.HasValue) query = query.Where(x => x.CreatedAt < filter.EndDate.Value.Date.AddDays(1));
 
+        if (filter.DealerId.HasValue)
+        {
+            // A dealer's customers: every customer mapped to it as the domestic or the agri
+            // dealer - the two differ on a couple of hundred retailers - and every customer
+            // whose parent it is. Compared as numbers, so one id can never match as the
+            // prefix of a longer one. The dealer itself is not one of its own customers.
+            // The LIKE only narrows which rows get their JSON parsed; the JSON_VALUE check
+            // still decides. Measured on 14,148 customers: 934 ms without it, 609 ms with it.
+            var dealerCustomerIds = await QueryULongListAsync(@"SELECT id FROM customers
+WHERE deleted_at IS NULL AND id <> {0}
+AND (parent_id = {0}
+  OR (custom_fields LIKE {1}
+      AND (TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(custom_fields, '$.distributor_name'), '')) = {0}
+        OR TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(custom_fields, '$.agri_distributor'), '')) = {0}
+        OR TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(custom_fields, '$.dealer_name'), '')) = {0})))",
+                [filter.DealerId.Value, $"%{filter.DealerId.Value}%"], cancellationToken);
+            query = dealerCustomerIds.Count == 0 ? query.Where(_ => false) : query.Where(x => dealerCustomerIds.Contains(x.Id));
+        }
+
         if (filter.StateId.HasValue)
         {
             var stateId = filter.StateId.Value;
@@ -480,7 +499,12 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
             Email = NormalizeText(request.Email),
             ProfileImage = NormalizeText(request.ProfileImage) ?? string.Empty,
             ShopImage = NormalizeText(request.ShopImage),
-            CustomerCode = NormalizeText(request.CustomerCode) ?? NormalizeText(ReadField(request.CustomFields, "distributor_code")) ?? string.Empty,
+            // Only a dealer may take its code from distributor_code. On a retailer that key
+            // means the parent dealer's code, and copying it here put one customer's code on
+            // another customer's record.
+            CustomerCode = NormalizeText(request.CustomerCode)
+                ?? (request.CustomerType == DistributorCustomerType ? NormalizeText(ReadField(request.CustomFields, "distributor_code")) : null)
+                ?? string.Empty,
             CustomerType = request.CustomerType,
             FirmType = request.FirmType,
             ParentId = request.ParentId,
@@ -1089,6 +1113,18 @@ INNER JOIN (
             FirstNonBlank(ReadField(DeserializeFields(customer.CustomFields), "legal_name"), ReadField(DeserializeFields(customer.CustomFields), "shop_name"), customer.Name) ?? customer.Name,
             FirstNonBlank(customer.CustomerCode, ReadField(DeserializeFields(customer.CustomFields), "distributor_code"))));
 
+        // A superadmin is on almost every dealer's assignment only because a superadmin
+        // created it - 454 of 459 dealers carry one. Counted as an assignee it put the
+        // superadmin's own zone on every dealer ("South, West"), and its name and branch
+        // beside the real field staff. It is left out of what an assignment describes.
+        var superAdminIds = (await _dbContext.ModelHasRoles.AsNoTracking()
+            .Where(x => x.ModelType == LaravelModelTypes.User && userIds.Contains(x.ModelId))
+            .Join(_dbContext.Roles.AsNoTracking(), modelRole => modelRole.RoleId, role => role.Id, (modelRole, role) => new { modelRole.ModelId, role.Name })
+            .Where(x => x.Name == "superadmin")
+            .Select(x => x.ModelId)
+            .ToListAsync(cancellationToken))
+            .ToHashSet();
+
         var users = await _dbContext.Users.AsNoTracking()
             .Where(user => userIds.Contains(user.Id))
             .Select(user => new { user.Id, user.Name, user.EmployeeCodes, user.BranchId, user.PrimaryBranchId, user.DesignationId, user.DivisionId, user.ReportingId })
@@ -1115,6 +1151,7 @@ INNER JOIN (
             SetDistributorExportLookup(customer.CustomFields, "agri_distributor", "agri_distributor_code", distributors);
             var assigned = new[] { "employee_id", "sales_executive_id", "supervisor_id" }
                 .SelectMany(key => ReadULongs(ReadField(customer.CustomFields, key))).Distinct()
+                .Where(id => !superAdminIds.Contains(id))
                 .Where(users.ContainsKey).Select(id => users[id]).ToArray();
             if (assigned.Length > 0)
             {
@@ -1128,6 +1165,13 @@ INNER JOIN (
                 customer.CustomFields["employee_designations"] = JoinExportValues(assigned.Select(x => x.DesignationId.HasValue && designations.TryGetValue(x.DesignationId.Value, out var value) ? value : null));
                 customer.CustomFields["zone"] = JoinExportValues(assigned.Select(x => x.DivisionId.HasValue && divisions.TryGetValue(x.DivisionId.Value, out var value) ? value : null));
                 customer.CustomFields["reporting_managers"] = JoinExportValues(assigned.Select(x => x.ReportingId.HasValue && managers.TryGetValue(x.ReportingId.Value, out var value) ? value : null));
+            }
+            else
+            {
+                // Nobody left to describe - no assignee, or only a superadmin. These are read
+                // from the assignment every time; a copy saved into custom_fields by an older
+                // form post would otherwise stand in for it and show a zone nobody holds.
+                foreach (var derived in AssignmentDerivedKeys) customer.CustomFields.Remove(derived);
             }
             var approvalUserId = ReadULong(customer.CustomFields, "approve_reject_by");
             if (approvalUserId.HasValue && users.TryGetValue(approvalUserId.Value, out var approvalUser))
@@ -1203,6 +1247,9 @@ WHERE customer_id IN ({customerIdCsv})
             if (supervisorIds.Length > 0) customer.CustomFields["supervisor_id"] = supervisorIds[0].ToString();
         }
     }
+
+    private static readonly string[] AssignmentDerivedKeys =
+        ["employee_id_name", "employee_codes", "branch_name", "employee_designations", "zone", "reporting_managers"];
 
     private static string JoinExportValues(IEnumerable<string?> values) =>
         string.Join(", ", values.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase));

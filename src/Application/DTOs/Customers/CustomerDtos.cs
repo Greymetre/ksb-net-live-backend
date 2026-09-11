@@ -91,6 +91,8 @@ public sealed class CustomerListFilterDto
     public ulong? BeatId { get; set; }
     public string? Status { get; set; }
     public ulong[]? DesignationIds { get; set; }
+    /// <summary>Customers of this dealer: mapped to it as domestic or agri dealer, or its children.</summary>
+    public ulong? DealerId { get; set; }
     public DateTime? StartDate { get; set; }
     public DateTime? EndDate { get; set; }
     public ulong? ActorUserId { get; set; }

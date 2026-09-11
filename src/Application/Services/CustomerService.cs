@@ -32,7 +32,7 @@ public sealed class CustomerService : ICustomerService
         ("sales_executive_id", "Sales Executive ID (JSON)"), ("supervisor_id", "Supervisor ID"),
         ("customer_segment", "Customer Segment"), ("employee_id_name", "Employee Names"),
         ("employee_codes", "Employee Codes"), ("reporting_managers", "Reporting Managers"),
-        ("created_at_datetime", "Created At"), ("updated_at_datetime", "Updated At")
+        ("created_at_datetime", "Created At"), ("updated_at_datetime", "Updated At"), ("zone", "Zone")
     ];
 
     private static readonly string[] DistributorExportColumns = DistributorExportDefinition.Select(x => x.Key).ToArray();
@@ -340,12 +340,36 @@ public sealed class CustomerService : ICustomerService
             request.CustomFields.Remove("distributor_name_name");
             request.CustomFields.Remove("agri_distributor_name");
         }
-        else if (request.CustomerType == 2)
+        else
         {
-            var approvalStatus = ReadField(request.CustomFields, "status");
-            if (string.IsNullOrWhiteSpace(approvalStatus) || approvalStatus.Trim() == "-")
+            // The dealer's code belongs to the dealer. Storing a copy of it here is what let
+            // the two drift apart: moving a retailer to another dealer changed the id and left
+            // the copy behind, so the CRM and the app read two different dealers off the same
+            // record. Only the id is kept; every screen reads the code from the dealer's row.
+            var incomingDealerCode = ReadField(request.CustomFields, "distributor_code");
+            request.CustomFields.Remove("distributor_code");
+            request.CustomFields.Remove("agri_distributor_code");
+            // The dealer's name is derived on read for the same reason; a stored copy of it
+            // went stale the same way.
+            request.CustomFields.Remove("distributor_name_name");
+            request.CustomFields.Remove("agri_distributor_name");
+
+            // Nor may that same code arrive as the retailer's own. The CRM form posts
+            // customer_code = own code or dealer code, whichever it has, so a retailer with
+            // no code of its own was saving its dealer's.
+            if (!string.IsNullOrWhiteSpace(incomingDealerCode)
+                && string.Equals(request.CustomerCode?.Trim(), incomingDealerCode.Trim(), StringComparison.Ordinal))
             {
-                request.CustomFields["status"] = "PENDING";
+                request.CustomerCode = null;
+            }
+
+            if (request.CustomerType == 2)
+            {
+                var approvalStatus = ReadField(request.CustomFields, "status");
+                if (string.IsNullOrWhiteSpace(approvalStatus) || approvalStatus.Trim() == "-")
+                {
+                    request.CustomFields["status"] = "PENDING";
+                }
             }
         }
         SetField(request.CustomFields, "customer_type", request.CustomerType?.ToString());
