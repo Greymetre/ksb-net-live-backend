@@ -40,10 +40,12 @@ public sealed class MobileAppController : ControllerBase
     private readonly ISmtpEmailSender _emailSender;
     private readonly IWebHostEnvironment _environment;
     private readonly IConfiguration _configuration;
+    private readonly Infrastructure.Caching.CustomerKycIndex _kycIndex;
 
-    public MobileAppController(AppDbContext dbContext, IMasterDataService masterDataService, INewInvoiceRepository invoiceRepository, INewInvoiceService newInvoiceService, ICustomerRepository customerRepository, ITokenService tokenService, IPasswordHasher passwordHasher, ISmtpEmailSender emailSender, IWebHostEnvironment environment, IConfiguration configuration, Api.Services.InvoiceAttachmentStore attachments, Api.Services.SchemeAudienceService schemeAudiences)
+    public MobileAppController(AppDbContext dbContext, IMasterDataService masterDataService, INewInvoiceRepository invoiceRepository, INewInvoiceService newInvoiceService, ICustomerRepository customerRepository, ITokenService tokenService, IPasswordHasher passwordHasher, ISmtpEmailSender emailSender, IWebHostEnvironment environment, IConfiguration configuration, Api.Services.InvoiceAttachmentStore attachments, Api.Services.SchemeAudienceService schemeAudiences, Infrastructure.Caching.CustomerKycIndex kycIndex)
     {
         _dbContext = dbContext;
+        _kycIndex = kycIndex;
         _attachments = attachments;
         _schemeAudiences = schemeAudiences;
         _customerRepository = customerRepository;
@@ -366,6 +368,8 @@ public sealed class MobileAppController : ControllerBase
         {
             var key = formField.Key;
             if (key.Contains("_kyc_", StringComparison.OrdinalIgnoreCase)) continue;
+            // Only ever set from an uploaded file below, never from a posted string.
+            if (IsShopImageField(key)) continue;
 
             var value = formField.Value.ToString();
             if (string.Equals(Field(fields, key), value, StringComparison.Ordinal)) continue;
@@ -377,9 +381,27 @@ public sealed class MobileAppController : ControllerBase
             if (!string.IsNullOrWhiteSpace(documentKey)) changedDocuments.Add(documentKey);
         }
 
+        // The shop image rides along on the KYC screen but is not a KYC document: it has no
+        // review, never resets a document's status, and is kept where the CRM and the field
+        // app read it. It has to be taken out first - KycAttachmentKey files any name it does
+        // not recognise as the GST attachment.
+        string? shopImage = null;
         foreach (var file in Request.Form.Files)
         {
-            if (file.Length == 0) continue;
+            if (file.Length == 0 || !IsShopImageField(file.Name)) continue;
+            if (!IsImageFile(file)) return BadRequest(new { status = "error", message = "Shop image must be an image file." });
+            shopImage = await SaveShopImageAsync(file, customer.CustomerType == DealerType, cancellationToken);
+        }
+        if (shopImage is not null)
+        {
+            customer.ShopImage = shopImage;
+            fields["shop_image"] = shopImage;
+            fields["shop_photo"] = shopImage;
+        }
+
+        foreach (var file in Request.Form.Files)
+        {
+            if (file.Length == 0 || IsShopImageField(file.Name)) continue;
 
             var key = KycAttachmentKey(file.Name);
             var documentKey = KycDocumentKey(key);
@@ -398,6 +420,16 @@ public sealed class MobileAppController : ControllerBase
         customer.CustomFields = JsonSerializer.Serialize(fields, JsonOptions);
         customer.UpdatedAt = DateTime.UtcNow;
         await _dbContext.SaveChangesAsync(cancellationToken);
+        if (shopImage is not null)
+        {
+            // The CRM and the field app also read the copy on customer_details.
+            await _dbContext.Database.ExecuteSqlInterpolatedAsync(
+                $"UPDATE customer_details SET shop_image = {shopImage}, updated_at = {DateTime.UtcNow} WHERE customer_id = {customer.Id}",
+                cancellationToken);
+        }
+        // The CRM's KYC screen and both apps count stages from one in-memory index; without
+        // this a KYC submitted from the phone would keep its old stage for up to five minutes.
+        _kycIndex.Invalidate();
         await SyncMobileCustomerAddressAsync(customer.Id, fields, cancellationToken);
         return Ok(new
         {
@@ -528,6 +560,8 @@ public sealed class MobileAppController : ControllerBase
         // Keep this in sync with the retailer redemption/profile KYC status. A retailer is
         // pending KYC until every required document is approved.
         var pendingKycRetailers = activeRetailers.Count(x => !string.Equals(KycStatusValue(ReadFields(x)), "approved", StringComparison.OrdinalIgnoreCase));
+        // The four stages the CRM's KYC screen shows, over every retailer mapped to this dealer.
+        var kycSummary = await Api.Services.KycStages.SummaryAsync(_kycIndex, assignedRetailers.Select(x => x.Id), cancellationToken);
 
         return Ok(new
         {
@@ -539,6 +573,7 @@ public sealed class MobileAppController : ControllerBase
                 assigned_retailers = assignedRetailers.Count,
                 active_retailers = activeRetailers.Count,
                 pending_kyc_retailers = pendingKycRetailers,
+                kyc_summary = kycSummary,
                 total_invoices = distinctInvoices.Count,
                 total_invoice_amount = totalInvoiceAmount,
                 approved_invoice_amount = approvedInvoiceAmount,
@@ -773,6 +808,7 @@ public sealed class MobileAppController : ControllerBase
         var activeRetailers = shouldIncludeMetrics
             ? await CountActiveRetailers(assignedRetailers.Select(x => x.Id), cancellationToken)
             : 0;
+        var kycStages = await Api.Services.KycStages.StageMapAsync(_kycIndex, cancellationToken);
 
         IEnumerable<Customer> filteredRetailers = assignedRetailers;
         if (!string.IsNullOrWhiteSpace(search))
@@ -784,7 +820,14 @@ public sealed class MobileAppController : ControllerBase
         // The Retailers screen offers an All / Pending KYC chip. The summary above it
         // keeps counting every assigned retailer, so the filter is applied here rather
         // than to the counts.
-        if (string.Equals(kyc?.Trim(), "pending", StringComparison.OrdinalIgnoreCase))
+        // approved / complete_pending / partial / none are the CRM's four stages; "pending"
+        // is kept for app builds that still send it.
+        var kycStage = kyc?.Trim().ToLowerInvariant();
+        if (Api.Services.KycStages.IsStage(kycStage))
+        {
+            filteredRetailers = filteredRetailers.Where(retailer => Api.Services.KycStages.StageOf(kycStages, retailer.Id) == kycStage);
+        }
+        else if (string.Equals(kycStage, "pending", StringComparison.Ordinal))
         {
             filteredRetailers = filteredRetailers.Where(retailer =>
                 !string.Equals(KycStatusValue(ReadFields(retailer)), "approved", StringComparison.OrdinalIgnoreCase));
@@ -836,6 +879,8 @@ public sealed class MobileAppController : ControllerBase
                     beat_name = FirstField(fields, "beat_name", "beat_route", "beat") ?? string.Empty,
                     kyc_status = kycStatus,
                     kyc_status_label = string.Equals(kycStatus, "approved", StringComparison.OrdinalIgnoreCase) ? "Verified" : "Pending",
+                    kyc_stage = Api.Services.KycStages.StageOf(kycStages, x.Id),
+                    kyc_stage_label = Api.Services.KycStages.Label(Api.Services.KycStages.StageOf(kycStages, x.Id)),
                     reward_points = invoiceSummary?.RewardPoints ?? 0,
                     invoice_count = invoiceSummary?.InvoiceCount ?? 0,
                     is_active = invoiceSummary is not null
@@ -845,7 +890,9 @@ public sealed class MobileAppController : ControllerBase
             {
                 total_retailers = totalRetailers,
                 active_retailers = activeRetailers,
-                pending_kyc_retailers = pendingKycRetailers
+                pending_kyc_retailers = pendingKycRetailers,
+                // Counted on the set being viewed - not moved by the stage chip itself.
+                kyc_summary = Api.Services.KycStages.Summary(assignedRetailers.Select(x => Api.Services.KycStages.StageOf(kycStages, x.Id)))
             },
             pagination = new
             {
@@ -2317,12 +2364,19 @@ VALUES ('Y', {0}, {1}, {2}, {3}, {4}, {5}, {6}, SYSUTCDATETIME(), SYSUTCDATETIME
             })
         };
 
+        var shopImage = ShopImagePath(customer.ShopImage, Field(fields, "shop_photo"), Field(fields, "shop_image"));
         return new
         {
             customer_id = customer.Id,
             summary = KycState(fields),
             bank_account = BankAccount(fields),
             documents,
+            // Shown and replaced on the KYC screen, but outside the review: no status.
+            shop_image = new
+            {
+                url = shopImage,
+                name = string.IsNullOrEmpty(shopImage) ? null : Path.GetFileName(shopImage)
+            },
             fields = new
             {
                 gst_number = FirstField(fields, "gst_number", "gstin_no") ?? string.Empty,
@@ -2561,6 +2615,45 @@ VALUES ('Y', {0}, {1}, {2}, {3}, {4}, {5}, {6}, SYSUTCDATETIME(), SYSUTCDATETIME
         "bank_account_type" or "bank_name" or "bank_account_number" or "bank_account_number_confirm" or "ifsc_code" or "account_holder_name" => "bank",
         _ => null
     };
+
+    private static bool IsShopImageField(string name) =>
+        string.Equals(name, "shop_image", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(name, "shop_photo", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>The shop image the CRM shows - the column first, then the two custom_fields
+    /// copies - as a path under the site root, whichever of the stored spellings it has.</summary>
+    private static string ShopImagePath(params string?[] candidates)
+    {
+        var value = candidates.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x))?.Trim().Replace('\\', '/');
+        if (string.IsNullOrEmpty(value)) return string.Empty;
+        if (value.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || value.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) return value;
+        value = value.TrimStart('/');
+        if (value.StartsWith("public/", StringComparison.OrdinalIgnoreCase)) value = value["public/".Length..];
+        if (value.StartsWith("storage/", StringComparison.OrdinalIgnoreCase)
+            || value.StartsWith("uploads/", StringComparison.OrdinalIgnoreCase)) return $"/{value}";
+        return $"/storage/{value}";
+    }
+
+    /// <summary>Stored exactly the way the field app stores a shop photo, so the CRM and
+    /// the field app open an image changed here without knowing where it came from.</summary>
+    private async Task<string> SaveShopImageAsync(IFormFile file, bool isDealer, CancellationToken cancellationToken)
+    {
+        var storageFolder = isDealer ? "distributors/shop_images" : "secondary_customers";
+        var fileName = $"{Guid.NewGuid():N}{Path.GetExtension(file.FileName)}";
+        var webRoot = _environment.WebRootPath ?? Path.Combine(_environment.ContentRootPath, "wwwroot");
+        var publicRoot = Path.Combine(webRoot, "public", "storage", storageFolder);
+        Directory.CreateDirectory(publicRoot);
+        var publicPath = Path.Combine(publicRoot, fileName);
+        await using (var stream = System.IO.File.Create(publicPath))
+        {
+            await file.CopyToAsync(stream, cancellationToken);
+        }
+        var storageRoot = Path.Combine(webRoot, "storage", storageFolder);
+        Directory.CreateDirectory(storageRoot);
+        System.IO.File.Copy(publicPath, Path.Combine(storageRoot, fileName), true);
+        return $"storage/{storageFolder}/{fileName}";
+    }
 
     private static bool IsImageFile(IFormFile file)
     {

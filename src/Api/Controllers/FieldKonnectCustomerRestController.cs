@@ -24,14 +24,17 @@ public sealed class FieldKonnectCustomerRestController : ControllerBase
     private readonly ICustomerService _customerService;
     private readonly ICustomerRepository _customerRepository;
     private readonly IHrRepository _hrRepository;
+    private readonly Infrastructure.Caching.CustomerKycIndex _kycIndex;
 
     public FieldKonnectCustomerRestController(
         AppDbContext dbContext,
         IWebHostEnvironment environment,
         ICustomerService customerService,
         ICustomerRepository customerRepository,
-        IHrRepository hrRepository)
+        IHrRepository hrRepository,
+        Infrastructure.Caching.CustomerKycIndex kycIndex)
     {
+        _kycIndex = kycIndex;
         _dbContext = dbContext;
         _environment = environment;
         _customerService = customerService;
@@ -103,18 +106,70 @@ public sealed class FieldKonnectCustomerRestController : ControllerBase
             var page = Page();
             var perPage = PerPage(10);
             var (rows, total) = await SqlServerSecondaryCustomers(type.ToUpperInvariant(), page, perPage, cancellationToken);
+            var kycStages = await Api.Services.KycStages.StageMapAsync(_kycIndex, cancellationToken);
 
             return Ok(new
             {
                 status = "success",
                 message = "Secondary customers retrieved successfully",
-                data = Paginator(rows.Select(CleanRow).ToList(), page, perPage, total)
+                data = Paginator(rows.Select(row =>
+                {
+                    var cleaned = CleanRow(row);
+                    var stage = Api.Services.KycStages.StageOf(kycStages, ULong(row, "id"));
+                    cleaned["kyc_stage"] = stage;
+                    cleaned["kyc_stage_label"] = Api.Services.KycStages.Label(stage);
+                    return cleaned;
+                }).ToList(), page, perPage, total)
             });
         }
         catch (Exception exception)
         {
             return StatusCode(500, new { status = "error", message = "Failed to fetch secondary customers", error = ExceptionMessage(exception) });
         }
+    }
+
+    /// <summary>
+    /// Fully Approved / Awaiting Review / Partly Submitted / Not Started for the customers the
+    /// listing would show - same type, same access scope, same city, status and user filters -
+    /// counted from the index the CRM's KYC screen reads. The kyc filter itself is not applied,
+    /// so the four numbers stay put while a stage is being viewed.
+    /// </summary>
+    [HttpGet("secondary-customers/kyc-summary")]
+    public async Task<IActionResult> SecondaryCustomersKycSummary(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var type = Request.Query["type"].ToString();
+            if (string.IsNullOrWhiteSpace(type)) type = "RETAILER";
+            if (!new[] { "DEALER", "RETAILER", "INFLUENCER", "WORKSHOP", "MECHANIC", "GARAGE" }.Contains(type, StringComparer.OrdinalIgnoreCase))
+            {
+                return BadRequest(new { status = "error", message = "Validation failed", errors = new { type = new[] { "Invalid type parameter." } } });
+            }
+
+            var (where, parameters) = await CustomerSecondaryWhere(type.ToUpperInvariant(), cancellationToken, applyKycFilter: false);
+            var rows = await QueryRows($"SELECT DISTINCT c.id {SecondaryFilterJoins()} WHERE {where}", cancellationToken, parameters.ToArray());
+            var summary = await Api.Services.KycStages.SummaryAsync(_kycIndex, rows.Select(row => ULong(row, "id")), cancellationToken);
+            return Ok(new { status = "success", data = summary });
+        }
+        catch (Exception exception)
+        {
+            return StatusCode(500, new { status = "error", message = "Failed to count KYC stages", error = ExceptionMessage(exception) });
+        }
+    }
+
+    /// <summary>The joins the retailer listing's filters need - city and approval status only
+    /// when those filters are in use. Shared with the KYC summary so both count the same rows.</summary>
+    private string SecondaryFilterJoins()
+    {
+        var needsCityFilter = !string.IsNullOrWhiteSpace(Request.Query["city_name"].ToString());
+        var needsStatusFilter = !string.IsNullOrWhiteSpace(Request.Query["status"].ToString());
+        return @"FROM customers c
+LEFT JOIN customer_types ctype ON ctype.id = c.customertype AND ctype.deleted_at IS NULL"
+            + (needsCityFilter ? @"
+OUTER APPLY (SELECT TOP (1) candidate.city_id FROM addresses candidate WHERE candidate.customer_id = c.id AND candidate.deleted_at IS NULL ORDER BY candidate.id DESC) filter_address
+LEFT JOIN cities city ON city.id = COALESCE(filter_address.city_id, TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.city_id'), '')), TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.billing_city'), '')))" : string.Empty)
+            + (needsStatusFilter ? @"
+OUTER APPLY (SELECT TOP (1) candidate.visit_status FROM customer_details candidate WHERE candidate.customer_id = c.id AND candidate.deleted_at IS NULL ORDER BY candidate.id DESC) cd" : string.Empty);
     }
 
     /// <summary>
@@ -139,15 +194,7 @@ public sealed class FieldKonnectCustomerRestController : ControllerBase
             where += " AND c.id = @requested_id";
             parameters.Add(("@requested_id", requestedId.Value));
         }
-        var needsCityFilter = !string.IsNullOrWhiteSpace(Request.Query["city_name"].ToString());
-        var needsStatusFilter = !string.IsNullOrWhiteSpace(Request.Query["status"].ToString());
-        var filterJoins = @"FROM customers c
-LEFT JOIN customer_types ctype ON ctype.id = c.customertype AND ctype.deleted_at IS NULL"
-            + (needsCityFilter ? @"
-OUTER APPLY (SELECT TOP (1) candidate.city_id FROM addresses candidate WHERE candidate.customer_id = c.id AND candidate.deleted_at IS NULL ORDER BY candidate.id DESC) filter_address
-LEFT JOIN cities city ON city.id = COALESCE(filter_address.city_id, TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.city_id'), '')), TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.billing_city'), '')))" : string.Empty)
-            + (needsStatusFilter ? @"
-OUTER APPLY (SELECT TOP (1) candidate.visit_status FROM customer_details candidate WHERE candidate.customer_id = c.id AND candidate.deleted_at IS NULL ORDER BY candidate.id DESC) cd" : string.Empty);
+        var filterJoins = SecondaryFilterJoins();
 
         var joins = @"FROM page_customers page
 INNER JOIN customers c ON c.id = page.id
@@ -873,6 +920,8 @@ COALESCE(@profile_image, ''), @shop_image, @customer_code, @status_id, @customer
         {
             throw new InvalidOperationException("Customer saved, but address could not be saved.");
         }
+        // KYC numbers, attachments and details live in these fields; the stage counts must see the save.
+        _kycIndex.Invalidate();
         return customerId;
     }
 
@@ -1351,7 +1400,7 @@ WHERE {where}", cancellationToken, parameters.ToArray())).FirstOrDefault();
         return (string.Join(" AND ", where), parameters);
     }
 
-    private async Task<(string Where, List<(string, object?)> Parameters)> CustomerSecondaryWhere(string type, CancellationToken cancellationToken, ulong? id = null)
+    private async Task<(string Where, List<(string, object?)> Parameters)> CustomerSecondaryWhere(string type, CancellationToken cancellationToken, ulong? id = null, bool applyKycFilter = true)
     {
         var parameters = BaseParameters();
         parameters.Add(("@fallback_type", type));
@@ -1396,12 +1445,20 @@ WHERE {where}", cancellationToken, parameters.ToArray())).FirstOrDefault();
         // KYC is complete only when all four documents are approved, the same rule the KYC
         // screen and the invoice tile apply. "pending" also asks for retailers who have
         // traded, so the filtered list matches the count that opened it.
-        var kyc = Request.Query["kyc"].ToString();
-        if (!string.IsNullOrWhiteSpace(kyc))
+        var kyc = applyKycFilter ? Request.Query["kyc"].ToString().Trim().ToLowerInvariant() : string.Empty;
+        if (Api.Services.KycStages.IsStage(kyc))
         {
-            where.Add(KycApprovedSql + (kyc.Trim().Equals("approved", StringComparison.OrdinalIgnoreCase) ? " = 1" : " = 0"));
-            if (!kyc.Trim().Equals("approved", StringComparison.OrdinalIgnoreCase))
-                where.Add("EXISTS (SELECT 1 FROM new_invoices ni WHERE ni.secondary_customer_id = c.id)");
+            // approved / complete_pending / partial / none: the stages the CRM's KYC screen
+            // counts, read from the same index, so the list matches the tile that opened it.
+            var stageIds = await Api.Services.KycStages.IdsInStageAsync(_kycIndex, kyc, cancellationToken);
+            where.Add("c.id IN (SELECT TRY_CONVERT(decimal(20,0), [value]) FROM OPENJSON(@kyc_stage_ids))");
+            parameters.Add(("@kyc_stage_ids", JsonSerializer.Serialize(stageIds)));
+        }
+        else if (!string.IsNullOrWhiteSpace(kyc))
+        {
+            // "pending" from app builds that predate the four stages keeps its old meaning.
+            where.Add(KycApprovedSql + " = 0");
+            where.Add("EXISTS (SELECT 1 FROM new_invoices ni WHERE ni.secondary_customer_id = c.id)");
         }
 
         var access = await AssignedCustomerAccess(CurrentUserId(), cancellationToken, includeHrAndHo: true);
