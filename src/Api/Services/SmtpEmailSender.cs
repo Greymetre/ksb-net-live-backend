@@ -5,6 +5,14 @@ namespace Api.Services;
 
 public interface ISmtpEmailSender
 {
+    /// <summary>
+    /// True when this server is not to send email at all. One switch for every flow that
+    /// mails a code - the CRM password reset and the loyalty app's password setup - so a
+    /// server cannot end up sending for one and not the other. Off only when
+    /// MAIL_BYPASS_ENABLED (or Mail:BypassEnabled) is explicitly false.
+    /// </summary>
+    bool BypassEnabled { get; }
+
     Task SendAsync(string recipient, string subject, string body, CancellationToken cancellationToken);
 }
 
@@ -17,6 +25,19 @@ public sealed class SmtpEmailSender : ISmtpEmailSender
     {
         _configuration = configuration;
         _logger = logger;
+    }
+
+    public bool BypassEnabled
+    {
+        get
+        {
+            var value = Environment.GetEnvironmentVariable("MAIL_BYPASS_ENABLED")
+                ?? _configuration["Mail:BypassEnabled"]
+                ?? "true";
+            return value.Equals("true", StringComparison.OrdinalIgnoreCase)
+                || value.Equals("1", StringComparison.OrdinalIgnoreCase)
+                || value.Equals("yes", StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     public async Task SendAsync(string recipient, string subject, string body, CancellationToken cancellationToken)
@@ -71,6 +92,24 @@ public sealed class SmtpEmailSender : ISmtpEmailSender
             _logger.LogError(exception, "SMTP send failed. StatusCode={StatusCode} Host={Host} Port={Port}", exception.StatusCode, host, port);
             throw;
         }
+    }
+
+    /// <summary>
+    /// The reason a send failed, as the SMTP client and the socket below it report it -
+    /// "Authentication Required", "No such host is known", "Connection refused", a timeout.
+    /// Shown on the sign-in screens so a wrong SMTP setting can be seen and fixed from the
+    /// page itself. It never includes the password: nothing here reads it.
+    /// </summary>
+    public static string Describe(Exception exception)
+    {
+        var messages = new List<string>();
+        for (var current = exception; current is not null && messages.Count < 4; current = current.InnerException)
+        {
+            var text = current.Message?.Trim();
+            if (!string.IsNullOrEmpty(text) && !messages.Contains(text, StringComparer.OrdinalIgnoreCase)) messages.Add(text);
+        }
+        var joined = string.Join(" - ", messages);
+        return joined.Length > 400 ? joined[..400] + "..." : joined;
     }
 
     private string? Setting(string key, string environmentName) =>

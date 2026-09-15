@@ -12,10 +12,41 @@ namespace Api.Controllers;
 public sealed class AuthController : ControllerBase
 {
     private readonly IAuthService _authService;
+    private readonly Api.Services.UserPasswordResetService _passwordReset;
 
-    public AuthController(IAuthService authService)
+    public AuthController(IAuthService authService, Api.Services.UserPasswordResetService passwordReset)
     {
         _authService = authService;
+        _passwordReset = passwordReset;
+    }
+
+    /// <summary>CRM "Forgot password": mails a 6-digit code. Answers the same way whether
+    /// or not the email belongs to an account.</summary>
+    [HttpPost("forgot-password")]
+    public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordRequest request, CancellationToken cancellationToken)
+    {
+        await _passwordReset.RequestAsync(request.Email, cancellationToken);
+        return Ok(new { status = "success", message = Api.Services.UserPasswordResetService.RequestAcceptedMessage });
+    }
+
+    [HttpPost("reset-password")]
+    public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordRequest request, CancellationToken cancellationToken)
+    {
+        await _passwordReset.ResetAsync(request.Email, request.Code, request.Password, request.PasswordConfirmation, cancellationToken);
+        return Ok(new { status = "success", message = "Your password has been reset. You can now log in with the new password." });
+    }
+
+    public sealed class ForgotPasswordRequest
+    {
+        public string? Email { get; init; }
+    }
+
+    public sealed class ResetPasswordRequest
+    {
+        public string? Email { get; init; }
+        public string? Code { get; init; }
+        public string? Password { get; init; }
+        public string? PasswordConfirmation { get; init; }
     }
 
     [HttpPost("login")]

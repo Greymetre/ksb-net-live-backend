@@ -95,6 +95,7 @@ public sealed class MobileAppController : ControllerBase
         if (string.IsNullOrWhiteSpace(customer.Password))
         {
             var setup = await SendPasswordCodeAsync(customer, "Create your KSB Loyalty password", cancellationToken);
+            if (setup.Failed) return EmailUnavailable(setup.Error);
             return Ok(new
             {
                 status = "success",
@@ -201,6 +202,7 @@ public sealed class MobileAppController : ControllerBase
             return NotFound(new { status = "error", message = "No customer account with an email address was found for this mobile number." });
 
         var setup = await SendPasswordCodeAsync(customer, "Reset your KSB Loyalty password", cancellationToken);
+            if (setup.Failed) return EmailUnavailable(setup.Error);
         return Ok(new
         {
             status = "success",
@@ -1345,26 +1347,34 @@ public sealed class MobileAppController : ControllerBase
         customer.UpdatedAt = DateTime.UtcNow;
         await _dbContext.SaveChangesAsync(cancellationToken);
 
-        if (MailBypassEnabled())
+        if (_emailSender.BypassEnabled)
         {
-            return new PasswordCodeDelivery(code, true);
+            return new PasswordCodeDelivery(code, true, false, null);
         }
 
-        await _emailSender.SendAsync(customer.Email, subject, $"Your KSB Loyalty password verification code is {code}. This code expires in 15 minutes.", cancellationToken);
-        return new PasswordCodeDelivery(code, false);
+        try
+        {
+            await _emailSender.SendAsync(customer.Email, subject, $"Your KSB Loyalty password verification code is {code}. This code expires in 15 minutes.", cancellationToken);
+            return new PasswordCodeDelivery(code, false, false, null);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            // Instead of a bare server error, the app shows that the email did not go and
+            // why, so a wrong SMTP setting can be seen from the phone.
+            return new PasswordCodeDelivery(code, false, true, SmtpEmailSender.Describe(exception));
+        }
     }
 
-    private bool MailBypassEnabled()
-    {
-        var value = Environment.GetEnvironmentVariable("MAIL_BYPASS_ENABLED")
-            ?? _configuration["Mail:BypassEnabled"]
-            ?? "true";
-        return value.Equals("true", StringComparison.OrdinalIgnoreCase)
-            || value.Equals("1", StringComparison.OrdinalIgnoreCase)
-            || value.Equals("yes", StringComparison.OrdinalIgnoreCase);
-    }
+    private ObjectResult EmailUnavailable(string? reason) =>
+        StatusCode(StatusCodes.Status503ServiceUnavailable, new
+        {
+            status = "error",
+            message = string.IsNullOrWhiteSpace(reason)
+                ? "We could not send the email right now. Please try again in a few minutes."
+                : $"We could not send the email. {reason}"
+        });
 
-    private sealed record PasswordCodeDelivery(string Code, bool Bypassed);
+    private sealed record PasswordCodeDelivery(string Code, bool Bypassed, bool Failed, string? Error);
 
     private static string? NormalizeEmail(string? email)
     {

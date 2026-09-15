@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Domain.Services;
+using Shared.Json;
 
 namespace Api.Controllers;
 
@@ -39,6 +40,25 @@ public sealed class ReportManagementController : ControllerBase
             .OrderBy(x => x.DesignationName).Select(x => new { id = x.Id, name = x.DesignationName }).ToListAsync(cancellationToken);
         var defaultDesignationId = designations.FirstOrDefault(x => string.Equals(x.name.Trim(), "ASR", StringComparison.OrdinalIgnoreCase))?.id;
         return Ok(new { users, divisions, branches, designations, default_designation_id = defaultDesignationId });
+    }
+
+    // Loyalty > Performance Report. Dropdown feeds only, ungated like the other report
+    // options above; each of its two downloads carries a permission of its own.
+    // Segments come from the product Segment master (Domestic, Agriculture, ...), zones in
+    // NEWS order, and only published schemes - no invoice is ever raised under any other.
+    [HttpGet("loyalty-performance/options")]
+    public async Task<IActionResult> LoyaltyPerformanceOptions(CancellationToken cancellationToken)
+    {
+        var segments = await _db.ProductCategories.AsNoTracking().Where(x => x.Active == "Y" && x.DeletedAt == null)
+            .OrderBy(x => x.Ranking).ThenBy(x => x.CategoryName)
+            .Select(x => new { id = x.Id, name = x.CategoryName }).ToListAsync(cancellationToken);
+        var zones = (await _db.Divisions.AsNoTracking().Where(x => x.Active == "Y" && x.DeletedAt == null)
+            .Select(x => new { id = x.Id, name = x.DivisionName }).ToListAsync(cancellationToken)).ByZone(x => x.name).ToList();
+        var schemes = await _db.LoyaltySchemes.AsNoTracking().Where(x => x.Status == "Published")
+            .OrderByDescending(x => x.StartDate).ThenBy(x => x.SchemeName)
+            .Select(x => new { id = x.Id, name = x.SchemeName, code = x.SchemeCode, start_date = x.StartDate, end_date = x.EndDate })
+            .ToListAsync(cancellationToken);
+        return Ok(new { segments, zones, schemes });
     }
 
     [HttpGet("rating-report/options")]
@@ -897,6 +917,245 @@ WHERE customertype = 1 AND deleted_at IS NULL AND executive_id IN ({string.Join(
 
     private static decimal ToLac(decimal value) => Math.Round(value / 100000m, 2, MidpointRounding.AwayFromZero);
 
+    // Loyalty > Performance Report. ASR wise and Dealer wise read the same invoices,
+    // retailers, KYC and HO approvals; they differ only in how the rows are keyed.
+    //
+    // Invoices are those under the chosen scheme dated inside the range, whatever their
+    // status. A retailer belongs to the first ASR on its own assigned-employee list, and
+    // only to that one, so no subtotal counts a retailer twice for an ASR. An invoice
+    // belongs to the dealer chosen on it; invoices raised before that was recorded fall
+    // back to the retailer's domestic dealer, then its agri dealer. The segment narrows
+    // secondary sales only - invoices carry no segment - and dealer wise sales are that
+    // dealer's orders taken by that ASR.
+    [HttpGet("loyalty-performance/asr-export")]
+    [RequirePermission("loyalty_performance_report.export_asr")]
+    public Task<IActionResult> ExportLoyaltyPerformanceAsr([FromQuery] LoyaltyPerformanceFilter filter, CancellationToken cancellationToken) =>
+        ExportLoyaltyPerformance(filter, dealerWise: false, cancellationToken);
+
+    [HttpGet("loyalty-performance/dealer-export")]
+    [RequirePermission("loyalty_performance_report.export_dealer")]
+    public Task<IActionResult> ExportLoyaltyPerformanceDealer([FromQuery] LoyaltyPerformanceFilter filter, CancellationToken cancellationToken) =>
+        ExportLoyaltyPerformance(filter, dealerWise: true, cancellationToken);
+
+    private async Task<IActionResult> ExportLoyaltyPerformance(LoyaltyPerformanceFilter filter, bool dealerWise, CancellationToken cancellationToken)
+    {
+        var validation = ValidateLoyaltyPerformanceFilter(filter);
+        if (validation is not null) return BadRequest(new { status = false, message = validation });
+
+        var zoneName = await _db.Divisions.AsNoTracking().Where(x => x.Id == filter.ZoneId).Select(x => x.DivisionName).FirstOrDefaultAsync(cancellationToken);
+        if (zoneName is null) return BadRequest(new { status = false, message = "The selected zone was not found." });
+        if (!await _db.LoyaltySchemes.AsNoTracking().AnyAsync(x => x.Id == filter.SchemeId, cancellationToken))
+            return BadRequest(new { status = false, message = "The selected scheme was not found." });
+
+        var asrDesignationIds = await _db.Designations.AsNoTracking()
+            .Where(x => x.DesignationName.Trim() == "ASR").Select(x => x.Id).ToListAsync(cancellationToken);
+        var visibleIds = (await _hr.GetVisibleUserIdsAsync(CurrentUserId(), cancellationToken)).ToHashSet();
+        var zoneAsrs = (await _db.Users.AsNoTracking()
+                .Where(x => x.DesignationId.HasValue && asrDesignationIds.Contains(x.DesignationId.Value)
+                    && x.DivisionId == filter.ZoneId && x.Active == "Y" && !x.IsDeleted && x.DeletedAt == null)
+                .ToListAsync(cancellationToken))
+            .Where(x => visibleIds.Contains(x.Id))
+            .ToDictionary(x => x.Id);
+
+        var rangeStart = filter.StartDate.ToDateTime(TimeOnly.MinValue);
+        var rangeEndExclusive = filter.EndDate.AddDays(1).ToDateTime(TimeOnly.MinValue);
+        var invoices = await _db.NewInvoices.AsNoTracking()
+            .Where(x => x.LoyaltySchemeId == filter.SchemeId && x.InvoiceDate >= rangeStart && x.InvoiceDate < rangeEndExclusive)
+            .Select(x => new { x.Id, x.SecondaryCustomerId, x.DealerCustomerId, x.Amount, x.ApprovalStatus })
+            .ToListAsync(cancellationToken);
+
+        var retailerIds = invoices.Select(x => x.SecondaryCustomerId).Distinct().ToArray();
+        var retailerFields = (await _db.Customers.AsNoTracking()
+                .Where(x => retailerIds.Contains(x.Id))
+                .Select(x => new { x.Id, x.CustomFields })
+                .ToListAsync(cancellationToken))
+            .ToDictionary(x => x.Id, x => CustomFieldsJson.Read(x.CustomFields));
+        var employeeLists = retailerFields.ToDictionary(x => x.Key, x => ReadIdList(x.Value.GetValueOrDefault("employee_id")));
+        var listedEmployeeIds = employeeLists.Values.SelectMany(x => x).Distinct().ToArray();
+        var listedAsrIds = (await _db.Users.AsNoTracking()
+                .Where(x => listedEmployeeIds.Contains(x.Id) && x.DesignationId.HasValue && asrDesignationIds.Contains(x.DesignationId.Value))
+                .Select(x => x.Id)
+                .ToListAsync(cancellationToken))
+            .ToHashSet();
+        // Decided on the whole list, before the zone is applied, so the same retailer can
+        // never land under one ASR in one zone's report and another ASR in another's.
+        var asrByRetailer = employeeLists
+            .Select(x => (RetailerId: x.Key, AsrId: x.Value.FirstOrDefault(listedAsrIds.Contains)))
+            .Where(x => x.AsrId != 0 && zoneAsrs.ContainsKey(x.AsrId))
+            .ToDictionary(x => x.RetailerId, x => x.AsrId);
+
+        ulong DealerOf(ulong? invoiceDealer, ulong retailerId)
+        {
+            if (invoiceDealer is > 0) return invoiceDealer.Value;
+            var fields = retailerFields[retailerId];
+            var domestic = ReadIdList(fields.GetValueOrDefault("distributor_name")).FirstOrDefault();
+            return domestic != 0 ? domestic : ReadIdList(fields.GetValueOrDefault("agri_distributor")).FirstOrDefault();
+        }
+
+        var reportInvoices = invoices
+            .Where(x => asrByRetailer.ContainsKey(x.SecondaryCustomerId))
+            .Select(x => new
+            {
+                x.Id,
+                x.SecondaryCustomerId,
+                x.Amount,
+                x.ApprovalStatus,
+                AsrId = asrByRetailer[x.SecondaryCustomerId],
+                DealerId = dealerWise ? DealerOf(x.DealerCustomerId, x.SecondaryCustomerId) : 0UL
+            })
+            .ToList();
+        var hoInvoiceIds = reportInvoices.Where(x => x.ApprovalStatus == Domain.Entities.NewInvoice.StatusApprovedHo).Select(x => x.Id).ToArray();
+        // The amount HO approved - the latest HO approval on the invoice, as the invoice
+        // screens read it, falling back to the invoice amount where none was recorded.
+        var hoAmounts = (await _db.NewInvoiceApprovalLogs.AsNoTracking()
+                .Where(x => x.NewInvoiceId.HasValue && hoInvoiceIds.Contains(x.NewInvoiceId.Value)
+                    && x.ToStatus == Domain.Entities.NewInvoice.StatusApprovedHo && x.ApprovedAmount.HasValue)
+                .OrderByDescending(x => x.CreatedAt).ThenByDescending(x => x.Id)
+                .Select(x => new { InvoiceId = x.NewInvoiceId!.Value, Amount = x.ApprovedAmount!.Value })
+                .ToListAsync(cancellationToken))
+            .GroupBy(x => x.InvoiceId)
+            .ToDictionary(x => x.Key, x => x.First().Amount);
+
+        var reportAsrIds = reportInvoices.Select(x => x.AsrId).Distinct().ToArray();
+        var salesLines = await (from order in _db.Orders.AsNoTracking()
+                                join line in _db.OrderDetails.AsNoTracking() on (ulong?)order.Id equals line.OrderId
+                                where order.ExecutiveId.HasValue && reportAsrIds.Contains(order.ExecutiveId.Value)
+                                    && order.DeletedAt == null
+                                    && order.OrderDate >= rangeStart && order.OrderDate < rangeEndExclusive
+                                    && line.CategoryId == filter.SegmentId
+                                group line by new { AsrId = order.ExecutiveId!.Value, DealerId = order.SellerId } into sales
+                                select new { sales.Key.AsrId, sales.Key.DealerId, Total = sales.Sum(x => x.LineTotal) })
+            .ToListAsync(cancellationToken);
+        var salesByAsr = salesLines.GroupBy(x => x.AsrId).ToDictionary(x => x.Key, x => x.Sum(y => y.Total));
+        var salesByDealerAsr = salesLines.Where(x => x.DealerId.HasValue)
+            .GroupBy(x => (DealerId: x.DealerId!.Value, x.AsrId))
+            .ToDictionary(x => x.Key, x => x.Sum(y => y.Total));
+
+        var branches = await _db.Branches.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.BranchName, cancellationToken);
+        var managerIds = reportAsrIds.Select(id => zoneAsrs[id].ReportingId).Where(x => x.HasValue).Select(x => x!.Value).Distinct().ToArray();
+        var managers = await _db.Users.AsNoTracking().Where(x => managerIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
+        var dealerIds = reportInvoices.Select(x => x.DealerId).Where(x => x > 0).Distinct().ToArray();
+        // A dealer deleted since still carries its name on the invoices raised under it.
+        var dealerNames = await _db.Customers.AsNoTracking().IgnoreQueryFilters()
+            .Where(x => dealerIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
+
+        var rows = reportInvoices
+            .GroupBy(x => (x.DealerId, x.AsrId))
+            .Select(group =>
+            {
+                var asr = zoneAsrs[group.Key.AsrId];
+                var activeRetailers = group.Select(x => x.SecondaryCustomerId).Distinct().ToList();
+                return new LoyaltyReportRow(
+                    BranchName(asr, branches),
+                    dealerWise ? (group.Key.DealerId == 0 ? "No Dealer" : Name(dealerNames, group.Key.DealerId)) : null,
+                    asr.Name,
+                    Name(managers, asr.ReportingId),
+                    dealerWise ? salesByDealerAsr.GetValueOrDefault((group.Key.DealerId, asr.Id)) : salesByAsr.GetValueOrDefault(asr.Id),
+                    group.Where(x => x.ApprovalStatus == Domain.Entities.NewInvoice.StatusApprovedHo)
+                        .Sum(x => hoAmounts.TryGetValue(x.Id, out var approved) ? approved : x.Amount),
+                    activeRetailers.Count,
+                    activeRetailers.Count(id => !KycApproved(retailerFields[id])));
+            })
+            .OrderBy(x => string.IsNullOrWhiteSpace(x.Branch) ? 1 : 0)
+            .ThenBy(x => x.Branch, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.DealerName ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.AsrName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        using var workbook = new XLWorkbook();
+        var sheet = workbook.Worksheets.Add(dealerWise ? "Dealer Wise" : "ASR Wise");
+        var headers = dealerWise
+            ? new[] { "Branch", "Dealer Name", "ASR Name", "Reporting Mgr", "Primary Sales", "Act Sec Sales (Lac)", "Approved Invoice Val (Lac)", "No. of Active Retailers", "KYC Pending" }
+            : new[] { "Branch", "ASR Name", "Reporting Mgr", "Primary Sales", "Act Sec Sales (Lac)", "Approved Invoice Val (Lac)", "No. of Active Retailers", "KYC Pending" };
+        // Everything left of Primary Sales names the row; the figures sit to its right.
+        var labelColumns = dealerWise ? 4 : 3;
+        for (var column = 0; column < headers.Length; column++) sheet.Cell(1, column + 1).Value = headers[column];
+
+        void WriteLine(int row, IEnumerable<object?> names, IReadOnlyCollection<LoyaltyReportRow> figures, bool isTotal)
+        {
+            WriteRow(sheet, row, names.Concat(new object?[]
+            {
+                null,
+                ToLakh(figures.Sum(x => x.SecondarySales)),
+                ToLakh(figures.Sum(x => x.ApprovedInvoiceValue)),
+                figures.Sum(x => x.ActiveRetailers),
+                figures.Sum(x => x.KycPending)
+            }).ToList());
+        }
+
+        void WriteTotal(int row, string label, IReadOnlyCollection<LoyaltyReportRow> figures, XLColor color, bool whiteText)
+        {
+            WriteLine(row, new object?[] { label }.Concat(Enumerable.Repeat<object?>("", labelColumns - 1)), figures, isTotal: true);
+            var range = sheet.Range(row, 1, row, headers.Length);
+            range.Style.Fill.BackgroundColor = color;
+            range.Style.Font.Bold = true;
+            if (whiteText) range.Style.Font.FontColor = XLColor.White;
+        }
+
+        var outputRow = 2;
+        foreach (var branchGroup in rows.GroupBy(x => x.Branch))
+        {
+            foreach (var row in branchGroup)
+            {
+                var names = dealerWise
+                    ? new object?[] { row.Branch, row.DealerName, row.AsrName, row.ReportingManager }
+                    : new object?[] { row.Branch, row.AsrName, row.ReportingManager };
+                WriteLine(outputRow++, names, new[] { row }, isTotal: false);
+            }
+            WriteTotal(outputRow++, "SUBTOTAL - " + (string.IsNullOrWhiteSpace(branchGroup.Key) ? "No Branch" : branchGroup.Key), branchGroup.ToList(), XLColor.Yellow, whiteText: false);
+        }
+        WriteTotal(outputRow++, "ZONE TOTAL - " + zoneName, rows, XLColor.FromHtml("E53935"), whiteText: true);
+
+        var headerRange = sheet.Range(1, 1, 1, headers.Length);
+        headerRange.Style.Fill.BackgroundColor = XLColor.FromHtml("1E88E5");
+        headerRange.Style.Font.Bold = true;
+        headerRange.Style.Font.FontColor = XLColor.White;
+        headerRange.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+        headerRange.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
+        sheet.Row(1).Height = 25;
+        var usedRange = sheet.RangeUsed();
+        if (usedRange is not null)
+        {
+            usedRange.Style.Font.FontName = "Calibri";
+            usedRange.Style.Font.FontSize = 9;
+            var dataRange = sheet.Range(2, labelColumns + 1, outputRow - 1, headers.Length);
+            dataRange.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+            dataRange.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
+            sheet.Range(2, labelColumns + 2, outputRow - 1, labelColumns + 3).Style.NumberFormat.Format = "#,##0.00";
+        }
+        sheet.SheetView.FreezeRows(1); sheet.Columns().AdjustToContents(8, 45);
+        using var stream = new MemoryStream(); workbook.SaveAs(stream);
+        return File(stream.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            dealerWise ? "Loyalty_Performance_Dealer_Wise.xlsx" : "Loyalty_Performance_ASR_Wise.xlsx");
+    }
+
+    private static string? ValidateLoyaltyPerformanceFilter(LoyaltyPerformanceFilter filter)
+    {
+        if (!filter.SegmentId.HasValue) return "Segment is required.";
+        if (!filter.ZoneId.HasValue) return "Zone is required.";
+        if (!filter.SchemeId.HasValue) return "Scheme is required.";
+        if (filter.StartDate == default || filter.EndDate == default) return "Start date and end date are required.";
+        if (filter.StartDate > filter.EndDate) return "Start date cannot be after end date.";
+        return null;
+    }
+
+    /// <summary>The ids in a custom field, in the order they are written: "41949,42034".</summary>
+    private static List<ulong> ReadIdList(string? value) =>
+        System.Text.RegularExpressions.Regex.Matches(value ?? string.Empty, @"\d+")
+            .Select(match => ulong.TryParse(match.Value, out var id) ? id : 0)
+            .Where(id => id > 0)
+            .ToList();
+
+    /// <summary>KYC is complete only when all four documents are approved - the rule the
+    /// KYC screen applies; anything short of that counts as pending.</summary>
+    private static bool KycApproved(IReadOnlyDictionary<string, string?> fields) =>
+        new[] { "gst_kyc_status", "pan_kyc_status", "aadhar_kyc_status", "bank_kyc_status" }
+            .All(key => string.Equals(fields.GetValueOrDefault(key)?.Trim(), "approved", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Rupees to lakhs. Written unrounded and shown to two decimals by the cell
+    /// format, so a subtotal is the exact sum of its rows rather than of rounded figures.</summary>
+    private static decimal ToLakh(decimal rupees) => rupees / 100000m;
+
     private static bool UserHasBranch(Domain.Entities.User user, ulong branchId) => user.PrimaryBranchId == branchId ||
         (user.BranchId ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Any(x => ulong.TryParse(x, out var id) && id == branchId);
     private static string BranchName(Domain.Entities.User user, IReadOnlyDictionary<ulong, string> branches)
@@ -914,6 +1173,17 @@ WHERE customertype = 1 AND deleted_at IS NULL AND executive_id IN ({string.Join(
         var range = sheet.Range(row, 1, row, 18); range.Style.Fill.BackgroundColor = color; range.Style.Font.Bold = true;
         if (color != XLColor.Yellow) range.Style.Font.FontColor = XLColor.White;
     }
+}
+
+public sealed record LoyaltyReportRow(string Branch, string? DealerName, string AsrName, string ReportingManager, decimal SecondarySales, decimal ApprovedInvoiceValue, int ActiveRetailers, int KycPending);
+
+public sealed class LoyaltyPerformanceFilter
+{
+    [FromQuery(Name = "segment_id")] public ulong? SegmentId { get; set; }
+    [FromQuery(Name = "zone_id")] public ulong? ZoneId { get; set; }
+    [FromQuery(Name = "scheme_id")] public ulong? SchemeId { get; set; }
+    [FromQuery(Name = "start_date")] public DateOnly StartDate { get; set; }
+    [FromQuery(Name = "end_date")] public DateOnly EndDate { get; set; }
 }
 
 public sealed class AsrPerformanceFilter

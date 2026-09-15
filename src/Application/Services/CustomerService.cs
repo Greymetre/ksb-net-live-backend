@@ -17,8 +17,8 @@ public sealed class CustomerService : ICustomerService
 
     private static readonly (string Key, string Heading)[] DistributorExportDefinition =
     [
-        ("id", "ID"), ("distributor_code", "Distributor Code"), ("legal_name", "Legal Name"),
-        ("trade_name", "Trade Name"), ("business_status", "Business Status"),
+        ("id", "ID"), ("distributor_code", "Distributor Code"), ("legal_name", "Shop Name"),
+        ("trade_name", "Sister Concern"), ("business_status", "Business Status"),
         ("business_start_date", "Business Start Date"), ("contact_person", "Contact Person"),
         ("mobile", "Mobile"), ("alternate_mobile", "Alternate Mobile"), ("email", "Email"),
         ("billing_address", "Billing Address"), ("billing_city_name", "Billing City"),
@@ -241,6 +241,23 @@ public sealed class CustomerService : ICustomerService
             var customerType = row.CustomerType("customer_type")
                 ?? row.CustomerType("type")
                 ?? (row.HasHeading("distributor_code") ? 1UL : null);
+
+            if (customerType == DistributorCustomerType)
+            {
+                // The dealer export heads the legal name and trade name "Shop Name" and
+                // "Sister Concern", which the heading normaliser reads as shop_name and
+                // sister_concern. On a dealer sheet they are those two fields, so a sheet
+                // exported from the CRM goes back in without losing either.
+                if (string.IsNullOrWhiteSpace(ReadField(customFields, "legal_name")) && row.HasHeading("shop_name"))
+                {
+                    SetField(customFields, "legal_name", row.Value("shop_name"));
+                    customFields.Remove("shop_name");
+                }
+                if (string.IsNullOrWhiteSpace(ReadField(customFields, "trade_name")) && row.HasHeading("sister_concern"))
+                {
+                    SetField(customFields, "trade_name", row.Value("sister_concern"));
+                }
+            }
 
             if (customerType is 1 or 2 && !string.IsNullOrWhiteSpace(row.Value("employee_codes")))
             {

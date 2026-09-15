@@ -41,6 +41,7 @@ builder.Services.AddSingleton<ISmtpEmailSender, SmtpEmailSender>();
 builder.Services.AddScoped<Api.Services.InvoiceAttachmentStore>();
 builder.Services.AddScoped<Api.Services.RatingTrendService>();
 builder.Services.AddScoped<Api.Services.SchemeAudienceService>();
+builder.Services.AddScoped<Api.Services.UserPasswordResetService>();
 builder.Services.AddHttpClient();
 
 var jwt = builder.Configuration.GetSection("Jwt");

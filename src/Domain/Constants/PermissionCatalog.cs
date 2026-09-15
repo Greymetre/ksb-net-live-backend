@@ -306,6 +306,10 @@ public static class PermissionCatalog
         // Market Intelligence
         new("market_intelligence_report.view", "View Report", "market_intelligence_report", "Market Intelligence", "reports", "Reports Management", "view", 2220, ["market_intelligence_access"], []),
         new("market_intelligence_report.export", "Export", "market_intelligence_report", "Market Intelligence", "reports", "Reports Management", "export", 2230, ["market_intelligence_report_download"], []),
+        // Loyalty > Performance Report
+        new("loyalty_performance_report.view", "View Report", "loyalty_performance_report", "Loyalty Performance", "reports", "Reports Management", "view", 2235, [], []),
+        new("loyalty_performance_report.export_asr", "ASR Wise Export", "loyalty_performance_report", "Loyalty Performance", "reports", "Reports Management", "export_asr", 2236, [], []),
+        new("loyalty_performance_report.export_dealer", "Dealer Wise Export", "loyalty_performance_report", "Loyalty Performance", "reports", "Reports Management", "export_dealer", 2237, [], []),
         // ---------- Setting Management ----------
         // FieldKonnect App Setting
         new("app_setting.view", "View Setting", "app_setting", "FieldKonnect App Setting", "settings", "Setting Management", "view", 2240, ["loyalty_app_setting_access", "field_konnect_app_setting_access"], []),
