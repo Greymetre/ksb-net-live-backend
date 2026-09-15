@@ -94,7 +94,7 @@ LEFT JOIN users rm ON rm.id=u.reportingid
 LEFT JOIN designations dg ON dg.id=u.designation_id
 LEFT JOIN divisions dv ON dv.id=u.division_id
 OUTER APPLY (SELECT TOP 1 brx.branch_name FROM branches brx
-             WHERE brx.id=u.primary_branch_id OR ','+REPLACE(COALESCE(u.branch_id,''),' ','')+',' LIKE '%,'+CONVERT(varchar(30),brx.id)+',%'
+             WHERE brx.deleted_at IS NULL AND (brx.id=u.primary_branch_id OR ','+REPLACE(COALESCE(u.branch_id,''),' ','')+',' LIKE '%,'+CONVERT(varchar(30),brx.id)+',%')
              ORDER BY CASE WHEN brx.id=u.primary_branch_id THEN 0 ELSE 1 END,brx.id) br
 LEFT JOIN customers c ON c.id=COALESCE(ci.entity_id,ci.customer_id)
 LEFT JOIN customer_types ct ON ct.id=c.customertype
@@ -160,7 +160,9 @@ OUTER APPLY (SELECT SUM(o.total_qty) order_qty,SUM(o.grand_total) order_value,CO
 
     private string Where(CheckinFilter f, IReadOnlyCollection<ulong> visibleIds, out List<(string,object)> args)
     {
-        args=[]; var where=new List<string>{"ci.deleted_at IS NULL"};
+        // A check-in at a customer that has since been deleted is left out of the list, its count
+        // and the export; check-ins against other entities (no customer row) stay.
+        args=[]; var where=new List<string>{"ci.deleted_at IS NULL","(c.id IS NULL OR c.deleted_at IS NULL)"};
         if (visibleIds.Count == 0) where.Add("1=0");
         else
         {

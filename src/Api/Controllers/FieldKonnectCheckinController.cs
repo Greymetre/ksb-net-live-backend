@@ -687,7 +687,8 @@ OFFSET {offset} ROWS FETCH NEXT {pageSize} ROWS ONLY", cancellationToken,
     {
         var table = EntityTable(entityType);
         if (table is null) return false;
-        var deletedFilter = entityType == "customer" ? " AND deleted_at IS NULL" : string.Empty;
+        // Every entity lives in customers, and a deleted one cannot be checked in at.
+        var deletedFilter = table == "customers" ? " AND deleted_at IS NULL" : string.Empty;
         if (await QueryScalarLong($"SELECT COUNT(*) FROM {table} WHERE id = @id{deletedFilter}", cancellationToken, ("@id", entityId)) > 0) return true;
         return entityType is "distributor" or "secondary_customer"
             && await QueryScalarLong("SELECT COUNT(*) FROM customers WHERE id = @id AND deleted_at IS NULL", cancellationToken, ("@id", entityId)) > 0;

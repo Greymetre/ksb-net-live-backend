@@ -302,6 +302,12 @@ public sealed class UserRepository : IUserRepository
         user.DeletedAt = DateTime.UtcNow;
         user.UpdatedAt = DateTime.UtcNow;
         await _dbContext.SaveChangesAsync(cancellationToken);
+        // Signed out everywhere at once: a session opened before the delete stayed valid
+        // until it expired. Only this user's CRM and field app tokens - customer tokens
+        // share the table and can share an id.
+        await _dbContext.OAuthAccessTokens
+            .Where(x => x.UserId == id && !x.Revoked && x.Name != null && x.Name.StartsWith("users-"))
+            .ExecuteUpdateAsync(setter => setter.SetProperty(x => x.Revoked, true), cancellationToken);
         return true;
     }
 

@@ -15,22 +15,25 @@ public sealed class AuthRepository : IAuthRepository
         _dbContext = dbContext;
     }
 
+    // A deleted user must not sign in or read a profile. Deleting only sets deleted_at /
+    // isDeleted and leaves active = 'Y', so the Active check at sign-in never caught it; and
+    // a mobile or email a deleted account once held can belong to a new user now.
     public Task<User?> FindUserByUsernameAsync(string username, CancellationToken cancellationToken) =>
         _dbContext.Users
             .IgnoreQueryFilters()
-            .FirstOrDefaultAsync(x => x.Mobile == username || x.Email == username, cancellationToken);
+            .FirstOrDefaultAsync(x => x.DeletedAt == null && !x.IsDeleted && (x.Mobile == username || x.Email == username), cancellationToken);
 
     public Task<User?> FindUserByIdAsync(ulong userId, CancellationToken cancellationToken) =>
         _dbContext.Users
             .IgnoreQueryFilters()
-            .FirstOrDefaultAsync(x => x.Id == userId, cancellationToken);
+            .FirstOrDefaultAsync(x => x.Id == userId && x.DeletedAt == null && !x.IsDeleted, cancellationToken);
 
     public Task<Customer?> FindCustomerByUsernameAsync(string username, CancellationToken cancellationToken)
     {
         var normalized = "91" + username.TrimStart('0', '+');
         return _dbContext.Customers
             .IgnoreQueryFilters()
-            .FirstOrDefaultAsync(x => x.Email == username || x.Mobile == username || x.Mobile == normalized, cancellationToken);
+            .FirstOrDefaultAsync(x => x.DeletedAt == null && (x.Email == username || x.Mobile == username || x.Mobile == normalized), cancellationToken);
     }
 
     // Sign-up asks whether a mobile or email is taken. A user that was deleted is not

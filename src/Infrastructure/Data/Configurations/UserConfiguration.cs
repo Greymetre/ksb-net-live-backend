@@ -151,6 +151,9 @@ public sealed class UserCityAssignConfiguration : IEntityTypeConfiguration<UserC
         builder.HasIndex(x => x.UserId);
         builder.HasIndex(x => x.ReportingId);
         builder.HasIndex(x => x.CityId);
+        // Soft deleted: the CRM listing, its count and export, the HR city and district
+        // dropdowns and the user list all skip a deleted assignment.
+        builder.HasQueryFilter(x => x.DeletedAt == null);
     }
 }
 
@@ -171,5 +174,6 @@ public sealed class UserEducationConfiguration : IEntityTypeConfiguration<UserEd
         builder.Property(x => x.UpdatedAt).HasColumnName("updated_at");
         builder.Property(x => x.DeletedAt).HasColumnName("deleted_at");
         builder.HasIndex(x => x.UserId);
+        builder.HasQueryFilter(x => x.DeletedAt == null);
     }
 }

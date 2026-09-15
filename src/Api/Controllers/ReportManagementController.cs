@@ -45,7 +45,8 @@ public sealed class ReportManagementController : ControllerBase
     // Loyalty > Performance Report. Dropdown feeds only, ungated like the other report
     // options above; each of its two downloads carries a permission of its own.
     // Segments come from the product Segment master (Domestic, Agriculture, ...), zones in
-    // NEWS order, and only published schemes - no invoice is ever raised under any other.
+    // NEWS order, and only published schemes that have not been deleted - no invoice is
+    // raised under any other, and a deleted scheme is gone from the Scheme Creation list too.
     [HttpGet("loyalty-performance/options")]
     public async Task<IActionResult> LoyaltyPerformanceOptions(CancellationToken cancellationToken)
     {
@@ -54,7 +55,7 @@ public sealed class ReportManagementController : ControllerBase
             .Select(x => new { id = x.Id, name = x.CategoryName }).ToListAsync(cancellationToken);
         var zones = (await _db.Divisions.AsNoTracking().Where(x => x.Active == "Y" && x.DeletedAt == null)
             .Select(x => new { id = x.Id, name = x.DivisionName }).ToListAsync(cancellationToken)).ByZone(x => x.name).ToList();
-        var schemes = await _db.LoyaltySchemes.AsNoTracking().Where(x => x.Status == "Published")
+        var schemes = await _db.LoyaltySchemes.AsNoTracking().Where(x => x.Status == "Published" && x.DeletedAt == null)
             .OrderByDescending(x => x.StartDate).ThenBy(x => x.SchemeName)
             .Select(x => new { id = x.Id, name = x.SchemeName, code = x.SchemeCode, start_date = x.StartDate, end_date = x.EndDate })
             .ToListAsync(cancellationToken);
@@ -603,7 +604,7 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id", ct);
         if (userIds.Length == 0) return [];
         var rows = await Query($@"SELECT user_id, COUNT(DISTINCT customer_id) customer_count FROM (
 SELECT CAST(executive_id AS bigint) user_id, CAST(id AS bigint) customer_id FROM customers WHERE deleted_at IS NULL AND executive_id IN ({string.Join(',', userIds)})
-UNION SELECT CAST(user_id AS bigint), CAST(customer_id AS bigint) FROM employee_details WHERE deleted_at IS NULL AND user_id IN ({string.Join(',', userIds)})
+UNION SELECT CAST(ed.user_id AS bigint), CAST(ed.customer_id AS bigint) FROM employee_details ed INNER JOIN customers c ON c.id = ed.customer_id AND c.deleted_at IS NULL WHERE ed.deleted_at IS NULL AND ed.user_id IN ({string.Join(',', userIds)})
 ) assignments GROUP BY user_id", ct);
         return rows.ToDictionary(x => ULong(x, "user_id"), x => Convert.ToInt32(Obj(x, "customer_count"), CultureInfo.InvariantCulture));
     }
@@ -944,7 +945,7 @@ WHERE customertype = 1 AND deleted_at IS NULL AND executive_id IN ({string.Join(
 
         var zoneName = await _db.Divisions.AsNoTracking().Where(x => x.Id == filter.ZoneId).Select(x => x.DivisionName).FirstOrDefaultAsync(cancellationToken);
         if (zoneName is null) return BadRequest(new { status = false, message = "The selected zone was not found." });
-        if (!await _db.LoyaltySchemes.AsNoTracking().AnyAsync(x => x.Id == filter.SchemeId, cancellationToken))
+        if (!await _db.LoyaltySchemes.AsNoTracking().AnyAsync(x => x.Id == filter.SchemeId && x.DeletedAt == null, cancellationToken))
             return BadRequest(new { status = false, message = "The selected scheme was not found." });
 
         var asrDesignationIds = await _db.Designations.AsNoTracking()
@@ -1069,7 +1070,18 @@ WHERE customertype = 1 AND deleted_at IS NULL AND executive_id IN ({string.Join(
             : new[] { "Branch", "ASR Name", "Reporting Mgr", "Primary Sales", "Act Sec Sales (Lac)", "Approved Invoice Val (Lac)", "No. of Active Retailers", "KYC Pending" };
         // Everything left of Primary Sales names the row; the figures sit to its right.
         var labelColumns = dealerWise ? 4 : 3;
-        for (var column = 0; column < headers.Length; column++) sheet.Cell(1, column + 1).Value = headers[column];
+        // Two header rows: the last three columns sit under one "Loyalty Program Performance"
+        // heading, and every other heading spans both rows.
+        const int loyaltyColumns = 3;
+        var loyaltyStart = headers.Length - loyaltyColumns + 1;
+        for (var column = 1; column < loyaltyStart; column++)
+        {
+            sheet.Cell(1, column).Value = headers[column - 1];
+            sheet.Range(1, column, 2, column).Merge();
+        }
+        sheet.Cell(1, loyaltyStart).Value = "Loyalty Program Performance";
+        sheet.Range(1, loyaltyStart, 1, headers.Length).Merge();
+        for (var column = loyaltyStart; column <= headers.Length; column++) sheet.Cell(2, column).Value = headers[column - 1];
 
         void WriteLine(int row, IEnumerable<object?> names, IReadOnlyCollection<LoyaltyReportRow> figures, bool isTotal)
         {
@@ -1092,7 +1104,7 @@ WHERE customertype = 1 AND deleted_at IS NULL AND executive_id IN ({string.Join(
             if (whiteText) range.Style.Font.FontColor = XLColor.White;
         }
 
-        var outputRow = 2;
+        var outputRow = 3;
         foreach (var branchGroup in rows.GroupBy(x => x.Branch))
         {
             foreach (var row in branchGroup)
@@ -1106,24 +1118,31 @@ WHERE customertype = 1 AND deleted_at IS NULL AND executive_id IN ({string.Join(
         }
         WriteTotal(outputRow++, "ZONE TOTAL - " + zoneName, rows, XLColor.FromHtml("E53935"), whiteText: true);
 
-        var headerRange = sheet.Range(1, 1, 1, headers.Length);
+        var headerRange = sheet.Range(1, 1, 2, headers.Length);
         headerRange.Style.Fill.BackgroundColor = XLColor.FromHtml("1E88E5");
         headerRange.Style.Font.Bold = true;
         headerRange.Style.Font.FontColor = XLColor.White;
         headerRange.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
         headerRange.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
-        sheet.Row(1).Height = 25;
+        headerRange.Style.Alignment.WrapText = true;
+        headerRange.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
+        headerRange.Style.Border.InsideBorder = XLBorderStyleValues.Thin;
+        headerRange.Style.Border.OutsideBorderColor = XLColor.White;
+        headerRange.Style.Border.InsideBorderColor = XLColor.White;
+        sheet.Row(1).Height = 20;
+        sheet.Row(2).Height = 25;
         var usedRange = sheet.RangeUsed();
         if (usedRange is not null)
         {
             usedRange.Style.Font.FontName = "Calibri";
             usedRange.Style.Font.FontSize = 9;
-            var dataRange = sheet.Range(2, labelColumns + 1, outputRow - 1, headers.Length);
+            var dataRange = sheet.Range(3, labelColumns + 1, outputRow - 1, headers.Length);
             dataRange.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
             dataRange.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
-            sheet.Range(2, labelColumns + 2, outputRow - 1, labelColumns + 3).Style.NumberFormat.Format = "#,##0.00";
+            sheet.Range(3, labelColumns + 2, outputRow - 1, labelColumns + 3).Style.NumberFormat.Format = "#,##0.00";
         }
-        sheet.SheetView.FreezeRows(1); sheet.Columns().AdjustToContents(8, 45);
+        // Widths follow row 2 and the data, not the merged group heading across three columns.
+        sheet.SheetView.FreezeRows(2); sheet.Columns().AdjustToContents(2, Math.Max(2, outputRow - 1), 8, 45);
         using var stream = new MemoryStream(); workbook.SaveAs(stream);
         return File(stream.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             dealerWise ? "Loyalty_Performance_Dealer_Wise.xlsx" : "Loyalty_Performance_ASR_Wise.xlsx");

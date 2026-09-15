@@ -43,6 +43,8 @@ public sealed class PromotionalActivityParticipantConfiguration : IEntityTypeCon
     public void Configure(EntityTypeBuilder<PromotionalActivityParticipant> b)
     {
         b.ToTable("promotional_activity_participants"); b.HasKey(x => x.Id); ActivityEntityMapping.MapBase(b);
+        // Soft deleted: counts, details, the submit check and the reports skip deleted rows.
+        b.HasQueryFilter(x => x.DeletedAt == null);
         b.Property(x => x.ActivityId).HasColumnName("activity_id").HasColumnType("bigint");
         b.Property(x => x.Name).HasColumnName("name").HasMaxLength(255); b.Property(x => x.ShopName).HasColumnName("shop_name").HasMaxLength(255);
         b.Property(x => x.ProprietorName).HasColumnName("proprietor_name").HasMaxLength(255); b.Property(x => x.ParticipantType).HasColumnName("participant_type").HasMaxLength(100);
@@ -58,6 +60,8 @@ public sealed class PromotionalActivityExpenseConfiguration : IEntityTypeConfigu
     public void Configure(EntityTypeBuilder<PromotionalActivityExpense> b)
     {
         b.ToTable("promotional_activity_expenses"); b.HasKey(x => x.Id); ActivityEntityMapping.MapBase(b);
+        // Soft deleted: counts, details, the submit check and the reports skip deleted rows.
+        b.HasQueryFilter(x => x.DeletedAt == null);
         b.Property(x => x.ActivityId).HasColumnName("activity_id").HasColumnType("bigint"); b.Property(x => x.ExpenseType).HasColumnName("expense_type").HasMaxLength(50);
         b.Property(x => x.TotalAmount).HasColumnName("total_amount").HasPrecision(18, 2); b.Property(x => x.DealerShareAmount).HasColumnName("dealer_share_amount").HasPrecision(18, 2);
         b.Property(x => x.DealerSharePct).HasColumnName("dealer_share_pct").HasPrecision(7, 2); b.Property(x => x.Remarks).HasColumnName("remarks");
@@ -70,6 +74,8 @@ public sealed class PromotionalActivityPhotoConfiguration : IEntityTypeConfigura
     public void Configure(EntityTypeBuilder<PromotionalActivityPhoto> b)
     {
         b.ToTable("promotional_activity_photos"); b.HasKey(x => x.Id); ActivityEntityMapping.MapBase(b);
+        // Soft deleted: counts, details, the submit check and the reports skip deleted rows.
+        b.HasQueryFilter(x => x.DeletedAt == null);
         b.Property(x => x.ActivityId).HasColumnName("activity_id").HasColumnType("bigint"); b.Property(x => x.PhotoUrl).HasColumnName("photo_url").HasMaxLength(500);
         b.Property(x => x.Latitude).HasColumnName("latitude").HasPrecision(10, 7); b.Property(x => x.Longitude).HasColumnName("longitude").HasPrecision(10, 7);
         b.Property(x => x.TakenAt).HasColumnName("taken_at");

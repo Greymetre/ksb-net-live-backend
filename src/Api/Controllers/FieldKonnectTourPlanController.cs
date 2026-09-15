@@ -38,7 +38,7 @@ public sealed class FieldKonnectTourPlanController : ControllerBase
             }
             var cityName = RequestValue("cityname");
             var parameters = new List<(string, object?)> { ("@user_id", userId) };
-            var where = "uca.userid = @user_id AND c.deleted_at IS NULL";
+            var where = "uca.userid = @user_id AND uca.deleted_at IS NULL AND c.deleted_at IS NULL";
             if (!string.IsNullOrWhiteSpace(cityName))
             {
                 where += " AND c.city_name LIKE @city_name";
@@ -341,7 +341,7 @@ LIMIT {perPage} OFFSET {(page - 1) * perPage}", cancellationToken, parameters.To
             }
             var districtName = RequestValue("districtname");
             var parameters = new List<(string, object?)> { ("@user_id", userId) };
-            var where = "uca.userid = @user_id AND d.deleted_at IS NULL";
+            var where = "uca.userid = @user_id AND uca.deleted_at IS NULL AND c.deleted_at IS NULL AND d.deleted_at IS NULL";
             if (!string.IsNullOrWhiteSpace(districtName))
             {
                 where += " AND d.district_name LIKE @district_name";
@@ -379,7 +379,7 @@ ORDER BY d.district_name ASC", cancellationToken, parameters.ToArray());
             }
             var cityName = RequestValue("cityname");
             var parameters = new List<(string, object?)> { ("@user_id", userId), ("@district_id", districtId.Value) };
-            var where = "uca.userid = @user_id AND c.district_id = @district_id AND c.deleted_at IS NULL";
+            var where = "uca.userid = @user_id AND uca.deleted_at IS NULL AND c.district_id = @district_id AND c.deleted_at IS NULL";
             if (!string.IsNullOrWhiteSpace(cityName))
             {
                 where += " AND c.city_name LIKE @city_name";
@@ -449,11 +449,13 @@ ORDER BY u.name", cancellationToken, parameters.ToArray());
         {
             var userId = CurrentUserId();
             var filter = RequestValue("filter");
-            var where = new List<string> { "tp.userid = @user_id", "tp.deleted_at IS NULL", "tp.type = ''" };
+            // tour_programmes has no deleted_at column (a tour is removed outright), so filtering
+            // on it failed the whole query; and DATE() does not exist in SQL Server.
+            var where = new List<string> { "tp.userid = @user_id", "tp.type = ''" };
             var parameters = new List<(string, object?)> { ("@user_id", userId) };
             if (!string.IsNullOrWhiteSpace(filter))
             {
-                where.Add("DATE(tp.date) = @today");
+                where.Add("CAST(tp.date AS date) = @today");
                 parameters.Add(("@today", IndiaNow().Date));
             }
 

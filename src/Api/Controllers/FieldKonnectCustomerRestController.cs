@@ -408,8 +408,8 @@ bs.beat_date,
 (SELECT COUNT_BIG(DISTINCT ci.entity_id) FROM check_in ci
  WHERE ci.user_id = bs.user_id AND ci.deleted_at IS NULL
  AND ci.checkin_date = CAST(GETDATE() AS date)
- AND (ci.customer_id IN (SELECT bc.customer_id FROM beat_customers bc WHERE bc.beat_id = bs.beat_id)
-      OR ci.entity_id IN (SELECT bc.customer_id FROM beat_customers bc WHERE bc.beat_id = bs.beat_id))) AS visited_customers,
+ AND (ci.customer_id IN (SELECT bc.customer_id FROM beat_customers bc INNER JOIN customers c ON c.id = bc.customer_id AND c.deleted_at IS NULL WHERE bc.beat_id = bs.beat_id)
+      OR ci.entity_id IN (SELECT bc.customer_id FROM beat_customers bc INNER JOIN customers c ON c.id = bc.customer_id AND c.deleted_at IS NULL WHERE bc.beat_id = bs.beat_id))) AS visited_customers,
 (SELECT COUNT_BIG(*) FROM orders o WHERE o.beatscheduleid = bs.id AND o.deleted_at IS NULL) AS order_count,
 (SELECT COUNT_BIG(*) FROM customers c
  INNER JOIN beat_customers bc ON bc.customer_id = c.id AND bc.beat_id = bs.beat_id
@@ -484,7 +484,7 @@ c.id AS customer_id, c.name AS owner_name, c.name AS shop_name, c.name AS legal_
 c.mobile AS mobile_number, c.contact_number AS whatsapp_number, c.email, c.active, c.custom_fields,
 ctype.customertype_name AS type, COALESCE(NULLIF(UPPER(LTRIM(RTRIM(JSON_VALUE(c.custom_fields, '$.status')))), ''), NULLIF(UPPER(LTRIM(RTRIM(cd.visit_status))), ''), 'PENDING') AS status, ca.address1 AS address_line, ca.city_id, customer_city.city_name,
 c.name AS customer_name, c.mobile AS customer_mobile, cd.visit_status,
-CAST(CASE WHEN EXISTS (SELECT 1 FROM check_in ci WHERE ci.user_id = @auth_user AND ci.checkin_date = @today AND (ci.customer_id = bc.customer_id OR ci.entity_id = bc.customer_id)) THEN 1 ELSE 0 END AS bit) AS isvisited
+CAST(CASE WHEN EXISTS (SELECT 1 FROM check_in ci WHERE ci.user_id = @auth_user AND ci.deleted_at IS NULL AND ci.checkin_date = @today AND (ci.customer_id = bc.customer_id OR ci.entity_id = bc.customer_id)) THEN 1 ELSE 0 END AS bit) AS isvisited
 FROM beat_customers bc
 LEFT JOIN beats b ON b.id = bc.beat_id
 LEFT JOIN customers c ON c.id = bc.customer_id
@@ -553,7 +553,7 @@ ORDER BY b.city_id ASC", cancellationToken, ("@user_id", userId));
         var stateId = ULongQuery("state_id");
         var where = stateId.HasValue ? "WHERE state_id = @state_id AND deleted_at IS NULL" : "WHERE deleted_at IS NULL";
         var rows = await QueryRows($"SELECT id AS district_id, district_name FROM districts {where} ORDER BY district_name ASC", cancellationToken, ("@state_id", stateId));
-        var disData = await QueryRows(@"SELECT c.id, c.name FROM customers c LEFT JOIN addresses a ON a.customer_id = c.id WHERE c.active = 'Y' AND c.customertype IN (1,3) AND (@state_id IS NULL OR a.state_id = @state_id)", cancellationToken, ("@state_id", stateId));
+        var disData = await QueryRows(@"SELECT c.id, c.name FROM customers c LEFT JOIN addresses a ON a.customer_id = c.id AND a.deleted_at IS NULL WHERE c.deleted_at IS NULL AND c.active = 'Y' AND c.customertype IN (1,3) AND (@state_id IS NULL OR a.state_id = @state_id)", cancellationToken, ("@state_id", stateId));
         if (rows.Count == 0) return Ok(new { status = "error", message = "No Record Found.", data = rows.Select(CleanRow).ToList() });
         return Ok(new { status = "success", message = "Data retrieved successfully.", data = rows.Select(CleanRow).ToList(), dis_data = disData.Select(CleanRow).ToList() });
     }
@@ -585,10 +585,10 @@ ORDER BY b.city_id ASC", cancellationToken, ("@user_id", userId));
         var pincodeId = ULongValue(body, "pincode_id") ?? ULongQuery("pincode_id");
         var rows = await QueryRows(@"SELECT p.id AS pincode_id, p.pincode, p.city_id, c.city_name AS city, c.district_id, d.district_name AS district, d.state_id, s.state_name AS state, s.country_id, co.country_name AS country
 FROM pincodes p
-INNER JOIN cities c ON c.id = p.city_id
-INNER JOIN districts d ON d.id = c.district_id
-INNER JOIN states s ON s.id = d.state_id
-INNER JOIN countries co ON co.id = s.country_id
+INNER JOIN cities c ON c.id = p.city_id AND c.deleted_at IS NULL
+INNER JOIN districts d ON d.id = c.district_id AND d.deleted_at IS NULL
+INNER JOIN states s ON s.id = d.state_id AND s.deleted_at IS NULL
+INNER JOIN countries co ON co.id = s.country_id AND co.deleted_at IS NULL
 WHERE p.deleted_at IS NULL
 AND ((@pincode_id IS NOT NULL AND p.id = @pincode_id) OR (@pincode_id IS NULL AND p.pincode = @pincode))
 ORDER BY p.id", cancellationToken, ("@pincode", pincode), ("@pincode_id", pincodeId));

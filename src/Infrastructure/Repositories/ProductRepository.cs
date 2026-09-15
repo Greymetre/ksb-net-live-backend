@@ -282,13 +282,16 @@ public sealed class ProductRepository : IProductRepository
 
     private IQueryable<ProductFamily> FamilyQuery(bool includeInactive)
     {
-        var query = includeInactive ? _dbContext.ProductFamilies.IgnoreQueryFilters().Where(x => x.DeletedAt == null) : _dbContext.ProductFamilies.AsQueryable();
+        // DeletedAt is filtered by hand on both paths: the name joins in ProjectFamilies use
+        // IgnoreQueryFilters, which switches the soft-delete filter off for the whole query.
+        var query = _dbContext.ProductFamilies.IgnoreQueryFilters().Where(x => x.DeletedAt == null);
         return includeInactive ? query : query.Where(x => x.Active == "Y");
     }
 
     private IQueryable<Product> ProductQuery(bool includeInactive)
     {
-        var query = includeInactive ? _dbContext.Products.IgnoreQueryFilters().Where(x => x.DeletedAt == null) : _dbContext.Products.AsQueryable();
+        // See FamilyQuery: filtered by hand, since ProjectProducts ignores query filters.
+        var query = _dbContext.Products.IgnoreQueryFilters().Where(x => x.DeletedAt == null);
         return includeInactive ? query : query.Where(x => x.Active == "Y");
     }
 
@@ -334,7 +337,7 @@ public sealed class ProductRepository : IProductRepository
         from family in familyJoin.DefaultIfEmpty()
         join createdBy in _dbContext.Users.AsNoTracking() on product.CreatedBy equals createdBy.Id into userJoin
         from createdBy in userJoin.DefaultIfEmpty()
-        let detail = _dbContext.ProductDetails.AsNoTracking().Where(x => x.ProductId == product.Id).OrderByDescending(x => x.Id).FirstOrDefault()
+        let detail = _dbContext.ProductDetails.AsNoTracking().Where(x => x.ProductId == product.Id && x.DeletedAt == null).OrderByDescending(x => x.Id).FirstOrDefault()
         select new ProductDto
         {
             Id = product.Id,

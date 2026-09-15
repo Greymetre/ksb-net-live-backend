@@ -52,14 +52,14 @@ public sealed class FieldKonnectCoreController : ControllerBase
 
             var achievement = orders.Sum(x => x.GrandTotal);
             var target = await QueryScalarDecimal(
-                "SELECT COALESCE(SUM(amount), 0) FROM sales_targets WHERE userid = @user_id AND YEAR(startdate) = @year AND MONTH(startdate) = @month",
+                "SELECT COALESCE(SUM(amount), 0) FROM sales_targets WHERE deleted_at IS NULL AND userid = @user_id AND YEAR(startdate) = @year AND MONTH(startdate) = @month",
                 cancellationToken,
                 ("@user_id", userId),
                 ("@year", fromDate.Year),
                 ("@month", fromDate.Month));
 
             var salesRows = await QueryRows(
-                "SELECT id, grand_total FROM sales WHERE created_by = @user_id AND DATE(invoice_date) >= @from_date AND DATE(invoice_date) <= @to_date",
+                "SELECT id, grand_total FROM sales WHERE deleted_at IS NULL AND created_by = @user_id AND CAST(invoice_date AS date) >= @from_date AND CAST(invoice_date AS date) <= @to_date",
                 cancellationToken,
                 ("@user_id", userId),
                 ("@from_date", fromDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)),
@@ -267,7 +267,9 @@ ORDER BY bs.id ASC", cancellationToken, ("@user_id", userId), ("@today", today))
             }
 
             var userId = CurrentUserId();
-            var user = await _dbContext.Users.IgnoreQueryFilters().FirstAsync(x => x.Id == userId, cancellationToken);
+            var user = await _dbContext.Users.IgnoreQueryFilters().FirstOrDefaultAsync(x => x.Id == userId, cancellationToken);
+            if (user is null || user.DeletedAt != null || user.IsDeleted)
+                return Unauthorized(new { status = "error", message = "Account deactivated. Contact admin." });
             var now = IndiaNow();
             var today = now.Date;
             var imagePath = request.Image is { Length: > 0 } ? await SaveAttendanceFile(request.Image, "punchin", cancellationToken) : string.Empty;
@@ -613,7 +615,9 @@ VALUES ('Y', @user_id, @latitude, @longitude, @time, @now, @now)", cancellationT
     public async Task<IActionResult> GetUserStatus(CancellationToken cancellationToken)
     {
         var userId = CurrentUserId();
-        var active = await _dbContext.Users.IgnoreQueryFilters().Where(x => x.Id == userId).Select(x => x.Active).FirstOrDefaultAsync(cancellationToken);
+        // A deleted user reads as inactive, so the app signs them out like a deactivated one.
+        var active = await _dbContext.Users.IgnoreQueryFilters().Where(x => x.Id == userId)
+            .Select(x => x.DeletedAt != null || x.IsDeleted ? "N" : x.Active).FirstOrDefaultAsync(cancellationToken);
         return Ok(new { status = "success", user_status = active });
     }
 

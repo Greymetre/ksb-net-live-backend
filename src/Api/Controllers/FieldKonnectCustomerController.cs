@@ -195,7 +195,7 @@ public sealed class FieldKonnectCustomerController : ControllerBase
 
             var orderIds = orders.Select(x => ULong(x, "id")).Where(x => x > 0).ToArray();
             var sumQuantity = orderIds.Length == 0 ? 0 : await QueryScalarLong($"SELECT COALESCE(SUM(quantity), 0) FROM order_details WHERE order_id IN ({string.Join(',', orderIds)})", cancellationToken);
-            var sales = await QueryRows("SELECT grand_total FROM sales WHERE buyer_id = @customer_id", cancellationToken, ("@customer_id", customerId.Value));
+            var sales = await QueryRows("SELECT grand_total FROM sales WHERE buyer_id = @customer_id AND deleted_at IS NULL", cancellationToken, ("@customer_id", customerId.Value));
             var checkins = await QueryRows("SELECT checkin_date, checkin_time FROM check_in WHERE customer_id = @customer_id AND deleted_at IS NULL ORDER BY id DESC LIMIT 10", cancellationToken, ("@customer_id", customerId.Value));
             var lastOrderDate = await QueryScalar("SELECT order_date FROM orders WHERE buyer_id = @customer_id AND deleted_at IS NULL ORDER BY id DESC LIMIT 1", cancellationToken, ("@customer_id", customerId.Value));
             var beat = (await QueryRows("SELECT b.id, b.beat_name FROM beats b INNER JOIN beat_customers bc ON bc.beat_id = b.id WHERE bc.customer_id = @customer_id LIMIT 1", cancellationToken, ("@customer_id", customerId.Value))).FirstOrDefault();
@@ -204,11 +204,11 @@ public sealed class FieldKonnectCustomerController : ControllerBase
             var tasks = await QueryRows("SELECT user_id, title, descriptions, datetime FROM tasks WHERE completed = 0 AND customer_id = @customer_id ORDER BY datetime ASC LIMIT 5", cancellationToken, ("@customer_id", customerId.Value));
             var wallet = (await QueryRows("SELECT COALESCE(SUM(points), 0) AS total_points, COALESCE(SUM(quantity), 0) AS total_coupon_scan FROM wallets WHERE customer_id = @customer_id AND transaction_type = 'Cr' AND deleted_at IS NULL", cancellationToken, ("@customer_id", customerId.Value))).FirstOrDefault();
 
-            var totalAmount = await QueryScalarDecimal("SELECT COALESCE(SUM(grand_total), 0) FROM sales WHERE buyer_id = @customer_id", cancellationToken, ("@customer_id", customerId.Value));
-            var totalPaid = await QueryScalarDecimal("SELECT COALESCE(SUM(paid_amount), 0) FROM sales WHERE buyer_id = @customer_id", cancellationToken, ("@customer_id", customerId.Value));
+            var totalAmount = await QueryScalarDecimal("SELECT COALESCE(SUM(grand_total), 0) FROM sales WHERE buyer_id = @customer_id AND deleted_at IS NULL", cancellationToken, ("@customer_id", customerId.Value));
+            var totalPaid = await QueryScalarDecimal("SELECT COALESCE(SUM(paid_amount), 0) FROM sales WHERE buyer_id = @customer_id AND deleted_at IS NULL", cancellationToken, ("@customer_id", customerId.Value));
             var totalOrderValue = orders.Sum(x => Dec(x, "sub_total"));
             var totalOrderQty = orders.Sum(x => Dec(x, "total_qty"));
-            var visitsInfo = await QueryRows("SELECT id, customer_id, description, report_title, visit_image, user_id, created_at FROM visit_reports WHERE customer_id = @customer_id ORDER BY id DESC", cancellationToken, ("@customer_id", customerId.Value));
+            var visitsInfo = await QueryRows("SELECT id, customer_id, description, report_title, visit_image, user_id, created_at FROM visit_reports WHERE customer_id = @customer_id AND deleted_at IS NULL ORDER BY id DESC", cancellationToken, ("@customer_id", customerId.Value));
 
             var data = new Dictionary<string, object?>
             {
@@ -263,7 +263,7 @@ public sealed class FieldKonnectCustomerController : ControllerBase
         try
         {
             if (!request.CustomerId.HasValue) return BadRequest(new { status = "error", message = new[] { "The customer id field is required." } });
-            var rows = await Execute("UPDATE customers SET latitude = @latitude, longitude = @longitude, updated_at = @updated_at WHERE id = @id", cancellationToken,
+            var rows = await Execute("UPDATE customers SET latitude = @latitude, longitude = @longitude, updated_at = @updated_at WHERE id = @id AND deleted_at IS NULL", cancellationToken,
                 ("@latitude", request.Latitude),
                 ("@longitude", request.Longitude),
                 ("@updated_at", IndiaNow()),
@@ -282,7 +282,7 @@ public sealed class FieldKonnectCustomerController : ControllerBase
     {
         if (!request.Id.HasValue) return BadRequest(new { status = "error", message = new[] { "The id field is required." } });
         var active = request.Active == "Y" ? "Y" : "N";
-        var rows = await Execute("UPDATE customers SET active = @active, updated_at = @updated_at WHERE id = @id", cancellationToken,
+        var rows = await Execute("UPDATE customers SET active = @active, updated_at = @updated_at WHERE id = @id AND deleted_at IS NULL", cancellationToken,
             ("@active", active),
             ("@updated_at", IndiaNow()),
             ("@id", request.Id.Value));
@@ -331,7 +331,7 @@ public sealed class FieldKonnectCustomerController : ControllerBase
 
             var (firstName, lastName) = SplitName(request.FullName, request.FirstName, request.LastName);
             await Execute(@"UPDATE customers SET name = @name, first_name = @first_name, last_name = @last_name, email = @email, mobile = @mobile,
-latitude = @latitude, longitude = @longitude, gender = @gender, firmtype = @firmtype, contact_number = @contact_number, updated_at = @now WHERE id = @id", cancellationToken,
+latitude = @latitude, longitude = @longitude, gender = @gender, firmtype = @firmtype, contact_number = @contact_number, updated_at = @now WHERE id = @id AND deleted_at IS NULL", cancellationToken,
                 ("@name", request.Name),
                 ("@first_name", firstName),
                 ("@last_name", lastName),
@@ -472,7 +472,7 @@ ORDER BY {(filter.Latest ? "c.id DESC" : filter.OrderByName ? "c.name ASC" : "c.
         if (addressId.HasValue)
         {
             var rows = await Execute(@"UPDATE addresses SET address1=@address1,address2=@address2,landmark=@landmark,locality=@locality,country_id=@country_id,state_id=@state_id,
-district_id=@district_id,city_id=@city_id,pincode_id=@pincode_id,zipcode=@zipcode,updated_at=@now WHERE id=@id AND customer_id=@customer_id", cancellationToken,
+district_id=@district_id,city_id=@city_id,pincode_id=@pincode_id,zipcode=@zipcode,updated_at=@now WHERE id=@id AND customer_id=@customer_id AND deleted_at IS NULL", cancellationToken,
                 AddressParams(customerId, request).Append(("@id", addressId.Value)).ToArray());
             if (rows > 0) return;
         }
@@ -550,9 +550,16 @@ VALUES ('Y', @customer_id, @gstin_no, @pan_no, @aadhar_no, @otherid_no, @enrollm
 
     private async Task SyncParentDetails(ulong customerId, string? parentIds, CancellationToken cancellationToken)
     {
+        // Only live customers can be a parent; a deleted one posted by the app is dropped.
         var ids = ParseIds(parentIds);
+        if (ids.Count > 0)
+        {
+            var live = await QueryRows($"SELECT id FROM customers WHERE id IN ({string.Join(',', ids)}) AND deleted_at IS NULL", cancellationToken);
+            var liveIds = live.Select(x => Convert.ToUInt64(x["id"], CultureInfo.InvariantCulture)).ToHashSet();
+            ids = ids.Where(liveIds.Contains).ToList();
+        }
         if (ids.Count == 0) return;
-        await Execute("UPDATE parent_details SET deleted_at = @now WHERE customer_id = @customer_id", cancellationToken, ("@customer_id", customerId), ("@now", IndiaNow()));
+        await Execute("UPDATE parent_details SET deleted_at = @now WHERE customer_id = @customer_id AND deleted_at IS NULL", cancellationToken, ("@customer_id", customerId), ("@now", IndiaNow()));
         foreach (var id in ids)
         {
             await Execute("INSERT INTO parent_details (active, customer_id, parent_id, created_by, created_at, updated_at) VALUES ('Y', @customer_id, @parent_id, @user_id, @now, @now)", cancellationToken,

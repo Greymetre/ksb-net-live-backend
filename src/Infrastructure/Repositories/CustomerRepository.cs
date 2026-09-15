@@ -682,15 +682,18 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
         var (firstName, lastName) = SplitName(name);
         var role = await EnsureDistributorRoleAsync(cancellationToken);
 
+        // A deleted login is not reused: switching it back on left deleted_at set, so the
+        // dealer held an account that was deleted and no fresh login was ever made. The
+        // unique indexes on mobile and email skip deleted rows, so a new user can take them.
         var user = await _dbContext.Users
             .IgnoreQueryFilters()
-            .FirstOrDefaultAsync(x => x.CustomerId == customer.Id, cancellationToken);
+            .FirstOrDefaultAsync(x => x.CustomerId == customer.Id && x.DeletedAt == null && !x.IsDeleted, cancellationToken);
 
         if (user is null)
         {
             var emailUser = await _dbContext.Users
                 .IgnoreQueryFilters()
-                .FirstOrDefaultAsync(x => x.Email == email, cancellationToken);
+                .FirstOrDefaultAsync(x => x.Email == email && x.DeletedAt == null && !x.IsDeleted, cancellationToken);
 
             if (emailUser is not null)
             {
@@ -701,7 +704,7 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
 
         var mobileOwner = await _dbContext.Users
             .IgnoreQueryFilters()
-            .FirstOrDefaultAsync(x => x.Mobile == mobile && (user == null || x.Id != user.Id), cancellationToken);
+            .FirstOrDefaultAsync(x => x.Mobile == mobile && x.DeletedAt == null && !x.IsDeleted && (user == null || x.Id != user.Id), cancellationToken);
         if (mobileOwner is not null) return;
 
         // The dealer code is the login password. A dealer cannot be given a login
@@ -1753,8 +1756,9 @@ WHERE customer_id IN ({customerIdCsv})
 
     private async Task SyncLinkedUserActiveAsync(ulong customerId, string active, CancellationToken cancellationToken)
     {
+        // A deleted login stays off when its dealer is switched back on.
         var users = await _dbContext.Users.IgnoreQueryFilters()
-            .Where(x => x.CustomerId == customerId)
+            .Where(x => x.CustomerId == customerId && x.DeletedAt == null && !x.IsDeleted)
             .ToListAsync(cancellationToken);
 
         foreach (var user in users)
