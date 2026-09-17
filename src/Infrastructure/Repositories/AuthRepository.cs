@@ -15,18 +15,20 @@ public sealed class AuthRepository : IAuthRepository
         _dbContext = dbContext;
     }
 
-    // A deleted user must not sign in or read a profile. Deleting only sets deleted_at /
-    // isDeleted and leaves active = 'Y', so the Active check at sign-in never caught it; and
-    // a mobile or email a deleted account once held can belong to a new user now.
+    // A deleted user must not sign in or read a profile, and a mobile or email a deleted account
+    // once held can belong to a new user now. "Deleted" means deleted_at is set - the rule the
+    // users list and password reset follow. Some rows carry a stale isDeleted = 1 with no
+    // deleted_at (an account restored by clearing only deleted_at); those are active users, and
+    // a successful sign-in clears the stale flag (AuthService).
     public Task<User?> FindUserByUsernameAsync(string username, CancellationToken cancellationToken) =>
         _dbContext.Users
             .IgnoreQueryFilters()
-            .FirstOrDefaultAsync(x => x.DeletedAt == null && !x.IsDeleted && (x.Mobile == username || x.Email == username), cancellationToken);
+            .FirstOrDefaultAsync(x => x.DeletedAt == null && (x.Mobile == username || x.Email == username), cancellationToken);
 
     public Task<User?> FindUserByIdAsync(ulong userId, CancellationToken cancellationToken) =>
         _dbContext.Users
             .IgnoreQueryFilters()
-            .FirstOrDefaultAsync(x => x.Id == userId && x.DeletedAt == null && !x.IsDeleted, cancellationToken);
+            .FirstOrDefaultAsync(x => x.Id == userId && x.DeletedAt == null, cancellationToken);
 
     public Task<Customer?> FindCustomerByUsernameAsync(string username, CancellationToken cancellationToken)
     {

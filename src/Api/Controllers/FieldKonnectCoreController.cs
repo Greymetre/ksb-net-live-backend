@@ -268,7 +268,7 @@ ORDER BY bs.id ASC", cancellationToken, ("@user_id", userId), ("@today", today))
 
             var userId = CurrentUserId();
             var user = await _dbContext.Users.IgnoreQueryFilters().FirstOrDefaultAsync(x => x.Id == userId, cancellationToken);
-            if (user is null || user.DeletedAt != null || user.IsDeleted)
+            if (user is null || user.DeletedAt != null)
                 return Unauthorized(new { status = "error", message = "Account deactivated. Contact admin." });
             var now = IndiaNow();
             var today = now.Date;
@@ -617,7 +617,7 @@ VALUES ('Y', @user_id, @latitude, @longitude, @time, @now, @now)", cancellationT
         var userId = CurrentUserId();
         // A deleted user reads as inactive, so the app signs them out like a deactivated one.
         var active = await _dbContext.Users.IgnoreQueryFilters().Where(x => x.Id == userId)
-            .Select(x => x.DeletedAt != null || x.IsDeleted ? "N" : x.Active).FirstOrDefaultAsync(cancellationToken);
+            .Select(x => x.DeletedAt != null ? "N" : x.Active).FirstOrDefaultAsync(cancellationToken);
         return Ok(new { status = "success", user_status = active });
     }
 

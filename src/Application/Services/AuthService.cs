@@ -352,6 +352,11 @@ public sealed class AuthService : IAuthService
             throw new LaravelHttpException(LaravelStatusCodes.Unauthorized, "Incorrect password");
         }
 
+        // A stale isDeleted with no deleted_at would keep this active user out of reports, user
+        // lists and reporting visibility. The person has just proved who they are, so the flag is
+        // cleared here and saved with the rest of the sign-in.
+        if (user.IsDeleted && user.DeletedAt is null) user.IsDeleted = false;
+
         var roles = await _repository.GetUserRolesAsync(user.Id, cancellationToken);
         var permissions = await _repository.GetUserPermissionsAsync(user.Id, cancellationToken);
         var roleNames = roles.Select(role => role.Name).ToArray();

@@ -167,6 +167,7 @@ public sealed class UserService : IUserService
         request = NormalizeRequest(request);
         var user = await _repository.GetUserAsync(id, cancellationToken) ?? throw NotFound("User not found");
         await ValidateUserAsync(request, id, cancellationToken);
+        ClearStaleDeletedFlag(user);
 
         var (firstName, lastName, name) = ResolveName(request, user);
         var (latitude, longitude) = SplitCoordinates(request.BaseLocationCoordinates);
@@ -226,10 +227,19 @@ public sealed class UserService : IUserService
     public async Task<LaravelApiResponse> SetUserActiveAsync(ulong id, string? active, ulong? actorUserId, CancellationToken cancellationToken)
     {
         var user = await _repository.GetUserAsync(id, cancellationToken) ?? throw NotFound("User not found");
+        ClearStaleDeletedFlag(user);
         user.Active = NormalizeActive(active);
         user.UpdatedAt = DateTime.UtcNow;
         await _repository.SaveChangesAsync(cancellationToken);
         return LaravelApiResponse.Success("user", await _repository.GetUserDtoAsync(id, null, cancellationToken), "User status changed successfully");
+    }
+
+    /// <summary>A user loaded here is not deleted (deleted_at is empty), so an isDeleted still set
+    /// on it is left over from an earlier restore. Saving the user or changing their status clears
+    /// it, which lets them sign in and brings them back into reports and user lists.</summary>
+    private static void ClearStaleDeletedFlag(User user)
+    {
+        if (user.IsDeleted && user.DeletedAt is null) user.IsDeleted = false;
     }
 
     public async Task<LaravelApiResponse> DeleteUserAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken)
@@ -298,6 +308,7 @@ public sealed class UserService : IUserService
         var id = row.ULong("id");
         var user = id.HasValue ? await _repository.GetUserAsync(id.Value, cancellationToken) : null;
         var updated = user is not null;
+        if (user is not null) ClearStaleDeletedFlag(user);
 
         if (user is null)
         {
