@@ -207,6 +207,30 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
     ///
     /// The tiles are counted after every filter except the KYC stage itself - a tile is a
     /// filter, and picking one must not empty the others.</summary>
+    /// <summary>Read from the same index the KYC screen lists from, so the export can never
+    /// disagree with it. A document with nothing uploaded or entered and no review reads Not
+    /// Started; one submitted but not yet reviewed reads Pending - the screen's own wording.</summary>
+    public async Task<IReadOnlyDictionary<ulong, CustomerKycExportStateDto>> GetKycExportStatesAsync(IReadOnlyCollection<ulong> customerIds, CancellationToken cancellationToken)
+    {
+        var wanted = customerIds.ToHashSet();
+        var snapshot = await _kycIndex.GetAsync(cancellationToken);
+        return snapshot.Entries
+            .Where(entry => wanted.Contains(entry.Id))
+            .ToDictionary(
+                entry => entry.Id,
+                entry => new CustomerKycExportStateDto
+                {
+                    Stage = entry.Stage,
+                    DocumentStatus = entry.Documents.ToDictionary(
+                        document => document.Key,
+                        document => document.Status == CustomerKycEntry.StatusApproved ? "Approved"
+                            : document.Status == CustomerKycEntry.StatusRejected ? "Rejected"
+                            : document.Uploaded || document.DetailsFilled ? "Pending"
+                            : "Not Started",
+                        StringComparer.OrdinalIgnoreCase)
+                });
+    }
+
     public async Task<CustomerKycListResultDto> GetKycListAsync(CustomerKycFilterDto filter, CancellationToken cancellationToken)
     {
         var snapshot = await _kycIndex.GetAsync(cancellationToken);

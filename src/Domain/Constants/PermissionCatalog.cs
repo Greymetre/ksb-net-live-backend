@@ -48,6 +48,9 @@ public static class PermissionCatalog
         // KYC - its own menu under Customers Management. Whoever already reviews KYC on the
         // customer screen gets the new screen too, so the split does not take anything away.
         new("customer_kyc.view", "View Listing", "customer_kyc", "KYC", "customers", "Customers Management", "view", 175, [], ["customer.kyc_review"]),
+        // Each check is a paid call to the GST register, so it is its own permission and is
+        // not handed to any role automatically.
+        new("customer_kyc.gst_lookup", "GST Lookup", "customer_kyc", "KYC", "customers", "Customers Management", "gst_lookup", 176, [], []),
         // ---------- Address Management ----------
         // Country
         new("country.view", "View Listing", "country", "Country", "address", "Address Management", "view", 180, ["country_access"], []),

@@ -37,8 +37,10 @@ public sealed class CustomerService : ICustomerService
 
     private static readonly string[] DistributorExportColumns = DistributorExportDefinition.Select(x => x.Key).ToArray();
 
-    // Same layout as Laravel SecondaryCustomersExport. The unified customer model
-    // stores two phone numbers, therefore old Mobile Number-3..5 are omitted.
+    // The retailer sheet: contact and assignment first, then one block per KYC document - its
+    // attachment, its review status and its numbers - and the overall KYC status last, worded
+    // as the Customers Management > KYC screen shows it. Two phone numbers are kept (the
+    // unified customer model stores two).
     private static readonly (string Key, string Heading)[] RetailerExportDefinition =
     [
         ("type", "Type"), ("status", "Approval Status"), ("employee_id_name", "Employee Names"), ("branch_name", "Branch Name"),
@@ -50,19 +52,40 @@ public sealed class CustomerService : ICustomerService
         ("country_name", "Country"), ("country_id", "Country ID"), ("state_name", "State"), ("state_id", "State ID"),
         ("district_name", "District"), ("district_id", "District ID"), ("city_name", "City"), ("city_id", "City ID"),
         ("pincode", "Pincode"), ("pincode_id", "Pincode ID"), ("beat_name", "Beat"), ("beat_id", "Beat ID"),
-        ("gst_number", "Gst Number"), ("pan_number", "Pan Number"), ("bank_account_type", "Bank Account Type"),
-        ("bank_account_number", "Bank Account Number"), ("bank_name", "Bank Name"), ("ifsc_code", "IFSC Code"),
-        ("account_holder_name", "Account Holder Name"), ("active", "Active Status"), ("gps_location", "GPS Location"),
-        ("gmap", "Google Map"), ("created_at", "Created Date"), ("employee_designations", "Employee Designations"),
-        ("created_by_name", "Created By"), ("approve_reject_by_name", "Approved/Rejected By"), ("remark", "Rejected Reason"),
+        ("active", "Active Status"), ("gps_location", "GPS Location"), ("gmap", "Google Map"), ("created_at", "Created Date"),
+        ("employee_designations", "Employee Designations"), ("created_by_name", "Created By"),
+        ("approve_reject_by_name", "Approved/Rejected By"), ("remark", "Rejected Reason"),
         ("id", "Retailer ID"), ("distributor_id", "Domestic Distributor ID"), ("agri_distributor_id", "Agri Distributor ID"),
-        ("employee_codes", "Employee Codes"), ("reporting_managers", "Reporting Managers"), ("owner_photo", "Owner Photo"),
-        ("shop_photo", "Shop Photo"), ("gst_attachment", "GST Attachment"), ("pan_attachment", "PAN Attachment"), ("zone", "Zone")
+        ("employee_codes", "Employee Codes"), ("reporting_managers", "Reporting Managers"), ("shop_photo", "Shop Photo"),
+        ("gst_attachment", "GST Attachment"), (KycGstStatusColumn, "GST Status"), ("gst_number", "Gst Number"),
+        ("pan_attachment", "PAN Attachment"), (KycPanStatusColumn, "PAN Status"), ("pan_number", "Pan Number"),
+        ("aadhar_attachment", "Aadhaar Attachment"), (KycAadharStatusColumn, "Aadhaar Status"), ("aadhar_no", "Aadhaar Number"),
+        ("bank_proof", "Bank Attachment"), (KycBankStatusColumn, "Bank Status"),
+        ("bank_account_number", "Bank Account Number"), ("ifsc_code", "IFSC Code"), ("account_holder_name", "Account Holder Name"),
+        ("bank_name", "Bank Name"), ("bank_account_type", "Bank Account Type"),
+        (KycOverallStatusColumn, "KYC Status"), ("zone", "Zone")
     ];
 
-    private static readonly string[] RetailerExportColumns = RetailerExportDefinition.Select(x => x.Key).ToArray();
+    // Filled from the KYC screen's own data, never from the sheet: an import must not be able to
+    // set a review status, so these stay out of the import columns.
+    private const string KycGstStatusColumn = "kyc_export_gst_status";
+    private const string KycPanStatusColumn = "kyc_export_pan_status";
+    private const string KycAadharStatusColumn = "kyc_export_aadhar_status";
+    private const string KycBankStatusColumn = "kyc_export_bank_status";
+    private const string KycOverallStatusColumn = "kyc_export_status";
 
-    private static readonly string[] ImportColumns = DistributorExportColumns.Concat(RetailerExportColumns).Distinct().ToArray();
+    private static readonly Dictionary<string, string> KycStatusColumnDocument = new(StringComparer.OrdinalIgnoreCase)
+    {
+        [KycGstStatusColumn] = "gst", [KycPanStatusColumn] = "pan", [KycAadharStatusColumn] = "aadhar", [KycBankStatusColumn] = "bank"
+    };
+
+    private static readonly string[] RetailerExportColumns = RetailerExportDefinition
+        .Select(x => x.Key)
+        .Where(key => key != KycOverallStatusColumn && !KycStatusColumnDocument.ContainsKey(key))
+        .ToArray();
+
+    // owner_photo left the export sheet but an older file may still carry it, so import keeps reading it.
+    private static readonly string[] ImportColumns = DistributorExportColumns.Concat(RetailerExportColumns).Append("owner_photo").Distinct().ToArray();
 
     private static readonly HashSet<string> PreserveRawColumns = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -197,10 +220,13 @@ public sealed class CustomerService : ICustomerService
         var rows = (await _repository.GetCustomersAsync(filter, cancellationToken)).Items;
         if (filter.CustomerType == 2)
         {
+            var kyc = await _repository.GetKycExportStatesAsync(rows.Select(x => x.Id).ToArray(), cancellationToken);
             return CreateWorkbook(
                 "customers-retailer.xlsx",
                 RetailerExportDefinition.Select(x => x.Heading).ToArray(),
-                rows.Select(customer => RetailerExportDefinition.Select(column => ExportValue(customer, column.Key, baseUrl)).ToArray()),
+                rows.Select(customer => RetailerExportDefinition
+                    .Select(column => RetailerKycExportValue(customer, column.Key, kyc) ?? ExportValue(customer, column.Key, baseUrl))
+                    .ToArray()),
                 preserveHeadings: true);
         }
 
@@ -437,6 +463,30 @@ public sealed class CustomerService : ICustomerService
         return fields;
     }
 
+    /// <summary>The KYC status columns of the retailer sheet; null for every other column.</summary>
+    private static string? RetailerKycExportValue(CustomerDto customer, string column, IReadOnlyDictionary<ulong, CustomerKycExportStateDto> kyc)
+    {
+        var isOverall = column == KycOverallStatusColumn;
+        if (!isOverall && !KycStatusColumnDocument.ContainsKey(column)) return null;
+        if (!kyc.TryGetValue(customer.Id, out var state)) return string.Empty;
+        if (!isOverall) return state.DocumentStatus.GetValueOrDefault(KycStatusColumnDocument[column], "Not Started");
+
+        // "Awaiting Review - 2 Approved, 2 Pending": the stage the KYC screen shows, then how its
+        // documents stand.
+        var stage = state.Stage switch
+        {
+            "approved" => "Fully Approved",
+            "complete_pending" => "Awaiting Review",
+            "partial" => "Partly Submitted",
+            _ => "Not Started"
+        };
+        var counts = new[] { "Approved", "Rejected", "Pending", "Not Started" }
+            .Select(label => (Label: label, Count: state.DocumentStatus.Values.Count(value => value == label)))
+            .Where(x => x.Count > 0)
+            .Select(x => $"{x.Count} {x.Label}");
+        return $"{stage} - {string.Join(", ", counts)}";
+    }
+
     private static object?[] ToExportRow(CustomerDto customer, string[] columns, string baseUrl) =>
         columns.Select(column => ExportValue(customer, column, baseUrl)).ToArray();
 
@@ -486,6 +536,16 @@ public sealed class CustomerService : ICustomerService
             "distributor_name" => Field(customer, "distributor_name_name") ?? Field(customer, column),
             "agri_distributor" => Field(customer, "agri_distributor_name") ?? Field(customer, column),
             "employee_id" => Field(customer, "employee_id_name") ?? Field(customer, column),
+            // KYC fields carry older spellings on some records; read them the way the KYC screen does.
+            "gst_attachment" => FirstNonBlank(Field(customer, "gst_attachment"), Field(customer, "gst_image")),
+            "gst_number" => FirstNonBlank(Field(customer, "gst_number"), Field(customer, "gstin_no")),
+            "pan_attachment" => FirstNonBlank(Field(customer, "pan_attachment"), Field(customer, "pan_image")),
+            "pan_number" => FirstNonBlank(Field(customer, "pan_number"), Field(customer, "pan_no")),
+            "aadhar_attachment" => FirstNonBlank(Field(customer, "aadhar_attachment"), Field(customer, "aadhaar_attachment"), Field(customer, "adharcard")),
+            "aadhar_no" => FirstNonBlank(Field(customer, "aadhar_no"), Field(customer, "aadhaar_no"), Field(customer, "aadhaar_number"), Field(customer, "aadhar_number")),
+            "bank_proof" => FirstNonBlank(Field(customer, "bank_proof"), Field(customer, "blank_cheque"), Field(customer, "passbook")),
+            "bank_account_number" => FirstNonBlank(Field(customer, "bank_account_number"), Field(customer, "account_number")),
+            "ifsc_code" => FirstNonBlank(Field(customer, "ifsc_code"), Field(customer, "ifsc")),
             _ => Field(customer, column)
         };
 

@@ -1052,6 +1052,9 @@ WHERE customertype = 1 AND deleted_at IS NULL AND executive_id IN ({string.Join(
                     asr.Name,
                     Name(managers, asr.ReportingId),
                     dealerWise ? salesByDealerAsr.GetValueOrDefault((group.Key.DealerId, asr.Id)) : salesByAsr.GetValueOrDefault(asr.Id),
+                    // Every invoice under the scheme in the range, whatever its approval stage -
+                    // the same figure as Total Amount on the invoice screen.
+                    group.Sum(x => x.Amount),
                     group.Where(x => x.ApprovalStatus == Domain.Entities.NewInvoice.StatusApprovedHo)
                         .Sum(x => hoAmounts.TryGetValue(x.Id, out var approved) ? approved : x.Amount),
                     activeRetailers.Count,
@@ -1066,13 +1069,13 @@ WHERE customertype = 1 AND deleted_at IS NULL AND executive_id IN ({string.Join(
         using var workbook = new XLWorkbook();
         var sheet = workbook.Worksheets.Add(dealerWise ? "Dealer Wise" : "ASR Wise");
         var headers = dealerWise
-            ? new[] { "Branch", "Dealer Name", "ASR Name", "Reporting Mgr", "Primary Sales", "Act Sec Sales (Lac)", "Approved Invoice Val (Lac)", "No. of Active Retailers", "KYC Pending" }
-            : new[] { "Branch", "ASR Name", "Reporting Mgr", "Primary Sales", "Act Sec Sales (Lac)", "Approved Invoice Val (Lac)", "No. of Active Retailers", "KYC Pending" };
+            ? new[] { "Branch", "Dealer Name", "ASR Name", "Reporting Mgr", "Primary Sales", "Act Sec Sales (Lac)", "Total Invoice Amount (Lac)", "Approved Invoice Val (Lac)", "No. of Active Retailers", "KYC Pending" }
+            : new[] { "Branch", "ASR Name", "Reporting Mgr", "Primary Sales", "Act Sec Sales (Lac)", "Total Invoice Amount (Lac)", "Approved Invoice Val (Lac)", "No. of Active Retailers", "KYC Pending" };
         // Everything left of Primary Sales names the row; the figures sit to its right.
         var labelColumns = dealerWise ? 4 : 3;
-        // Two header rows: the last three columns sit under one "Loyalty Program Performance"
+        // Two header rows: the last four columns sit under one "Loyalty Program Performance"
         // heading, and every other heading spans both rows.
-        const int loyaltyColumns = 3;
+        const int loyaltyColumns = 4;
         var loyaltyStart = headers.Length - loyaltyColumns + 1;
         for (var column = 1; column < loyaltyStart; column++)
         {
@@ -1089,6 +1092,7 @@ WHERE customertype = 1 AND deleted_at IS NULL AND executive_id IN ({string.Join(
             {
                 null,
                 ToLakh(figures.Sum(x => x.SecondarySales)),
+                ToLakh(figures.Sum(x => x.TotalInvoiceAmount)),
                 ToLakh(figures.Sum(x => x.ApprovedInvoiceValue)),
                 figures.Sum(x => x.ActiveRetailers),
                 figures.Sum(x => x.KycPending)
@@ -1139,7 +1143,7 @@ WHERE customertype = 1 AND deleted_at IS NULL AND executive_id IN ({string.Join(
             var dataRange = sheet.Range(3, labelColumns + 1, outputRow - 1, headers.Length);
             dataRange.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
             dataRange.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
-            sheet.Range(3, labelColumns + 2, outputRow - 1, labelColumns + 3).Style.NumberFormat.Format = "#,##0.00";
+            sheet.Range(3, labelColumns + 2, outputRow - 1, labelColumns + 4).Style.NumberFormat.Format = "#,##0.00";
         }
         // Widths follow row 2 and the data, not the merged group heading across three columns.
         sheet.SheetView.FreezeRows(2); sheet.Columns().AdjustToContents(2, Math.Max(2, outputRow - 1), 8, 45);
@@ -1194,7 +1198,7 @@ WHERE customertype = 1 AND deleted_at IS NULL AND executive_id IN ({string.Join(
     }
 }
 
-public sealed record LoyaltyReportRow(string Branch, string? DealerName, string AsrName, string ReportingManager, decimal SecondarySales, decimal ApprovedInvoiceValue, int ActiveRetailers, int KycPending);
+public sealed record LoyaltyReportRow(string Branch, string? DealerName, string AsrName, string ReportingManager, decimal SecondarySales, decimal TotalInvoiceAmount, decimal ApprovedInvoiceValue, int ActiveRetailers, int KycPending);
 
 public sealed class LoyaltyPerformanceFilter
 {

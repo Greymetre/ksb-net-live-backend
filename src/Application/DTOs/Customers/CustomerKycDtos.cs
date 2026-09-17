@@ -107,3 +107,11 @@ public sealed class CustomerKycDealerOptionDto
     public ulong Id { get; set; }
     public string Name { get; set; } = string.Empty;
 }
+
+/// <summary>A customer's KYC as the KYC screen reads it, for the retailer export: the stage and
+/// each document's status label (Approved, Rejected, Pending or Not Started).</summary>
+public sealed class CustomerKycExportStateDto
+{
+    public string Stage { get; init; } = "none";
+    public IReadOnlyDictionary<string, string> DocumentStatus { get; init; } = new Dictionary<string, string>();
+}

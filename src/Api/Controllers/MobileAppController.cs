@@ -69,6 +69,11 @@ public sealed class MobileAppController : ControllerBase
         var customer = await FindMobileCustomer(mobile).FirstOrDefaultAsync(cancellationToken);
         if (customer is null)
         {
+            // A closed account used to read as "no such customer", so the app walked the person
+            // through registration and made a second customer on the same number.
+            if (await FindClosedMobileCustomer(mobile).AnyAsync(cancellationToken))
+                return StatusCode(StatusCodes.Status403Forbidden, new { status = "error", account_closed = true, message = ClosedAccountMessage });
+
             if (string.IsNullOrWhiteSpace(request.Email))
                 return Ok(new { status = "success", next_action = "email_required", customer_exists = false, mobile });
 
@@ -183,11 +188,20 @@ public sealed class MobileAppController : ControllerBase
     {
         var mobile = NormalizeMobile(request.Mobile);
         var customer = await FindMobileCustomer(mobile).FirstOrDefaultAsync(cancellationToken);
+        if (customer is null)
+        {
+            // Only active customers are searched above, so a closed account would otherwise be
+            // answered with "incorrect mobile number or password" and leave the person guessing.
+            var closed = await FindClosedMobileCustomer(mobile).FirstOrDefaultAsync(cancellationToken);
+            if (closed is not null && !string.IsNullOrWhiteSpace(closed.Password) && !string.IsNullOrWhiteSpace(request.Password)
+                && _passwordHasher.Verify(request.Password, closed.Password))
+                return StatusCode(StatusCodes.Status403Forbidden, new { status = "error", account_closed = true, message = ClosedAccountMessage });
+        }
         if (customer is null || string.IsNullOrWhiteSpace(customer.Password) || string.IsNullOrWhiteSpace(request.Password)
             || !_passwordHasher.Verify(request.Password, customer.Password))
             return Unauthorized(new { status = "error", message = "Incorrect mobile number or password." });
         if (!string.Equals(customer.Active, "Y", StringComparison.OrdinalIgnoreCase))
-            return StatusCode(StatusCodes.Status403Forbidden, new { status = "error", message = "Account deactivated. Contact admin." });
+            return StatusCode(StatusCodes.Status403Forbidden, new { status = "error", account_closed = true, message = ClosedAccountMessage });
 
         var token = _tokenService.CreateAccessToken("customers", customer.Id, DisplayName(customer), [], out var tokenId);
         await StoreCustomerTokenAndLogin(customer.Id, tokenId, request, cancellationToken);
@@ -252,6 +266,8 @@ public sealed class MobileAppController : ControllerBase
 
         var existing = await FindMobileCustomer(mobile).FirstOrDefaultAsync(cancellationToken);
         if (existing is not null) return Conflict(new { status = "error", message = "Mobile number is already registered.", user = ToProfile(existing) });
+        if (await FindClosedMobileCustomer(mobile).AnyAsync(cancellationToken))
+            return StatusCode(StatusCodes.Status403Forbidden, new { status = "error", account_closed = true, message = ClosedAccountMessage });
         if (await EmailInUseAsync(email, null, cancellationToken)) return Conflict(new { status = "error", message = "Email address is already registered." });
 
         var customerType = ResolveCustomerType(request.AppType, request.CustomerType, GetString(request.Extra, "customer_type"));
@@ -303,6 +319,30 @@ public sealed class MobileAppController : ControllerBase
             access_token = token,
             user = ToProfile(customer)
         });
+    }
+
+    /// <summary>Delete account, from the app's profile screen. The customer row is switched
+    /// off the way the office switches one off - nothing is erased, so invoices, points and
+    /// reports keep their history - and every session of that account is signed out at once.
+    /// The number cannot register again afterwards; the closed-account message names who to
+    /// contact.</summary>
+    [Authorize]
+    [HttpPost("retailer/account/delete")]
+    public async Task<IActionResult> DeleteMyAccount(CancellationToken cancellationToken)
+    {
+        var customer = await CurrentCustomer(cancellationToken);
+        if (customer is null) return Unauthorized(new { status = "error", message = "Unauthenticated." });
+
+        customer.Active = "N";
+        customer.UpdatedAt = DateTime.UtcNow;
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        _kycIndex.Invalidate();
+
+        await _dbContext.OAuthAccessTokens
+            .Where(x => x.UserId == customer.Id && !x.Revoked)
+            .ExecuteUpdateAsync(setter => setter.SetProperty(x => x.Revoked, true), cancellationToken);
+
+        return Ok(new { status = "success", message = "Your account has been deleted." });
     }
 
     [Authorize]
@@ -1372,6 +1412,21 @@ public sealed class MobileAppController : ControllerBase
         await _dbContext.SaveChangesAsync(cancellationToken);
         return Ok(new { status = "success", message = "Bank account saved successfully.", data = BankAccount(fields) });
     }
+
+    /// <summary>What a person sees when the number they are using belongs to an account that
+    /// was deleted from the app or switched off by the office. Registration is refused too, so
+    /// a closed account cannot quietly come back as a second customer on the same number.</summary>
+    private const string ClosedAccountMessage =
+        "Your account is closed. This mobile number belonged to an account that has been deleted or deactivated. "
+        + "For help, contact us:\n"
+        + "Email: info@greymetre.io\n"
+        + "Address: 591, Scheme 114 Part I, Dewas Naka, Niranjanpur, Indore, Madhya Pradesh 452010";
+
+    /// <summary>The same mobile, but on an account that is no longer active.</summary>
+    private IQueryable<Customer> FindClosedMobileCustomer(string mobile) =>
+        _dbContext.Customers.Where(x => x.Active != "Y"
+            && (x.CustomerType == DealerType || x.CustomerType == RetailerType || x.CustomerType == InfluencerType)
+            && (x.Mobile == mobile || x.ContactNumber == mobile || (x.CustomFields != null && x.CustomFields.Contains(mobile))));
 
     private IQueryable<Customer> FindMobileCustomer(string mobile) =>
         _dbContext.Customers.Where(x => x.Active == "Y" && (x.CustomerType == DealerType || x.CustomerType == RetailerType || x.CustomerType == InfluencerType) && (x.Mobile == mobile || x.ContactNumber == mobile || (x.CustomFields != null && x.CustomFields.Contains(mobile))));

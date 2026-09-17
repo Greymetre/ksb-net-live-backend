@@ -6,6 +6,7 @@ public interface ICustomerRepository
 {
     Task<Application.Common.PagedResult<CustomerDto>> GetCustomersAsync(CustomerListFilterDto filter, CancellationToken cancellationToken);
     Task<CustomerKycListResultDto> GetKycListAsync(CustomerKycFilterDto filter, CancellationToken cancellationToken);
+    Task<IReadOnlyDictionary<ulong, CustomerKycExportStateDto>> GetKycExportStatesAsync(IReadOnlyCollection<ulong> customerIds, CancellationToken cancellationToken);
     Task<IReadOnlyCollection<CustomerKycDealerOptionDto>> GetKycDealerOptionsAsync(ulong? actorUserId, CancellationToken cancellationToken);
     /// <summary>Of the given customers, the ones this user is allowed to see. The caller
     /// supplies a small candidate set - the customers that have actually signed in on the

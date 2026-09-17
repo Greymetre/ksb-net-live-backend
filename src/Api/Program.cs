@@ -37,6 +37,7 @@ builder.Services.AddLaravelCompatibleSwagger();
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddSingleton<ISmtpEmailSender, SmtpEmailSender>();
+builder.Services.AddSingleton<IGstLookupService, GstLookupService>();
 // One place decides what may be attached to an invoice, for all three screens.
 builder.Services.AddScoped<Api.Services.InvoiceAttachmentStore>();
 builder.Services.AddScoped<Api.Services.RatingTrendService>();
