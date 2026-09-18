@@ -19,6 +19,9 @@ public sealed class CustomerKycFilterDto
     /// <summary>Limits the list to the retailers assigned to this dealer. The tiles are
     /// counted over the same narrowed set, so they always describe what is on screen.</summary>
     public ulong? DealerCustomerId { get; set; }
+    /// <summary>Limits the list to active customers - retailers who have submitted at least one
+    /// loyalty invoice, at any approval stage. The second row of tiles.</summary>
+    public bool InvoiceActive { get; set; }
     public ulong? ActorUserId { get; set; }
 }
 
@@ -98,9 +101,12 @@ public sealed class CustomerKycSummaryDto
     public int Rejected { get; set; }
 }
 
+/// <summary>ActiveSummary is the same tiles counted over the active customers only - the
+/// retailers in Summary who have submitted at least one loyalty invoice.</summary>
 public sealed record CustomerKycListResultDto(
     PagedResult<CustomerKycListItemDto> Page,
-    CustomerKycSummaryDto Summary);
+    CustomerKycSummaryDto Summary,
+    CustomerKycSummaryDto ActiveSummary);
 
 public sealed class CustomerKycDealerOptionDto
 {

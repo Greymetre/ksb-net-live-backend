@@ -50,8 +50,10 @@ public sealed class CustomerKycController : ControllerBase
         [FromQuery(Name = "kyc_status")] string? kycStatus,
         [FromQuery(Name = "page_size")] int? pageSize,
         [FromQuery(Name = "dealer_id")] ulong? dealerId,
+        [FromQuery(Name = "invoice_active")] bool? invoiceActive,
         CancellationToken cancellationToken)
     {
+        if (invoiceActive == true) filter.InvoiceActive = true;
         filter.CustomerType ??= customerType;
         filter.KycStatus ??= kycStatus;
         filter.DealerCustomerId ??= dealerId;

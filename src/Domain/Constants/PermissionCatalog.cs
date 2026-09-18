@@ -319,6 +319,12 @@ public static class PermissionCatalog
         new("app_setting.edit", "Save Setting", "app_setting", "FieldKonnect App Setting", "settings", "Setting Management", "edit", 2250, [], ["loyalty_app_setting_access", "field_konnect_app_setting_access"]),
         // Dealer Portal Setting
         new("dealer_portal_setting.view", "View Setting", "dealer_portal_setting", "Dealer Portal Setting", "settings", "Setting Management", "view", 2260, ["dealer_portal_setting_access"], []),
+        // App Document Settings
+        new("app_document.view", "View Listing", "app_document", "App Document Settings", "settings", "Setting Management", "view", 2261, [], []),
+        new("app_document.detail", "View Detail", "app_document", "App Document Settings", "settings", "Setting Management", "detail", 2262, [], []),
+        new("app_document.create", "Create", "app_document", "App Document Settings", "settings", "Setting Management", "create", 2263, [], []),
+        new("app_document.edit", "Edit", "app_document", "App Document Settings", "settings", "Setting Management", "edit", 2264, [], []),
+        new("app_document.delete", "Delete", "app_document", "App Document Settings", "settings", "Setting Management", "delete", 2265, [], []),
         // Roles
         new("role.view", "View Listing", "role", "Roles", "settings", "Setting Management", "view", 2270, ["role_access"], []),
         new("role.create", "Create", "role", "Roles", "settings", "Setting Management", "create", 2280, ["role_create"], []),

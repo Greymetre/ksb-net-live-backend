@@ -412,6 +412,8 @@ public sealed class MobileAppController : ControllerBase
             if (IsShopImageField(key)) continue;
 
             var value = formField.Value.ToString();
+            if (string.Equals(key, "bank_account_type", StringComparison.OrdinalIgnoreCase))
+                value = BankAccountTypes.Normalize(value);
             if (string.Equals(Field(fields, key), value, StringComparison.Ordinal)) continue;
 
             var documentKey = KycDocumentKeyForDetail(key);
@@ -600,8 +602,10 @@ public sealed class MobileAppController : ControllerBase
         // Keep this in sync with the retailer redemption/profile KYC status. A retailer is
         // pending KYC until every required document is approved.
         var pendingKycRetailers = activeRetailers.Count(x => !string.Equals(KycStatusValue(ReadFields(x)), "approved", StringComparison.OrdinalIgnoreCase));
-        // The four stages the CRM's KYC screen shows, over every retailer mapped to this dealer.
-        var kycSummary = await Api.Services.KycStages.SummaryAsync(_kycIndex, assignedRetailers.Select(x => x.Id), cancellationToken);
+        // The four stages the CRM's KYC screen shows, over this dealer's ACTIVE retailers only -
+        // the same set as active_retailers (an invoice raised with this dealer). Each tile opens
+        // dealer/retailers?active=true&kyc=<stage>, which lists exactly that set.
+        var kycSummary = await Api.Services.KycStages.SummaryAsync(_kycIndex, activeRetailers.Select(x => x.Id), cancellationToken);
 
         return Ok(new
         {

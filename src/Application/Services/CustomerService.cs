@@ -134,6 +134,7 @@ public sealed class CustomerService : ICustomerService
         var result = await _repository.GetKycListAsync(filter, cancellationToken);
         var response = LaravelApiResponse.Success("customers", result.Page.Items);
         response.Extra["summary"] = result.Summary;
+        response.Extra["active_summary"] = result.ActiveSummary;
         response.Extra["total"] = result.Page.Total;
         response.Extra["page"] = result.Page.Page;
         response.Extra["page_size"] = result.Page.PageSize;

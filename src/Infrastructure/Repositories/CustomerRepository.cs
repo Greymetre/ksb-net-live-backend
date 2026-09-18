@@ -281,23 +281,30 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
 
         var filtered = entries as IList<CustomerKycEntry> ?? entries.ToList();
 
-        var summary = new CustomerKycSummaryDto
-        {
-            TotalCustomers = filtered.Count,
-            Approved = filtered.Count(entry => entry.Stage == CustomerKycEntry.StageApproved),
-            CompletePending = filtered.Count(entry => entry.Stage == CustomerKycEntry.StageCompletePending),
-            Partial = filtered.Count(entry => entry.Stage == CustomerKycEntry.StagePartial),
-            NotStarted = filtered.Count(entry => entry.Stage == CustomerKycEntry.StageNone),
-            Rejected = filtered.Count(entry => entry.RejectedCount > 0)
-        };
+        // Active customers: retailers who have submitted at least one loyalty invoice - any
+        // approval stage, any date, the same rule as "No. of Active Retailers" in the Loyalty
+        // Performance Report. Dealers do not submit invoices, so they are never counted here.
+        // new_invoices has no deleted_at; a removed invoice is gone from the table.
+        var invoicingCustomerIds = (await _dbContext.NewInvoices.AsNoTracking()
+                .Select(invoice => invoice.SecondaryCustomerId)
+                .Distinct()
+                .ToListAsync(cancellationToken))
+            .ToHashSet();
+        var invoiceActive = filtered
+            .Where(entry => entry.CustomerType != DistributorCustomerType && invoicingCustomerIds.Contains(entry.Id))
+            .ToList();
+
+        var summary = KycSummary(filtered);
+        var activeSummary = KycSummary(invoiceActive);
 
         var stage = filter.KycStatus?.Trim().ToLowerInvariant();
-        IEnumerable<CustomerKycEntry> rows = filtered;
+        IList<CustomerKycEntry> scoped = filter.InvoiceActive ? invoiceActive : filtered;
+        IEnumerable<CustomerKycEntry> rows = scoped;
         if (!string.IsNullOrWhiteSpace(stage) && stage != "all")
         {
             rows = stage == CustomerKycEntry.StatusRejected
-                ? filtered.Where(entry => entry.RejectedCount > 0)
-                : filtered.Where(entry => entry.Stage == stage);
+                ? scoped.Where(entry => entry.RejectedCount > 0)
+                : scoped.Where(entry => entry.Stage == stage);
         }
 
         var ordered = rows as IList<CustomerKycEntry> ?? rows.ToList();
@@ -320,8 +327,19 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
 
         return new CustomerKycListResultDto(
             new PagedResult<CustomerKycListItemDto>(items, total, page, filter.Unpaged ? items.Count : pageSize),
-            summary);
+            summary,
+            activeSummary);
     }
+
+    private static CustomerKycSummaryDto KycSummary(IList<CustomerKycEntry> entries) => new()
+    {
+        TotalCustomers = entries.Count,
+        Approved = entries.Count(entry => entry.Stage == CustomerKycEntry.StageApproved),
+        CompletePending = entries.Count(entry => entry.Stage == CustomerKycEntry.StageCompletePending),
+        Partial = entries.Count(entry => entry.Stage == CustomerKycEntry.StagePartial),
+        NotStarted = entries.Count(entry => entry.Stage == CustomerKycEntry.StageNone),
+        Rejected = entries.Count(entry => entry.RejectedCount > 0)
+    };
 
     /// <summary>The dealers offered in the KYC filter. A dealer login gets only itself, so the
     /// dropdown can never be used to look at another dealer's retailers.</summary>

@@ -1461,6 +1461,15 @@ WHERE {where}", cancellationToken, parameters.ToArray())).FirstOrDefault();
             where.Add("EXISTS (SELECT 1 FROM new_invoices ni WHERE ni.secondary_customer_id = c.id)");
         }
 
+        // invoice_active=1: only active retailers - those who have submitted at least one loyalty
+        // invoice, at any approval stage, the rule the CRM's KYC screen uses for its second row.
+        // Applied to the KYC summary and the listing alike, so a tile and the list it opens agree.
+        var invoiceActive = Request.Query["invoice_active"].ToString().Trim();
+        if (invoiceActive is "1" || string.Equals(invoiceActive, "true", StringComparison.OrdinalIgnoreCase))
+        {
+            where.Add("EXISTS (SELECT 1 FROM new_invoices active_invoice WHERE active_invoice.secondary_customer_id = c.id)");
+        }
+
         var access = await AssignedCustomerAccess(CurrentUserId(), cancellationToken, includeHrAndHo: true);
         if (ULongQuery("for_user_id") is { } forUserId)
         {
