@@ -307,11 +307,16 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
                 : scoped.Where(entry => entry.Stage == stage);
         }
 
-        var ordered = rows as IList<CustomerKycEntry> ?? rows.ToList();
+        var ordered = rows
+            .OrderBy(KycSortGroup)
+            .ThenBy(KycSortStanding)
+            .ThenByDescending(KycPendingCount)
+            .ThenByDescending(entry => entry.Id)
+            .ToList();
         var total = ordered.Count;
         var page = Pagination.Page(filter.Page);
         var pageSize = Pagination.PageSize(filter.PageSize);
-        // The index is built newest customer first, which is the order the listing wants.
+        // The work order: see KycSortGroup / KycSortStanding. Newest customer first within a rank.
         var pageEntries = (filter.Unpaged ? ordered.Take(MaxRows) : ordered.Skip((page - 1) * pageSize).Take(pageSize))
             .ToList();
 
@@ -330,6 +335,29 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
             summary,
             activeSummary);
     }
+
+    // The KYC listing is a work queue, ordered the way the reviewers work it:
+    //   1. every document submitted (Awaiting Review or Fully Approved), then Partly Submitted,
+    //      then Not Started;
+    //   2. inside each: customers with documents waiting for review first - the most waiting
+    //      first (4, 3, 2, 1) - then those with a rejection and nothing waiting, then the rest
+    //      (all approved);
+    //   3. newest customer first within the same rank.
+    private static int KycSortGroup(CustomerKycEntry entry) => entry.Stage switch
+    {
+        CustomerKycEntry.StageCompletePending or CustomerKycEntry.StageApproved => 0,
+        CustomerKycEntry.StagePartial => 1,
+        _ => 2
+    };
+
+    private static int KycSortStanding(CustomerKycEntry entry) =>
+        KycPendingCount(entry) > 0 ? 0 : entry.RejectedCount > 0 ? 1 : 2;
+
+    /// <summary>Documents submitted - a file or the details - and not yet approved or rejected.</summary>
+    private static int KycPendingCount(CustomerKycEntry entry) => entry.Documents.Count(document =>
+        (document.Uploaded || document.DetailsFilled)
+        && document.Status != CustomerKycEntry.StatusApproved
+        && document.Status != CustomerKycEntry.StatusRejected);
 
     private static CustomerKycSummaryDto KycSummary(IList<CustomerKycEntry> entries) => new()
     {
