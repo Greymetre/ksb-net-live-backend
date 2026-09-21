@@ -1451,10 +1451,11 @@ WHERE {where}", cancellationToken, parameters.ToArray())).FirstOrDefault();
         // screen and the invoice tile apply. "pending" also asks for retailers who have
         // traded, so the filtered list matches the count that opened it.
         var kyc = applyKycFilter ? Request.Query["kyc"].ToString().Trim().ToLowerInvariant() : string.Empty;
-        if (Api.Services.KycStages.IsStage(kyc))
+        if (Api.Services.KycStages.IsFilter(kyc))
         {
             // approved / complete_pending / partial / none: the stages the CRM's KYC screen
             // counts, read from the same index, so the list matches the tile that opened it.
+            // rejected: at least one rejected document, the CRM's "Has a Rejection" filter.
             var stageIds = await Api.Services.KycStages.IdsInStageAsync(_kycIndex, kyc, cancellationToken);
             where.Add("c.id IN (SELECT TRY_CONVERT(decimal(20,0), [value]) FROM OPENJSON(@kyc_stage_ids))");
             parameters.Add(("@kyc_stage_ids", JsonSerializer.Serialize(stageIds)));
