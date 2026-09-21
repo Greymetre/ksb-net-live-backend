@@ -222,6 +222,12 @@ public static class PermissionCatalog
         new("user_target.export", "Export", "user_target", "User Target", "users", "User Management", "export", 1570, ["sales_target_users_download"], []),
         new("user_target.import", "Import", "user_target", "User Target", "users", "User Management", "import", 1580, ["sales_target_users_upload"], []),
         new("user_target.template", "Download Template", "user_target", "User Target", "users", "User Management", "template", 1590, ["sales_target_users_template"], []),
+        // Promotional Activities
+        new("promotional_activity.view", "View Listing", "promotional_activity", "Promotional Activities", "users", "User Management", "view", 1591, [], []),
+        new("promotional_activity.detail", "View Detail", "promotional_activity", "Promotional Activities", "users", "User Management", "detail", 1592, [], []),
+        new("promotional_activity.edit", "Edit", "promotional_activity", "Promotional Activities", "users", "User Management", "edit", 1593, [], []),
+        new("promotional_activity.delete", "Delete", "promotional_activity", "Promotional Activities", "users", "User Management", "delete", 1594, [], []),
+        new("promotional_activity.export", "Export", "promotional_activity", "Promotional Activities", "users", "User Management", "export", 1595, [], []),
         // ---------- Account Management ----------
         // Expenses Type
         new("expense_type.view", "View Listing", "expense_type", "Expenses Type", "accounts", "Account Management", "view", 1600, ["expenses_type"], []),
