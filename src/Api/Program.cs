@@ -42,6 +42,7 @@ builder.Services.AddSingleton<IGstLookupService, GstLookupService>();
 builder.Services.AddScoped<Api.Services.InvoiceAttachmentStore>();
 builder.Services.AddScoped<Api.Services.RatingTrendService>();
 builder.Services.AddScoped<Api.Services.SchemeAudienceService>();
+builder.Services.AddScoped<Api.Services.SfaRetailerScope>();
 builder.Services.AddScoped<Api.Services.UserPasswordResetService>();
 builder.Services.AddHttpClient();
 

@@ -1222,8 +1222,14 @@ INNER JOIN (
         {
             SetDistributorExportLookup(customer.CustomFields, "distributor_name", "distributor_code", distributors);
             SetDistributorExportLookup(customer.CustomFields, "agri_distributor", "agri_distributor_code", distributors);
-            var assigned = new[] { "employee_id", "sales_executive_id", "supervisor_id" }
-                .SelectMany(key => ReadULongs(ReadField(customer.CustomFields, key))).Distinct()
+            // The employees are the people assigned to the customer. The supervisor is filled in
+            // automatically from the creator's reporting manager and has its own field, so it is
+            // only used here for an old record that has no employee at all - otherwise a retailer
+            // made in the field app listed the creator's manager as a second employee.
+            var assignedIds = new[] { "employee_id", "sales_executive_id" }
+                .SelectMany(key => ReadULongs(ReadField(customer.CustomFields, key))).Distinct().ToArray();
+            if (assignedIds.Length == 0) assignedIds = ReadULongs(ReadField(customer.CustomFields, "supervisor_id"));
+            var assigned = assignedIds
                 .Where(id => !superAdminIds.Contains(id))
                 .Where(users.ContainsKey).Select(id => users[id]).ToArray();
             if (assigned.Length > 0)

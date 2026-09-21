@@ -995,8 +995,13 @@ pincode_id, created_by, created_at, updated_at) OUTPUT INSERTED.id VALUES ('Y', 
         };
         if (id.HasValue)
         {
-            await Execute(@"UPDATE customer_details SET gstin_no = @gstin_no, pan_no = @pan_no, aadhar_no = @aadhar_no, account_holder = @account_holder,
-account_number = @account_number, bank_name = @bank_name, ifsc_code = @ifsc_code, shop_image = COALESCE(@shop_image, shop_image),
+            // KYC details are entered once, when the customer is created; the field app's edit
+            // screen no longer sends them. A value that is not sent keeps what is stored instead
+            // of wiping it.
+            await Execute(@"UPDATE customer_details SET gstin_no = COALESCE(@gstin_no, gstin_no), pan_no = COALESCE(@pan_no, pan_no),
+aadhar_no = COALESCE(@aadhar_no, aadhar_no), account_holder = COALESCE(@account_holder, account_holder),
+account_number = COALESCE(@account_number, account_number), bank_name = COALESCE(@bank_name, bank_name),
+ifsc_code = COALESCE(@ifsc_code, ifsc_code), shop_image = COALESCE(@shop_image, shop_image),
 visit_status = @visit_status, updated_at = @now WHERE id = @id", cancellationToken, parameters);
             return;
         }
@@ -1413,7 +1418,7 @@ WHERE {where}", cancellationToken, parameters.ToArray())).FirstOrDefault();
 
         if (string.Equals(type, "RETAILER", StringComparison.OrdinalIgnoreCase))
         {
-            where.Add("(ctype.customertype_name LIKE '%Retailer%' OR ctype.type_name LIKE '%Retailer%' OR ((c.customertype IS NULL OR c.customertype NOT IN (1,3)) AND COALESCE(ctype.customertype_name, '') NOT LIKE '%Distributor%' AND COALESCE(ctype.type_name, '') NOT LIKE '%Distributor%'))");
+            where.Add(RetailerTypeSql);
         }
         else
         {
@@ -1487,7 +1492,11 @@ WHERE {where}", cancellationToken, parameters.ToArray())).FirstOrDefault();
         return (string.Join(" AND ", where), parameters);
     }
 
-    private static string AssignedCustomerPredicate(IEnumerable<ulong> userIds)
+    /// <summary>What makes a customer a retailer here (needs <c>ctype</c> joined). Shared with
+    /// <see cref="Api.Services.SfaRetailerScope"/> so the KYC tab opens exactly what it lists.</summary>
+    internal const string RetailerTypeSql = "(ctype.customertype_name LIKE '%Retailer%' OR ctype.type_name LIKE '%Retailer%' OR ((c.customertype IS NULL OR c.customertype NOT IN (1,3)) AND COALESCE(ctype.customertype_name, '') NOT LIKE '%Distributor%' AND COALESCE(ctype.type_name, '') NOT LIKE '%Distributor%'))";
+
+    internal static string AssignedCustomerPredicate(IEnumerable<ulong> userIds)
     {
         var ids = userIds.Where(id => id > 0).Distinct().ToArray();
         if (ids.Length == 0) return "1 = 0";

@@ -16,7 +16,8 @@ public sealed class UserService : IUserService
 {
     private static readonly string[] ExportHeadings =
     [
-        "ID", "Employees Code", "User Name", "Designation", "Role", "Zone Name", "Location", "Department", "Division",
+        // "Branch" holds the branch names and "Zone" the division, which is what KSB calls a zone.
+        "ID", "Employees Code", "User Name", "Designation", "Role", "Branch", "Location", "Department", "Zone",
         "Reporting To", "Mobile", "Email", "Status", "Date Of Joining", "Date Of Birth", "Date of Confirmation", "Date of leaving",
         "Grade", "Designation Code", "Employee Super Code", "Base Location Coordinates (latitude, longitude)",
         "Reporting ID", "Role Ids", "payroll", "designation_id", "branch_id", "division_id", "department_id",

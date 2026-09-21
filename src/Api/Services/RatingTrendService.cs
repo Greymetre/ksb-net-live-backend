@@ -57,6 +57,7 @@ public sealed class RatingTrendService
                 && x.Year.HasValue && targetYears.Contains(x.Year.Value) && x.Month != null && targetMonths.Contains(x.Month))
             .Select(x => new { UserId = x.UserId!.Value, x.Year, x.Month, x.Target })
             .ToListAsync(cancellationToken);
+        var promotionalActivities = await PromotionalActivityCounts.LoadAsync(_db, userIds, rangeStart, rangeEnd, cancellationToken);
 
         var orders = await _db.Orders.AsNoTracking()
             .Where(x => x.CreatedBy.HasValue && userIds.Contains(x.CreatedBy.Value)
@@ -114,7 +115,7 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
 
                 var userAttendance = attendance.Where(x => x.UserId == user.Id && x.PunchinDate >= monthStart && x.PunchinDate < monthEnd).ToList();
                 var marketDays = userAttendance.Where(x => !IsLeaveOrOffice(x.WorkingType)).Select(x => x.PunchinDate.Date).Distinct().Count();
-                var promotional = userAttendance.Sum(x => PromotionalActivityCount(x.WorkingType));
+                var promotional = PromotionalActivityCounts.Count(promotionalActivities, user.Id, monthStart, monthEnd);
                 var visits = visitCounts.GetValueOrDefault((user.Id, monthStart.Year, monthStart.Month));
                 var target = targets.Where(x => x.UserId == user.Id && x.Year == monthStart.Year
                         && (string.Equals(x.Month, monthStart.ToString("MMM", CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase)
@@ -176,10 +177,6 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
             || x.Equals("Leave", StringComparison.OrdinalIgnoreCase) || x.Equals("Holiday", StringComparison.OrdinalIgnoreCase));
     }
 
-    private static int PromotionalActivityCount(string? workingType) => (workingType ?? string.Empty)
-        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-        .Count(x => x.Equals("Retailer Meet", StringComparison.OrdinalIgnoreCase)
-            || x.Equals("Nukkad Meet", StringComparison.OrdinalIgnoreCase) || x.Equals("Field Demo", StringComparison.OrdinalIgnoreCase));
 
     private static RatingScoreSet CalculateScores(int marketDays, int visits, decimal salesAchievement, decimal salesTarget,
         int promotional, int registeredRetailers, int activeRetailers,

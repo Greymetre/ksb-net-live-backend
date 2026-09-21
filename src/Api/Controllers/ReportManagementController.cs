@@ -129,6 +129,7 @@ public sealed class ReportManagementController : ControllerBase
         var attendance = await _db.Attendances.AsNoTracking().Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value)
             && x.PunchinDate >= rangeStart && x.PunchinDate < rangeEnd && x.DeletedAt == null)
             .Select(x => new { UserId = x.UserId!.Value, x.PunchinDate, x.WorkingType }).ToListAsync(ct);
+        var promotionalActivities = await Api.Services.PromotionalActivityCounts.LoadAsync(_db, userIds, rangeStart, rangeEnd, ct);
         var targets = await _db.SalesTargetUsers.AsNoTracking().Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value)
             && x.Year.HasValue && targetYears.Contains(x.Year.Value) && x.Month != null && targetMonths.Contains(x.Month))
             .Select(x => new { UserId = x.UserId!.Value, x.Year, x.Month, x.Target }).ToListAsync(ct);
@@ -185,7 +186,7 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
                     }
                     var userAttendance = attendance.Where(x => x.UserId == user.Id && x.PunchinDate >= monthStart && x.PunchinDate < monthEnd).ToList();
                     var marketDays = userAttendance.Where(x => !IsLeaveOrOffice(x.WorkingType)).Select(x => x.PunchinDate.Date).Distinct().Count();
-                    var promotional = userAttendance.Sum(x => PromotionalActivityCount(x.WorkingType));
+                    var promotional = Api.Services.PromotionalActivityCounts.Count(promotionalActivities, user.Id, monthStart, monthEnd);
                     var visits = visitCounts.GetValueOrDefault((user.Id, monthStart.Year, monthStart.Month));
                     var target = targets.Where(x => x.UserId == user.Id && x.Year == monthStart.Year
                     && (string.Equals(x.Month, monthStart.ToString("MMM", CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase)
@@ -678,10 +679,6 @@ assigned_at, unassigned_at FROM (
             || x.Equals("Leave", StringComparison.OrdinalIgnoreCase) || x.Equals("Holiday", StringComparison.OrdinalIgnoreCase));
     }
 
-    private static int PromotionalActivityCount(string? workingType) => (workingType ?? string.Empty)
-        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-        .Count(x => x.Equals("Retailer Meet", StringComparison.OrdinalIgnoreCase)
-            || x.Equals("Nukkad Meet", StringComparison.OrdinalIgnoreCase) || x.Equals("Field Demo", StringComparison.OrdinalIgnoreCase));
 
     private static DateTime RatingAverageStartMonth(DateTime? joiningDate, DateTime defaultStart)
     {
@@ -770,6 +767,7 @@ assigned_at, unassigned_at FROM (
             var periodMonths = monthStarts.Sum(ElapsedShare);
             var attendance = await _db.Attendances.AsNoTracking().Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value)
                 && x.PunchinDate >= periodStart && x.PunchinDate < periodEnd && x.DeletedAt == null).Select(x => new { UserId = x.UserId!.Value, x.PunchinDate, x.WorkingType }).ToListAsync(ct);
+            var promotionalActivities = await Api.Services.PromotionalActivityCounts.LoadAsync(_db, userIds, periodStart, periodEnd, ct);
             var targets = await _db.SalesTargetUsers.AsNoTracking().Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value)
                 && x.Year.HasValue && targetYears.Contains(x.Year.Value) && x.Month != null && targetMonths.Contains(x.Month)).Select(x => new { UserId = x.UserId!.Value, x.Year, x.Month, x.Target }).ToListAsync(ct);
             var orders = await _db.Orders.AsNoTracking().Where(x => x.CreatedBy.HasValue && userIds.Contains(x.CreatedBy.Value)
@@ -787,7 +785,7 @@ assigned_at, unassigned_at FROM (
             {
                 var userAttendance = attendance.Where(x => x.UserId == user.Id).ToList();
                 var marketDays = userAttendance.Where(x => !IsLeaveOrOffice(x.WorkingType)).Select(x => x.PunchinDate.Date).Distinct().Count();
-                var promotional = userAttendance.Sum(x => PromotionalActivityCount(x.WorkingType));
+                var promotional = Api.Services.PromotionalActivityCounts.Count(promotionalActivities, user.Id, periodStart, periodEnd);
                 var customerVisits = visits.GetValueOrDefault(user.Id);
                 var userTargets = targets.Where(x => x.UserId == user.Id).ToList();
                 var target = monthStarts.Sum(monthStart =>

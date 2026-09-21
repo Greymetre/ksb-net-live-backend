@@ -380,6 +380,31 @@ public sealed class MobileAppController : ControllerBase
         return await SaveKycAsync(retailer.Customer!, cancellationToken);
     }
 
+    // The field app (SFA) keeps KYC for the retailers its user can see - the same screen,
+    // payload and rules as the dealer's (an approved document stays locked), only the
+    // retailer is resolved from the user's data scope instead of a dealer's assignment.
+    [Authorize]
+    [HttpGet("sfa/retailers/{id}/kyc")]
+    public async Task<IActionResult> GetSfaRetailerKyc(ulong id, [FromServices] SfaRetailerScope scope, CancellationToken cancellationToken)
+    {
+        var retailer = await SfaRetailer(id, scope, cancellationToken);
+        if (retailer.Result is not null) return retailer.Result;
+
+        return Ok(new { status = "success", data = BuildMobileKyc(retailer.Customer!, ReadFields(retailer.Customer!)) });
+    }
+
+    [Authorize]
+    [HttpPost("sfa/retailers/{id}/kyc")]
+    [HttpPut("sfa/retailers/{id}/kyc")]
+    [Consumes("multipart/form-data")]
+    public async Task<IActionResult> UploadSfaRetailerKyc(ulong id, [FromServices] SfaRetailerScope scope, CancellationToken cancellationToken)
+    {
+        var retailer = await SfaRetailer(id, scope, cancellationToken);
+        if (retailer.Result is not null) return retailer.Result;
+
+        return await SaveKycAsync(retailer.Customer!, cancellationToken);
+    }
+
     [Authorize]
     [HttpPost("retailer/kyc")]
     [HttpPut("retailer/kyc")]
@@ -391,6 +416,18 @@ public sealed class MobileAppController : ControllerBase
 
         return await SaveKycAsync(customer, cancellationToken);
     }
+
+    // KYC form field -> its column on customer_details. Fixed names only; never taken from the request.
+    private static readonly Dictionary<string, string> DetailColumns = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["gst_number"] = "gstin_no",
+        ["pan_number"] = "pan_no",
+        ["aadhar_no"] = "aadhar_no",
+        ["bank_name"] = "bank_name",
+        ["bank_account_number"] = "account_number",
+        ["ifsc_code"] = "ifsc_code",
+        ["account_holder_name"] = "account_holder",
+    };
 
     private async Task<IActionResult> SaveKycAsync(Customer customer, CancellationToken cancellationToken)
     {
@@ -404,6 +441,7 @@ public sealed class MobileAppController : ControllerBase
             && string.Equals(Field(fields, $"{documentKey}_kyc_status"), "approved", StringComparison.OrdinalIgnoreCase);
 
         var changedDocuments = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var detailUpdates = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var formField in Request.Form)
         {
             var key = formField.Key;
@@ -421,6 +459,7 @@ public sealed class MobileAppController : ControllerBase
 
             fields[key] = value;
             if (!string.IsNullOrWhiteSpace(documentKey)) changedDocuments.Add(documentKey);
+            if (DetailColumns.TryGetValue(key, out var column)) detailUpdates[column] = value;
         }
 
         // The shop image rides along on the KYC screen but is not a KYC document: it has no
@@ -468,6 +507,14 @@ public sealed class MobileAppController : ControllerBase
             await _dbContext.Database.ExecuteSqlInterpolatedAsync(
                 $"UPDATE customer_details SET shop_image = {shopImage}, updated_at = {DateTime.UtcNow} WHERE customer_id = {customer.Id}",
                 cancellationToken);
+        }
+        // The field app shows the customer_details copy of these numbers ahead of custom_fields,
+        // so a number corrected here has to land there too or the field app keeps the old one.
+        foreach (var (column, value) in detailUpdates)
+        {
+            await _dbContext.Database.ExecuteSqlRawAsync(
+                $"UPDATE customer_details SET {column} = {{0}}, updated_at = {{1}} WHERE customer_id = {{2}} AND deleted_at IS NULL",
+                [value, DateTime.UtcNow, customer.Id], cancellationToken);
         }
         // The CRM's KYC screen and both apps count stages from one in-memory index; without
         // this a KYC submitted from the phone would keep its old stage for up to five minutes.
@@ -1540,6 +1587,23 @@ public sealed class MobileAppController : ControllerBase
             : null;
         if (retailer is null)
             return (null, NotFound(new { status = "error", message = "Retailer not found for this dealer." }));
+
+        return (retailer, null);
+    }
+
+    // A retailer outside the user's scope is reported as missing, like the dealer's.
+    private async Task<(Customer? Customer, IActionResult? Result)> SfaRetailer(ulong retailerId, SfaRetailerScope scope, CancellationToken cancellationToken)
+    {
+        if (string.Equals(User.FindFirstValue("provider"), "customers", StringComparison.OrdinalIgnoreCase)
+            || !ulong.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var userId))
+            return (null, Unauthorized(new { status = "error", message = "Unauthenticated." }));
+
+        // Loaded tracked, or the KYC saved against it would report success and change nothing.
+        var retailer = await scope.CanAccessAsync(userId, retailerId, cancellationToken)
+            ? await _dbContext.Customers.FirstOrDefaultAsync(x => x.Id == retailerId, cancellationToken)
+            : null;
+        if (retailer is null)
+            return (null, NotFound(new { status = "error", message = "Retailer not found." }));
 
         return (retailer, null);
     }
