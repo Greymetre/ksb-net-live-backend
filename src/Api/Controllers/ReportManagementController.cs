@@ -1016,12 +1016,18 @@ WHERE customertype = 1 AND deleted_at IS NULL AND executive_id IN ({string.Join(
             .ToDictionary(x => x.Key, x => x.First().Amount);
 
         var reportAsrIds = reportInvoices.Select(x => x.AsrId).Distinct().ToArray();
+        // A line's segment is its product's segment in the product master - the same rule as the
+        // order download. The segment stored on the line itself is not used: lines from April-May
+        // were saved without one (and were left out), and a product moved to another segment
+        // later must count under its new one. The stored value only counts for a deleted product.
         var salesLines = await (from order in _db.Orders.AsNoTracking()
                                 join line in _db.OrderDetails.AsNoTracking() on (ulong?)order.Id equals line.OrderId
+                                join productRow in _db.Products.AsNoTracking().IgnoreQueryFilters() on line.ProductId equals (ulong?)productRow.Id into products
+                                from product in products.DefaultIfEmpty()
                                 where order.ExecutiveId.HasValue && reportAsrIds.Contains(order.ExecutiveId.Value)
                                     && order.DeletedAt == null
                                     && order.OrderDate >= rangeStart && order.OrderDate < rangeEndExclusive
-                                    && line.CategoryId == filter.SegmentId
+                                    && (product != null ? product.CategoryId : line.CategoryId) == filter.SegmentId
                                 group line by new { AsrId = order.ExecutiveId!.Value, DealerId = order.SellerId } into sales
                                 select new { sales.Key.AsrId, sales.Key.DealerId, Total = sales.Sum(x => x.LineTotal) })
             .ToListAsync(cancellationToken);

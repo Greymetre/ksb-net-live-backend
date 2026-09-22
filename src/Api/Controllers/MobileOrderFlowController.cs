@@ -52,7 +52,12 @@ public sealed class MobileOrderFlowController : ControllerBase
     public async Task<IActionResult> GetSubCategoryList([FromQuery(Name = "category_id")] ulong? categoryId, CancellationToken cancellationToken)
     {
         var query = _db.ProductFamilies.AsNoTracking().Where(x => x.Active == "Y");
-        if (categoryId.HasValue) query = query.Where(x => x.CategoryId == categoryId.Value);
+        // A segment's families: those filed under it, and any family holding one of its products -
+        // a product's segment is its own (product master), so an Agriculture product can sit in a
+        // family filed under Domestic, and picking Agriculture must still reach it.
+        if (categoryId.HasValue)
+            query = query.Where(x => x.CategoryId == categoryId.Value
+                || _db.Products.Any(product => product.SubcategoryId == x.Id && product.CategoryId == categoryId.Value && product.Active == "Y"));
 
         var rows = await query
             .OrderBy(x => x.Ranking)
@@ -69,10 +74,12 @@ public sealed class MobileOrderFlowController : ControllerBase
     }
 
     [HttpGet("getProductList")]
-    public async Task<IActionResult> GetProductList([FromQuery(Name = "subcategory_id")] ulong? subcategoryId, CancellationToken cancellationToken)
+    public async Task<IActionResult> GetProductList([FromQuery(Name = "subcategory_id")] ulong? subcategoryId, [FromQuery(Name = "category_id")] ulong? categoryId, CancellationToken cancellationToken)
     {
         var query = _db.Products.AsNoTracking().Where(x => x.Active == "Y");
         if (subcategoryId.HasValue) query = query.Where(x => x.SubcategoryId == subcategoryId.Value);
+        // With a segment picked, only that segment's products - by the product's own segment.
+        if (categoryId.HasValue) query = query.Where(x => x.CategoryId == categoryId.Value);
 
         var rows = await (
             from product in query
