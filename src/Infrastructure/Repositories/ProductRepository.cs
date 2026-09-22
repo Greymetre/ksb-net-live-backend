@@ -186,13 +186,7 @@ public sealed class ProductRepository : IProductRepository
     private IQueryable<Product> FilteredProducts(ulong? segmentId, ulong? familyId, string? search, bool includeInactive)
     {
         var query = ProductQuery(includeInactive);
-        // A product's segment is its family's segment. The imported catalogue has products whose
-        // own category_id disagrees with their family's (Conticable families holding products
-        // marked Domestic), so the family decides; the product's own value only counts when it
-        // has no family.
-        if (segmentId.HasValue)
-            query = query.Where(x => _dbContext.ProductFamilies.Any(family => family.Id == x.SubcategoryId && family.CategoryId == segmentId)
-                || (x.SubcategoryId == null && x.CategoryId == segmentId));
+        if (segmentId.HasValue) query = query.Where(x => x.CategoryId == segmentId);
         if (familyId.HasValue) query = query.Where(x => x.SubcategoryId == familyId);
         if (!string.IsNullOrWhiteSpace(search))
         {
@@ -232,7 +226,6 @@ public sealed class ProductRepository : IProductRepository
             CreatedAt = now,
             UpdatedAt = now
         };
-        await AlignSegmentWithFamilyAsync(product, cancellationToken);
         await _dbContext.Products.AddAsync(product, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         await SaveProductDetailAsync(product.Id, request.Mrp, cancellationToken);
@@ -245,7 +238,6 @@ public sealed class ProductRepository : IProductRepository
         if (product is null) return null;
         if (request.SegmentId.HasValue) product.CategoryId = request.SegmentId;
         if (request.FamilyId.HasValue) product.SubcategoryId = request.FamilyId;
-        await AlignSegmentWithFamilyAsync(product, cancellationToken);
         if (!string.IsNullOrWhiteSpace(request.ProductName))
         {
             product.ProductName = request.ProductName.Trim();
@@ -343,24 +335,12 @@ public sealed class ProductRepository : IProductRepository
             CreatedAt = family.CreatedAt
         };
 
-    /// <summary>A product is saved with its family's segment, whatever segment was sent, so the
-    /// segment filter, the listing and the field app's order screen always agree.</summary>
-    private async Task AlignSegmentWithFamilyAsync(Product product, CancellationToken cancellationToken)
-    {
-        if (product.SubcategoryId is not { } familyId) return;
-        var familySegment = await _dbContext.ProductFamilies.AsNoTracking()
-            .Where(x => x.Id == familyId).Select(x => x.CategoryId).FirstOrDefaultAsync(cancellationToken);
-        if (familySegment.HasValue) product.CategoryId = familySegment;
-    }
-
     private IQueryable<ProductDto> ProjectProducts(IQueryable<Product> query) =>
         from product in query.AsNoTracking()
+        join segment in _dbContext.ProductCategories.IgnoreQueryFilters().AsNoTracking() on product.CategoryId equals segment.Id into segmentJoin
+        from segment in segmentJoin.DefaultIfEmpty()
         join family in _dbContext.ProductFamilies.IgnoreQueryFilters().AsNoTracking() on product.SubcategoryId equals family.Id into familyJoin
         from family in familyJoin.DefaultIfEmpty()
-        // The segment shown is the family's (see FilteredProducts); the product's own only without a family.
-        join segment in _dbContext.ProductCategories.IgnoreQueryFilters().AsNoTracking()
-            on (family != null && family.CategoryId != null ? family.CategoryId : product.CategoryId) equals (ulong?)segment.Id into segmentJoin
-        from segment in segmentJoin.DefaultIfEmpty()
         join createdBy in _dbContext.Users.AsNoTracking() on product.CreatedBy equals createdBy.Id into userJoin
         from createdBy in userJoin.DefaultIfEmpty()
         let detail = _dbContext.ProductDetails.AsNoTracking().Where(x => x.ProductId == product.Id && x.DeletedAt == null).OrderByDescending(x => x.Id).FirstOrDefault()
@@ -368,7 +348,7 @@ public sealed class ProductRepository : IProductRepository
         {
             Id = product.Id,
             Active = product.Active,
-            SegmentId = family != null && family.CategoryId != null ? family.CategoryId : product.CategoryId,
+            SegmentId = product.CategoryId,
             SegmentName = segment == null ? null : segment.CategoryName,
             FamilyId = product.SubcategoryId,
             FamilyName = family == null ? null : family.SubcategoryName,

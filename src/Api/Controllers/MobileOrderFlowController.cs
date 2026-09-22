@@ -78,11 +78,7 @@ public sealed class MobileOrderFlowController : ControllerBase
             from product in query
             join familyRow in _db.ProductFamilies.AsNoTracking() on product.SubcategoryId equals familyRow.Id into families
             from family in families.DefaultIfEmpty()
-            // The family's segment, not the product's own: the imported catalogue has products whose
-            // category_id disagrees with their family's, and the order screen sets the segment from
-            // this, then lists that segment's families - the product's family has to be among them.
-            join categoryRow in _db.ProductCategories.AsNoTracking()
-                on (family != null && family.CategoryId != null ? family.CategoryId : product.CategoryId) equals (ulong?)categoryRow.Id into categories
+            join categoryRow in _db.ProductCategories.AsNoTracking() on product.CategoryId equals categoryRow.Id into categories
             from category in categories.DefaultIfEmpty()
             orderby product.Ranking, product.ProductName
             select new
@@ -92,7 +88,7 @@ public sealed class MobileOrderFlowController : ControllerBase
                 PartNo = product.ProductCode != null && product.ProductCode.Trim() != "" ? product.ProductCode : product.PartNo,
                 product.SubcategoryId,
                 SubcategoryName = family.SubcategoryName,
-                CategoryId = family != null && family.CategoryId != null ? family.CategoryId : product.CategoryId,
+                product.CategoryId,
                 CategoryName = category.CategoryName
             })
             .ToListAsync(cancellationToken);
@@ -124,8 +120,7 @@ public sealed class MobileOrderFlowController : ControllerBase
             from product in _db.Products.AsNoTracking()
             join familyRow in _db.ProductFamilies.AsNoTracking() on product.SubcategoryId equals familyRow.Id into families
             from family in families.DefaultIfEmpty()
-            join categoryRow in _db.ProductCategories.AsNoTracking()
-                on (family != null && family.CategoryId != null ? family.CategoryId : product.CategoryId) equals (ulong?)categoryRow.Id into categories
+            join categoryRow in _db.ProductCategories.AsNoTracking() on product.CategoryId equals categoryRow.Id into categories
             from category in categories.DefaultIfEmpty()
             where product.Id == productId.Value && product.Active == "Y"
             select new
@@ -135,7 +130,7 @@ public sealed class MobileOrderFlowController : ControllerBase
                 product.ProductCode,
                 product.SubcategoryId,
                 SubcategoryName = family.SubcategoryName,
-                CategoryId = family != null && family.CategoryId != null ? family.CategoryId : product.CategoryId,
+                product.CategoryId,
                 CategoryName = category.CategoryName,
                 Detail = _db.ProductDetails.AsNoTracking()
                     .Where(detail => detail.ProductId == product.Id && detail.Active == "Y")
