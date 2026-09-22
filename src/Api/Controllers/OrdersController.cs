@@ -36,6 +36,7 @@ public sealed class OrdersController : ControllerBase
         [FromQuery(Name = "startdate")] DateTime? startDate,
         [FromQuery(Name = "enddate")] DateTime? endDate,
         [FromQuery] string? search,
+        [FromQuery(Name = "segment_id")] ulong? segmentId,
         CancellationToken cancellationToken)
     {
         var filter = new OrderFilterDto
@@ -49,6 +50,7 @@ public sealed class OrdersController : ControllerBase
             StartDate = startDate,
             EndDate = endDate,
             Search = search,
+            SegmentId = segmentId,
             ActorUserId = CurrentUserId()
         };
         return Ok(await _service.GetOrdersAsync(filter, cancellationToken));
@@ -153,6 +155,7 @@ public sealed class OrdersController : ControllerBase
         [FromQuery(Name = "startdate")] DateTime? startDate,
         [FromQuery(Name = "enddate")] DateTime? endDate,
         [FromQuery] string? search,
+        [FromQuery(Name = "segment_id")] ulong? segmentId,
         CancellationToken cancellationToken)
     {
         var file = await _service.ExportOrdersAsync(new OrderFilterDto
@@ -166,6 +169,7 @@ public sealed class OrdersController : ControllerBase
             StartDate = startDate,
             EndDate = endDate,
             Search = search,
+            SegmentId = segmentId,
             ActorUserId = CurrentUserId()
         }, cancellationToken);
         return File(file.Content, file.ContentType, file.FileName);

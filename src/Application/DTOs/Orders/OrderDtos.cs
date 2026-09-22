@@ -13,6 +13,9 @@ public sealed class OrderFilterDto
     public DateTime? StartDate { get; set; }
     public DateTime? EndDate { get; set; }
     public string? Search { get; set; }
+    /// <summary>Segment, by the product's own segment (product master): the listing keeps orders
+    /// holding a product of it, the download keeps only its lines.</summary>
+    public ulong? SegmentId { get; set; }
     public ulong? ActorUserId { get; set; }
 }
 

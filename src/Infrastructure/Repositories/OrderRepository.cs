@@ -437,6 +437,8 @@ public sealed class OrderRepository : IOrderRepository
             from segment in segments.DefaultIfEmpty()
             join familyRow in _dbContext.ProductFamilies.AsNoTracking() on product.SubcategoryId equals familyRow.Id into families
             from family in families.DefaultIfEmpty()
+            // With a segment picked, only that segment's lines - so the download adds up to its sale.
+            where !filter.SegmentId.HasValue || (product != null && product.CategoryId == filter.SegmentId.Value)
             orderby order.CreatedAt descending, order.Id descending, detail.Id
             select new OrderExportProjection(
                 order.OrderDate,
@@ -668,6 +670,11 @@ public sealed class OrderRepository : IOrderRepository
         if (filter.PendingStatus.HasValue) query = filter.PendingStatus.Value == 0 ? query.Where(x => x.StatusId == null) : query.Where(x => x.StatusId == (ulong)filter.PendingStatus.Value);
         if (filter.StartDate.HasValue) query = query.Where(x => x.OrderDate >= filter.StartDate.Value.Date);
         if (filter.EndDate.HasValue) query = query.Where(x => x.OrderDate <= filter.EndDate.Value.Date);
+        // Orders holding at least one product of the segment - the product's own segment in the
+        // product master (the stored line segment is empty on older lines).
+        if (filter.SegmentId.HasValue)
+            query = query.Where(x => _dbContext.OrderDetails.Any(line => line.OrderId == x.Id
+                && _dbContext.Products.IgnoreQueryFilters().Any(product => product.Id == line.ProductId && product.CategoryId == filter.SegmentId.Value)));
 
         if (filter.DivisionId.HasValue)
         {
