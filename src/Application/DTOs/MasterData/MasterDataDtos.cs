@@ -67,6 +67,9 @@ public sealed class BranchDto
     public ulong Id { get; set; }
     public string BranchName { get; set; } = string.Empty;
     public string? BranchCode { get; set; }
+    /// <summary>The branch's zone. Read from branch_code - see MasterDataRepository.BranchZoneId.</summary>
+    public ulong? ZoneId { get; set; }
+    public string? ZoneName { get; set; }
     public string Active { get; set; } = "Y";
     public ulong? CreatedBy { get; set; }
     public string? CreatedByName { get; set; }
@@ -107,6 +110,8 @@ public sealed class BranchRequestDto
 {
     public string? BranchName { get; set; }
     public string? BranchCode { get; set; }
+    /// <summary>Required on create and edit; stored in branch_code.</summary>
+    public ulong? ZoneId { get; set; }
     public string? Active { get; set; }
 }
 

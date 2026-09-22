@@ -85,6 +85,7 @@ public sealed class MobileOrderFlowController : ControllerBase
             {
                 product.Id,
                 product.ProductName,
+                PartNo = product.ProductCode != null && product.ProductCode.Trim() != "" ? product.ProductCode : product.PartNo,
                 product.SubcategoryId,
                 SubcategoryName = family.SubcategoryName,
                 product.CategoryId,
@@ -100,6 +101,8 @@ public sealed class MobileOrderFlowController : ControllerBase
             {
                 id = x.Id,
                 product_name = x.ProductName,
+                // The order screen searches on this as well as the name.
+                part_no = x.PartNo,
                 subcategory_id = x.SubcategoryId,
                 subcategory_name = x.SubcategoryName,
                 category_id = x.CategoryId,

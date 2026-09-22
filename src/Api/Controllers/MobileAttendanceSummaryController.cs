@@ -143,6 +143,7 @@ public sealed class MobileAttendanceSummaryController : ControllerBase
             row.UpdatedAt = DateTime.UtcNow;
         }
         await _db.SaveChangesAsync(ct);
+        if (request.Status == 1) HttpContext.RequestServices.GetRequiredService<Api.Services.HrPushNotifications>().AttendanceApproved(ids);
         return Ok(new { status = "success", message = "Status changed successfully." });
     }
 

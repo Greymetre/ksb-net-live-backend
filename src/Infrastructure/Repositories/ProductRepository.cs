@@ -219,6 +219,8 @@ public sealed class ProductRepository : IProductRepository
             ProductName = request.ProductName!.Trim(),
             DisplayName = request.ProductName.Trim(),
             PartNo = request.PartNo!.Trim(),
+            // Kept equal to part_no: the export, the order screens and the SFA read product_code.
+            ProductCode = request.PartNo.Trim(),
             ProductImage = NormalizeText(request.Attachment) ?? string.Empty,
             CreatedBy = actorUserId,
             CreatedAt = now,
@@ -241,7 +243,11 @@ public sealed class ProductRepository : IProductRepository
             product.ProductName = request.ProductName.Trim();
             product.DisplayName = product.ProductName;
         }
-        if (!string.IsNullOrWhiteSpace(request.PartNo)) product.PartNo = request.PartNo.Trim();
+        if (!string.IsNullOrWhiteSpace(request.PartNo))
+        {
+            product.PartNo = request.PartNo.Trim();
+            product.ProductCode = product.PartNo;
+        }
         if (request.Attachment is not null) product.ProductImage = NormalizeText(request.Attachment) ?? string.Empty;
         product.Active = NormalizeActive(request.Active, product.Active);
         product.UpdatedBy = actorUserId;
@@ -346,7 +352,9 @@ public sealed class ProductRepository : IProductRepository
             SegmentName = segment == null ? null : segment.CategoryName,
             FamilyId = product.SubcategoryId,
             FamilyName = family == null ? null : family.SubcategoryName,
-            PartNo = product.PartNo,
+            // Part No and product code are one number. The catalogue carries it in product_code
+            // (part_no is a placeholder "." on imported rows), so product_code is what is shown.
+            PartNo = product.ProductCode != null && product.ProductCode.Trim() != "" ? product.ProductCode : product.PartNo,
             ProductName = product.ProductName,
             ProductCode = product.ProductCode,
             DisplayName = product.DisplayName,

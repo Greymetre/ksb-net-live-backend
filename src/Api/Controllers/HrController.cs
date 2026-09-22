@@ -98,8 +98,13 @@ public sealed class HrController : ControllerBase
     [RequirePermission("leave.approve")]
     [HttpPost("leaves-approved")]
     [HttpPost("leaves/{id}/approve")]
-    public async Task<IActionResult> ApproveLeave([FromRoute] ulong? id, [FromBody] IdRequest? request, CancellationToken cancellationToken) =>
-        Ok(await _hrService.ApproveLeaveAsync(id ?? request?.Id ?? 0, CurrentUserId(), cancellationToken));
+    public async Task<IActionResult> ApproveLeave([FromRoute] ulong? id, [FromBody] IdRequest? request, [FromServices] Api.Services.HrPushNotifications push, CancellationToken cancellationToken)
+    {
+        var leaveId = id ?? request?.Id ?? 0;
+        var result = await _hrService.ApproveLeaveAsync(leaveId, CurrentUserId(), cancellationToken);
+        push.LeaveApproved(leaveId);
+        return Ok(result);
+    }
 
     [RequirePermission("leave.reject")]
     [HttpPost("leaverejected")]
@@ -249,8 +254,13 @@ public sealed class HrController : ControllerBase
     [RequirePermission("attendance.approve")]
     [HttpPost("approveAttendance")]
     [HttpPost("attendances/approve")]
-    public async Task<IActionResult> ApproveAttendance([FromBody] IdsRequest request, CancellationToken cancellationToken) =>
-        Ok(await _hrService.ApproveAttendanceAsync(request.Ids(), CurrentUserId(), cancellationToken));
+    public async Task<IActionResult> ApproveAttendance([FromBody] IdsRequest request, [FromServices] Api.Services.HrPushNotifications push, CancellationToken cancellationToken)
+    {
+        var ids = request.Ids();
+        var result = await _hrService.ApproveAttendanceAsync(ids, CurrentUserId(), cancellationToken);
+        push.AttendanceApproved(ids);
+        return Ok(result);
+    }
 
     [RequirePermission("attendance.reject")]
     [HttpPost("rejectAttendance")]

@@ -50,6 +50,7 @@ public interface IMasterDataRepository
     Task<IReadOnlyCollection<BranchDto>> ExportBranchesAsync(CancellationToken cancellationToken);
     Task<BranchDto?> GetBranchAsync(ulong id, CancellationToken cancellationToken);
     Task<bool> BranchNameExistsAsync(string branchName, ulong? excludeId, CancellationToken cancellationToken);
+    Task<bool> ZoneExistsAsync(ulong zoneId, CancellationToken cancellationToken);
     Task<BranchDto> CreateBranchAsync(BranchRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
     Task<BranchDto?> UpdateBranchAsync(ulong id, BranchRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
     Task<BranchDto?> SetBranchActiveAsync(ulong id, string? active, ulong? actorUserId, CancellationToken cancellationToken);

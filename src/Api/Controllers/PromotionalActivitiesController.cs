@@ -127,16 +127,25 @@ public sealed class PromotionalActivitiesController : ControllerBase
         var query=from activity in _db.PromotionalActivities.AsNoTracking()
                   join employee in users on (ulong)activity.UserId equals employee.Id
                   where activity.DeletedAt==null&&activity.ActivityDate>=startDate&&activity.ActivityDate<until
-                  select new { activity.ActivityType, employee.DesignationId };
-        var rows=await query.GroupBy(x=>new{x.DesignationId,x.ActivityType})
-            .Select(group=>new{group.Key.DesignationId,group.Key.ActivityType,Count=group.Count()}).ToListAsync(ct);
+                  select new { activity.ActivityType, employee.DesignationId, Participants=activity.Participants.Count(p=>p.DeletedAt==null), activity.GiftCount, activity.TotalExpense };
+        // Summed here, not in SQL: SQL Server cannot SUM the per-activity participant count.
+        var rows=(await query.ToListAsync(ct)).GroupBy(x=>new{x.DesignationId,x.ActivityType})
+            .Select(group=>new{group.Key.DesignationId,group.Key.ActivityType,Count=group.Count(),
+                Participants=group.Sum(x=>x.Participants),Gifts=group.Sum(x=>x.GiftCount),Expense=group.Sum(x=>x.TotalExpense)}).ToList();
 
         object Counts(ulong designationId)
         {
             int Count(string type)=>rows.FirstOrDefault(x=>x.DesignationId==designationId&&x.ActivityType==type)?.Count??0;
             return new{retailer=Count("retailer"),nukkad=Count("nukkad"),farmer=Count("farmer"),influencer=Count("influencer")};
         }
-        return Ok(new{status="success",data=new{asr=Counts(3),dsr=Counts(6)}});
+        // Per meet type: meets, participants, gifts and expense (rupees). Beside the plain counts
+        // above rather than instead of them, which app builds before 38 still read.
+        object Details(ulong designationId) => new[]{"retailer","nukkad","farmer","influencer"}.ToDictionary(type=>type,type=>
+        {
+            var row=rows.FirstOrDefault(x=>x.DesignationId==designationId&&x.ActivityType==type);
+            return new{meets=row?.Count??0,participants=row?.Participants??0,gifts=row?.Gifts??0,expense=row?.Expense??0m};
+        });
+        return Ok(new{status="success",data=new{asr=Counts(3),dsr=Counts(6),details=new{asr=Details(3),dsr=Details(6)}}});
     }
 
     [HttpGet("{id:long}")]

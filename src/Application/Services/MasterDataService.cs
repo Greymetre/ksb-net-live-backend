@@ -424,8 +424,8 @@ public sealed class MasterDataService : IMasterDataService
         var rows = await _repository.ExportBranchesAsync(cancellationToken);
         return CreateWorkbook(
             "branch.xlsx",
-            ["id", "branch_name", "branch_code", "active", "created_by", "created_at"],
-            rows.Select(x => new object?[] { x.Id, x.BranchName, x.BranchCode, x.Active, x.CreatedBy, x.CreatedAt }));
+            ["id", "branch_name", "zone", "active", "created_by", "created_at"],
+            rows.Select(x => new object?[] { x.Id, x.BranchName, x.ZoneName, x.Active, x.CreatedBy, x.CreatedAt }));
     }
 
     public async Task<LaravelApiResponse> GetBranchAsync(ulong id, CancellationToken cancellationToken) =>
@@ -434,6 +434,7 @@ public sealed class MasterDataService : IMasterDataService
     public async Task<LaravelApiResponse> CreateBranchAsync(BranchRequestDto request, ulong? actorUserId, CancellationToken cancellationToken)
     {
         RequireValue(request.BranchName, "Branch name is required.");
+        await RequireZoneAsync(request.ZoneId, cancellationToken);
         await RequireUniqueBranchNameAsync(request.BranchName!, null, cancellationToken);
         return LaravelApiResponse.Success("branch", await _repository.CreateBranchAsync(request, actorUserId, cancellationToken), "Branch Store Successfully");
     }
@@ -442,6 +443,7 @@ public sealed class MasterDataService : IMasterDataService
     {
         if (await _repository.GetBranchAsync(id, cancellationToken) is null) throw NotFound("Branch not found");
         if (!string.IsNullOrWhiteSpace(request.BranchName)) await RequireUniqueBranchNameAsync(request.BranchName, id, cancellationToken);
+        await RequireZoneAsync(request.ZoneId, cancellationToken);
         var branch = await _repository.UpdateBranchAsync(id, request, actorUserId, cancellationToken);
         return LaravelApiResponse.Success("branch", branch ?? throw NotFound("Branch not found"), "Branch updated successfully");
     }
@@ -774,6 +776,13 @@ public sealed class MasterDataService : IMasterDataService
         {
             throw BadRequest("This pincode already exists for the selected city.");
         }
+    }
+
+    /// <summary>Every branch saved from the form has a zone.</summary>
+    private async Task RequireZoneAsync(ulong? zoneId, CancellationToken cancellationToken)
+    {
+        if (zoneId is null or 0) throw BadRequest("Zone is required.");
+        if (!await _repository.ZoneExistsAsync(zoneId.Value, cancellationToken)) throw BadRequest("Select a valid zone.");
     }
 
     private async Task RequireUniqueBranchNameAsync(string branchName, ulong? excludeId, CancellationToken cancellationToken)

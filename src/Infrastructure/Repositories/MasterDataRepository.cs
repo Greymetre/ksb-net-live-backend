@@ -1,3 +1,4 @@
+using System.Globalization;
 using Application.Common;
 using Application.DTOs.MasterData;
 using Application.Interfaces.Repositories;
@@ -668,16 +669,20 @@ public sealed class MasterDataRepository : IMasterDataRepository
 
     public async Task<IReadOnlyCollection<BranchDto>> GetBranchesAsync(string? search, CancellationToken cancellationToken)
     {
+        var zones = await ZoneNamesAsync(cancellationToken);
         var query = _dbContext.Branches.AsNoTracking().Where(x => x.DeletedAt == null);
         if (!string.IsNullOrWhiteSpace(search))
         {
             var normalized = search.Trim();
+            // A zone's name finds its branches: they hold that zone's id in branch_code.
+            var zoneCodes = zones.Where(zone => zone.Value.Contains(normalized, StringComparison.OrdinalIgnoreCase))
+                .Select(zone => zone.Key.ToString(CultureInfo.InvariantCulture)).ToList();
             query = query.Where(x => x.BranchName.Contains(normalized)
-                || (x.BranchCode != null && x.BranchCode.Contains(normalized))
+                || (x.BranchCode != null && zoneCodes.Contains(x.BranchCode.Trim()))
                 || _dbContext.Users.Any(user => user.Id == x.CreatedBy && user.Name.Contains(normalized)));
         }
 
-        return await query
+        var rows = await query
             .OrderByDescending(x => x.Id)
             .Take(MaxRows)
             .Select(x => new BranchDto
@@ -691,6 +696,8 @@ public sealed class MasterDataRepository : IMasterDataRepository
                 CreatedAt = x.CreatedAt
             })
             .ToListAsync(cancellationToken);
+        foreach (var row in rows) AttachZone(row, zones);
+        return rows;
     }
 
     public async Task<IReadOnlyCollection<BranchDto>> ExportBranchesAsync(CancellationToken cancellationToken) =>
@@ -698,7 +705,7 @@ public sealed class MasterDataRepository : IMasterDataRepository
 
     public async Task<BranchDto?> GetBranchAsync(ulong id, CancellationToken cancellationToken)
     {
-        return await _dbContext.Branches.AsNoTracking()
+        var row = await _dbContext.Branches.AsNoTracking()
             .Where(x => x.Id == id && x.DeletedAt == null)
             .Select(x => new BranchDto
             {
@@ -711,7 +718,41 @@ public sealed class MasterDataRepository : IMasterDataRepository
                 CreatedAt = x.CreatedAt
             })
             .FirstOrDefaultAsync(cancellationToken);
+        if (row is not null) AttachZone(row, await ZoneNamesAsync(cancellationToken));
+        return row;
     }
+
+    public async Task<bool> ZoneExistsAsync(ulong zoneId, CancellationToken cancellationToken) =>
+        await _dbContext.Divisions.AsNoTracking().AnyAsync(x => x.Id == zoneId && x.DeletedAt == null, cancellationToken);
+
+    /// <summary>
+    /// A branch's zone lives in the branch_code column: branch codes were not used anywhere, so
+    /// the zone was given that column rather than a new one, and no schema change was needed.
+    /// Only a whole number that is the id of a zone counts as a zone - the codes stored before
+    /// (mostly the branch's own name) read as no zone.
+    /// </summary>
+    public static ulong? BranchZoneId(string? branchCode, IReadOnlyDictionary<ulong, string> zones)
+    {
+        var text = branchCode?.Trim();
+        if (string.IsNullOrEmpty(text) || !text.All(char.IsAsciiDigit)) return null;
+        return ulong.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var id) && zones.ContainsKey(id) ? id : null;
+    }
+
+    private async Task<BranchDto> WithZoneAsync(BranchDto row, CancellationToken cancellationToken)
+    {
+        AttachZone(row, await ZoneNamesAsync(cancellationToken));
+        return row;
+    }
+
+    private static void AttachZone(BranchDto row, IReadOnlyDictionary<ulong, string> zones)
+    {
+        row.ZoneId = BranchZoneId(row.BranchCode, zones);
+        row.ZoneName = row.ZoneId is { } id ? zones[id] : null;
+    }
+
+    private async Task<IReadOnlyDictionary<ulong, string>> ZoneNamesAsync(CancellationToken cancellationToken) =>
+        await _dbContext.Divisions.AsNoTracking().Where(x => x.DeletedAt == null)
+            .ToDictionaryAsync(x => x.Id, x => x.DivisionName, cancellationToken);
 
     public async Task<bool> BranchNameExistsAsync(string branchName, ulong? excludeId, CancellationToken cancellationToken)
     {
@@ -728,7 +769,8 @@ public sealed class MasterDataRepository : IMasterDataRepository
         {
             Active = NormalizeActive(request.Active) ?? "Y",
             BranchName = request.BranchName!.Trim(),
-            BranchCode = NormalizeText(request.BranchCode),
+            // The zone id, in the column that held the unused branch code (see BranchZoneId).
+            BranchCode = request.ZoneId!.Value.ToString(CultureInfo.InvariantCulture),
             CreatedBy = actorUserId,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
@@ -736,7 +778,7 @@ public sealed class MasterDataRepository : IMasterDataRepository
 
         await _dbContext.Branches.AddAsync(branch, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
-        return ToBranchDto(branch);
+        return await WithZoneAsync(ToBranchDto(branch), cancellationToken);
     }
 
     public async Task<BranchDto?> UpdateBranchAsync(ulong id, BranchRequestDto request, ulong? actorUserId, CancellationToken cancellationToken)
@@ -745,14 +787,14 @@ public sealed class MasterDataRepository : IMasterDataRepository
         if (branch is null) return null;
 
         if (!string.IsNullOrWhiteSpace(request.BranchName)) branch.BranchName = request.BranchName.Trim();
-        if (request.BranchCode is not null) branch.BranchCode = NormalizeText(request.BranchCode);
+        if (request.ZoneId is { } zoneId) branch.BranchCode = zoneId.ToString(CultureInfo.InvariantCulture);
         var active = NormalizeActive(request.Active);
         if (active is not null) branch.Active = active;
         branch.UpdatedBy = actorUserId;
         branch.UpdatedAt = DateTime.UtcNow;
 
         await _dbContext.SaveChangesAsync(cancellationToken);
-        return ToBranchDto(branch);
+        return await WithZoneAsync(ToBranchDto(branch), cancellationToken);
     }
 
     public async Task<BranchDto?> SetBranchActiveAsync(ulong id, string? active, ulong? actorUserId, CancellationToken cancellationToken)

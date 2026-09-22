@@ -168,10 +168,10 @@ public sealed class ProductService : IProductService
     {
         var rows = await _repository.GetProductsAsync(segmentId, familyId, search, true, cancellationToken);
         return Workbook("products.xlsx",
-            ["product_id", "product_name", "product_code", "description", "family_id", "family", "segment_id", "segment", "mrp", "status"],
+            ["product_id", "product_name", "part_number", "description", "family_id", "family", "segment_id", "segment", "mrp", "status"],
             rows.Select(x => new object?[]
             {
-                x.Id, x.ProductName, x.ProductCode, x.Description, x.FamilyId, x.FamilyName ?? "-",
+                x.Id, x.ProductName, x.PartNo, x.Description, x.FamilyId, x.FamilyName ?? "-",
                 x.SegmentId, x.SegmentName ?? "-", x.Mrp, x.Active
             }));
     }
@@ -310,7 +310,7 @@ public sealed class ProductService : IProductService
         if (value is ExportHyperlink) return value;
         if (value is not string text || string.IsNullOrWhiteSpace(text)) return value;
         var normalized = Normalize(heading);
-        if (normalized is "id" or "segment_id" or "family_id" or "part_no" or "mrp" or "attachment" or "created_at") return value;
+        if (normalized is "id" or "segment_id" or "family_id" or "part_no" or "part_number" or "mrp" or "attachment" or "created_at") return value;
         return FirstCaps(text);
     }
     private static void SetCellValue(IXLCell cell, object? value)
