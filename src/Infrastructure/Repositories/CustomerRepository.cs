@@ -259,11 +259,11 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
         }
 
         if (filter.CustomerType.HasValue) entries = entries.Where(entry => entry.CustomerType == filter.CustomerType);
-        if (!string.IsNullOrWhiteSpace(filter.Active))
-        {
-            var active = NormalizeActive(filter.Active);
-            entries = entries.Where(entry => entry.Active == active);
-        }
+        // A customer switched off in the master is out of the KYC screen - both the tiles and
+        // the list - the same as everywhere else outside Customers Management itself. Asking
+        // for a particular Active value still answers exactly that.
+        var kycActive = string.IsNullOrWhiteSpace(filter.Active) ? "Y" : NormalizeActive(filter.Active);
+        entries = entries.Where(entry => entry.Active == kycActive);
 
         // The dealer filter answers "show me this dealer's retailers", so the dealer's own
         // record is not one of them.
