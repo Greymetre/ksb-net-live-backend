@@ -18,6 +18,5 @@ public interface ICustomerService
     Task<LaravelApiResponse> SetCustomerActiveAsync(ulong id, string? active, ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> DeleteCustomerAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
     Task<MasterDataFileDto> ExportCustomersAsync(CustomerListFilterDto filter, string baseUrl, CancellationToken cancellationToken);
-    Task<MasterDataFileDto> GetCustomerTemplateAsync(CancellationToken cancellationToken);
     Task<LaravelApiResponse> UploadCustomersAsync(Stream fileStream, ulong? actorUserId, CancellationToken cancellationToken);
 }

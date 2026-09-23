@@ -40,7 +40,6 @@ public static class PermissionCatalog
         new("customer.active", "Activate / Deactivate", "customer", "Master", "customers", "Customers Management", "active", 100, ["customer_active"], []),
         new("customer.export", "Export", "customer", "Master", "customers", "Customers Management", "export", 110, ["customer_download", "customers_report"], []),
         new("customer.import", "Import", "customer", "Master", "customers", "Customers Management", "import", 120, ["customer_upload"], []),
-        new("customer.template", "Download Template", "customer", "Master", "customers", "Customers Management", "template", 130, ["customer_template"], []),
         new("customer.approve", "Approve Retailer", "customer", "Master", "customers", "Customers Management", "approve", 140, ["retailer_approve"], []),
         new("customer.reject", "Reject Retailer", "customer", "Master", "customers", "Customers Management", "reject", 150, ["retailer_reject"], []),
         new("customer.pending", "Mark Retailer Pending", "customer", "Master", "customers", "Customers Management", "pending", 160, ["retailer_pending"], []),

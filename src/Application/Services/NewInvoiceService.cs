@@ -130,6 +130,9 @@ public sealed class NewInvoiceService : INewInvoiceService
     public async Task<LaravelApiResponse> GetDealersAsync(ulong? actorUserId, CancellationToken cancellationToken) =>
         LaravelApiResponse.Success("dealers", await _repository.GetDealerOptionsAsync(actorUserId, cancellationToken));
 
+    public async Task<LaravelApiResponse> GetAssignedUsersAsync(ulong? actorUserId, CancellationToken cancellationToken) =>
+        LaravelApiResponse.Success("users", await _repository.GetAssignedUserOptionsAsync(actorUserId, cancellationToken));
+
     /// <summary>The dealers one retailer is mapped to, so the invoice form can ask which one
     /// it is for - or simply show the answer when there is only one.</summary>
     public async Task<LaravelApiResponse> GetRetailerDealersAsync(ulong customerId, CancellationToken cancellationToken) =>

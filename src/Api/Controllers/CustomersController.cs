@@ -64,14 +64,6 @@ public sealed class CustomersController : ControllerBase
         return File(file.Content, file.ContentType, file.FileName);
     }
 
-    [RequirePermission("customer.template")]
-    [HttpGet("template")]
-    public async Task<IActionResult> CustomerTemplate(CancellationToken cancellationToken)
-    {
-        MasterDataFileDto file = await _customerService.GetCustomerTemplateAsync(cancellationToken);
-        return File(file.Content, file.ContentType, file.FileName);
-    }
-
     [RequirePermission("customer.import")]
     [HttpPost("upload")]
     [Consumes("multipart/form-data")]

@@ -134,6 +134,8 @@ public sealed class NewInvoiceFilterDto
     public IReadOnlyCollection<int>? ApprovalStatuses { get; set; }
     public ulong? BranchId { get; set; }
     public ulong? DivisionId { get; set; }
+    /// <summary>One employee: the invoices of the retailers assigned to them.</summary>
+    public ulong? AssignedUserId { get; set; }
     public DateTime? FromDate { get; set; }
     public DateTime? ToDate { get; set; }
     public string? Search { get; set; }

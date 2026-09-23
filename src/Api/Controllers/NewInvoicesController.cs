@@ -37,6 +37,7 @@ public sealed class NewInvoicesController : ControllerBase
         [FromQuery(Name = "scheme_id")] ulong? schemeId,
         [FromQuery(Name = "branch_id")] ulong? branchId,
         [FromQuery(Name = "zone_id")] ulong? zoneId,
+        [FromQuery(Name = "user_id")] ulong? userId,
         [FromQuery(Name = "dealer_id")] ulong? dealerId,
         [FromQuery(Name = "from_date")] DateTime? fromDate,
         [FromQuery(Name = "to_date")] DateTime? toDate,
@@ -51,6 +52,7 @@ public sealed class NewInvoicesController : ControllerBase
         filter.SchemeId ??= schemeId;
         filter.BranchId ??= branchId;
         filter.DivisionId ??= zoneId;
+        filter.AssignedUserId ??= userId;
         filter.DistributorCustomerId ??= dealerId;
         filter.FromDate ??= fromDate;
         filter.ToDate ??= toDate;
@@ -71,6 +73,7 @@ public sealed class NewInvoicesController : ControllerBase
         [FromQuery(Name = "scheme_id")] ulong? schemeId,
         [FromQuery(Name = "branch_id")] ulong? branchId,
         [FromQuery(Name = "zone_id")] ulong? zoneId,
+        [FromQuery(Name = "user_id")] ulong? userId,
         [FromQuery(Name = "dealer_id")] ulong? dealerId,
         [FromQuery(Name = "from_date")] DateTime? fromDate,
         [FromQuery(Name = "to_date")] DateTime? toDate,
@@ -83,6 +86,7 @@ public sealed class NewInvoicesController : ControllerBase
         filter.SchemeId ??= schemeId;
         filter.BranchId ??= branchId;
         filter.DivisionId ??= zoneId;
+        filter.AssignedUserId ??= userId;
         filter.DistributorCustomerId ??= dealerId;
         filter.FromDate ??= fromDate;
         filter.ToDate ??= toDate;
@@ -94,6 +98,14 @@ public sealed class NewInvoicesController : ControllerBase
     public async Task<IActionResult> GetDealers(CancellationToken cancellationToken)
     {
         var response = await _newInvoiceService.GetDealersAsync(CurrentUserId(), cancellationToken);
+        return Ok(response);
+    }
+
+    /// <summary>The User filter's options - dropdown values only, so no permission gate.</summary>
+    [HttpGet("users")]
+    public async Task<IActionResult> GetAssignedUsers(CancellationToken cancellationToken)
+    {
+        var response = await _newInvoiceService.GetAssignedUsersAsync(CurrentUserId(), cancellationToken);
         return Ok(response);
     }
 

@@ -87,6 +87,59 @@ public sealed class CustomerService : ICustomerService
     // owner_photo left the export sheet but an older file may still carry it, so import keeps reading it.
     private static readonly string[] ImportColumns = DistributorExportColumns.Concat(RetailerExportColumns).Append("owner_photo").Distinct().ToArray();
 
+    // The headings the two export sheets carry, read back as the fields they came from. Both
+    // sheets are written from the definitions above, so a file exported from Customers
+    // Management goes straight back in: "Mobile Number-1" is the mobile again, "Address" the
+    // address, "Belt/Area/Market Name" that field - none of which the plain heading
+    // normaliser could match ("mobile_number-1", "address", "belt/area/market_name").
+    //
+    // What the sheet only shows is left out: a review status (approval and the KYC ones),
+    // who created or approved the row and when, and the display names of things the sheet
+    // also carries as an ID (dealer, country, state, district, city, beat, employees). Those
+    // read as they always did, match no import column, and are ignored - an import moves data,
+    // it does not hand out approvals, and an ID says exactly which master row is meant.
+    private const string ExportOnlyPrefix = "export_only_";
+
+    private static readonly HashSet<string> DerivedExportKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "status", "branch_name", "employee_id_name", "employee_designations", "reporting_managers",
+        "distributor_name_name", "agri_distributor_name", "country_name", "state_name", "district_name",
+        "city_name", "beat_name", "billing_city_name", "billing_district_name", "billing_state_name",
+        "billing_country_name", "billing_pincode_name", "created_at", "created_at_datetime",
+        "updated_at_datetime", "created_by_name", "approve_reject_by_name", "zone",
+        KycGstStatusColumn, KycPanStatusColumn, KycAadharStatusColumn, KycBankStatusColumn, KycOverallStatusColumn
+    };
+
+    private static readonly IReadOnlyDictionary<string, string> ExportHeadingKeys = BuildExportHeadingKeys();
+
+    private static Dictionary<string, string> BuildExportHeadingKeys()
+    {
+        var columns = RetailerExportDefinition.Concat(DistributorExportDefinition)
+            .Select(x => (x.Key, Normalized: NormalizeHeading(x.Heading), Derived: DerivedExportKeys.Contains(x.Key)))
+            .ToList();
+        // A heading that already reads as a field of its own stays that field: the retailer
+        // sheet's "Shop Name" is shop_name, and the dealer sheet's own "Shop Name" (the legal
+        // name) is moved by the dealer branch of the import, which knows the row is a dealer.
+        var readsAsItself = columns.Where(x => !x.Derived && x.Normalized == x.Key).Select(x => x.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, normalized, derived) in columns)
+        {
+            // A column the sheet only shows is parked under a name no import column has, so it
+            // is ignored AND cannot take the place of the field it displays: "Billing Pincode"
+            // is the pincode's name, "Billing Pincode ID" the pincode itself.
+            if (derived)
+            {
+                map[normalized] = ExportOnlyPrefix + key;
+                continue;
+            }
+            if (normalized == key || readsAsItself.Contains(normalized)) continue;
+            map.TryAdd(normalized, key);
+        }
+        return map;
+    }
+
     private static readonly HashSet<string> PreserveRawColumns = new(StringComparer.OrdinalIgnoreCase)
     {
         "id", "mobile", "mobile_numbers", "email", "customer_code", "contact_number", "alternate_mobile", "whatsapp_number",
@@ -247,9 +300,6 @@ public sealed class CustomerService : ICustomerService
             rows.Select(customer => ToExportRow(customer, columns, baseUrl)));
     }
 
-    public Task<MasterDataFileDto> GetCustomerTemplateAsync(CancellationToken cancellationToken) =>
-        Task.FromResult(CreateWorkbook("customers-template.xlsx", ImportColumns.Where(x => x != "id").ToArray(), []));
-
     public async Task<LaravelApiResponse> UploadCustomersAsync(Stream fileStream, ulong? actorUserId, CancellationToken cancellationToken)
     {
         var result = await ImportRowsAsync(fileStream, async row =>
@@ -264,6 +314,20 @@ public sealed class CustomerService : ICustomerService
             SetField(customFields, "billing_state", row.Value("billing_state_id"));
             SetField(customFields, "billing_country", row.Value("billing_country_id"));
             SetField(customFields, "billing_pincode", row.Value("billing_pincode_id"));
+
+            // The two sheets name the same address differently: the dealer sheet heads it
+            // "Billing Address", the retailer sheet "Address". Keep every spelling of it in
+            // step, or an update would merge the new one in beside the stored old one and the
+            // address table would keep reading the old.
+            var addressLine = FirstNonBlank(ReadField(customFields, "address_line"), ReadField(customFields, "billing_address"));
+            if (row.HasHeading("billing_address")) addressLine = FirstNonBlank(row.Value("billing_address"), addressLine);
+            if (row.HasHeading("address_line")) addressLine = FirstNonBlank(row.Value("address_line"), addressLine);
+            if (!string.IsNullOrWhiteSpace(addressLine))
+            {
+                SetField(customFields, "address_line", addressLine);
+                SetField(customFields, "address1", addressLine);
+                SetField(customFields, "billing_address", addressLine);
+            }
 
             var customerType = row.CustomerType("customer_type")
                 ?? row.CustomerType("type")
@@ -308,13 +372,17 @@ public sealed class CustomerService : ICustomerService
             var request = new CustomerRequestDto
             {
                 CustomerType = customerType,
-                Name = FirstNonBlank(row.Value("name"), row.Value("legal_name"), row.Value("trade_name"), row.Value("shop_name"), row.Value("owner_name")),
+                Name = FirstNonBlank(row.Value("name"), ReadField(customFields, "legal_name"), ReadField(customFields, "shop_name"),
+                    row.Value("trade_name"), row.Value("owner_name")),
                 Mobile = FirstNonBlank(row.Value("mobile"), row.Value("mobile_number"), row.Value("mobile_number_1"), row.Value("mobile_1")),
                 Email = row.Value("email"),
                 // On retailer sheets distributor_code is the parent dealer's code,
                 // not the retailer's own, so only dealers may fall back to it.
                 CustomerCode = FirstNonBlank(row.Value("customer_code"), customerType == 1 ? row.Value("distributor_code") : null),
-                ContactNumber = FirstNonBlank(row.Value("contact_number"), row.Value("whatsapp_number"), row.Value("mobile_number_2"), row.Value("mobile_2")),
+                // The dealer sheet calls the second number "Alternate Mobile", the retailer sheet
+                // "Mobile Number-2"; both are the one the customer record keeps beside the mobile.
+                ContactNumber = FirstNonBlank(row.Value("contact_number"), row.Value("whatsapp_number"),
+                    row.Value("mobile_number_2"), row.Value("mobile_2"), row.Value("alternate_mobile")),
                 Active = FirstNonBlank(row.Value("active"), row.Value("business_status")),
                 CustomFields = customFields
             };
@@ -766,6 +834,14 @@ public sealed class CustomerService : ICustomerService
         return new MasterDataImportResultDto { TotalRows = totalRows, ImportedRows = importedRows, UpdatedRows = updatedRows, FailedRows = errors.Count, Errors = errors };
     }
 
+    /// <summary>The field a heading stands for: an export heading reads as the field it was
+    /// written from, anything else as its plain normalised form.</summary>
+    private static string HeadingKey(string heading)
+    {
+        var normalized = NormalizeHeading(heading);
+        return ExportHeadingKeys.TryGetValue(normalized, out var key) ? key : normalized;
+    }
+
     private static string NormalizeHeading(string heading) =>
         heading.Trim()
             .ToLowerInvariant()
@@ -783,7 +859,7 @@ public sealed class CustomerService : ICustomerService
         var headings = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         foreach (var cell in headerRow.CellsUsed())
         {
-            var key = NormalizeHeading(cell.GetString());
+            var key = HeadingKey(cell.GetString());
             if (string.IsNullOrWhiteSpace(key)) continue;
 
             if (!headings.TryAdd(key, cell.Address.ColumnNumber))
@@ -849,12 +925,12 @@ public sealed class CustomerService : ICustomerService
 
         public string? Value(string heading)
         {
-            return _headings.TryGetValue(NormalizeHeading(heading), out var column)
+            return _headings.TryGetValue(HeadingKey(heading), out var column)
                 ? NormalizeText(_row.Cell(column).GetFormattedString())
                 : null;
         }
 
-        public bool HasHeading(string heading) => _headings.ContainsKey(NormalizeHeading(heading));
+        public bool HasHeading(string heading) => _headings.ContainsKey(HeadingKey(heading));
 
         public ulong? ULong(string heading)
         {

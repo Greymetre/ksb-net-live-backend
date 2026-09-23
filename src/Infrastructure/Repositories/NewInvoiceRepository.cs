@@ -216,6 +216,22 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
             .ToListAsync(cancellationToken);
     }
 
+    /// <summary>The employees the invoice list can be filtered by: the ones inside the
+    /// caller's own hierarchy, so the filter offers only people whose invoices they may see.
+    /// A dealer login has no such list - it sees its own retailers' invoices and nothing else.</summary>
+    public async Task<IReadOnlyCollection<DealerOptionDto>> GetAssignedUserOptionsAsync(ulong? actorUserId, CancellationToken cancellationToken)
+    {
+        if (await GetDistributorCustomerIdAsync(actorUserId, cancellationToken) is not null) return [];
+        var visibleUserIds = await ReportingVisibility.GetVisibleUserIdsAsync(_dbContext, actorUserId, cancellationToken);
+        if (visibleUserIds.Count == 0) return [];
+        var ids = visibleUserIds.ToArray();
+        return await _dbContext.Users.AsNoTracking()
+            .Where(x => ids.Contains(x.Id) && x.Active == "Y" && !x.IsDeleted && x.DeletedAt == null)
+            .OrderBy(x => x.Name)
+            .Select(x => new DealerOptionDto { Id = x.Id, Name = x.Name })
+            .ToListAsync(cancellationToken);
+    }
+
     /// <summary>The schemes that apply to the retailers this user can reach.
     ///
     /// A scheme is targeted at a customer type and at one area - all of India, a branch, a
@@ -740,6 +756,15 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         {
             var employeeIds = _dbContext.Users.AsNoTracking()
                 .Where(x => x.DivisionId == filter.DivisionId.Value)
+                .Select(x => x.Id);
+            query = ApplyAssignedEmployeeFilter(query, employeeIds);
+        }
+        if (filter.AssignedUserId.HasValue)
+        {
+            // The invoices of the retailers this employee is assigned to - the same assignment
+            // the zone and branch filters read, narrowed to one person.
+            var employeeIds = _dbContext.Users.AsNoTracking()
+                .Where(x => x.Id == filter.AssignedUserId.Value)
                 .Select(x => x.Id);
             query = ApplyAssignedEmployeeFilter(query, employeeIds);
         }

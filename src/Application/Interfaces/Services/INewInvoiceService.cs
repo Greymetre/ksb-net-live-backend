@@ -12,6 +12,7 @@ public interface INewInvoiceService
     Task<LaravelApiResponse> GetRetailersAsync(string? search, ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> GetRetailersAsync(string? search, ulong? actorUserId, int page, int pageSize, CancellationToken cancellationToken);
     Task<LaravelApiResponse> GetDealersAsync(ulong? actorUserId, CancellationToken cancellationToken);
+    Task<LaravelApiResponse> GetAssignedUsersAsync(ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> GetRetailerDealersAsync(ulong customerId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> GetSchemeOptionsAsync(ulong customerId, DateTime? invoiceDate, CancellationToken cancellationToken);
     Task<LaravelApiResponse> GetSchemeFilterOptionsAsync(CancellationToken cancellationToken);
