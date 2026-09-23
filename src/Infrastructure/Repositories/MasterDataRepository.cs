@@ -738,6 +738,20 @@ public sealed class MasterDataRepository : IMasterDataRepository
         return ulong.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out var id) && zones.ContainsKey(id) ? id : null;
     }
 
+    /// <summary>Each branch's zone, for the branch dropdowns that other screens build
+    /// themselves. A branch without a zone (see BranchZoneId) is simply not in the map.</summary>
+    public static async Task<IReadOnlyDictionary<ulong, ulong>> BranchZonesAsync(AppDbContext dbContext, CancellationToken cancellationToken)
+    {
+        var zones = await dbContext.Divisions.AsNoTracking().Where(x => x.DeletedAt == null)
+            .ToDictionaryAsync(x => x.Id, x => x.DivisionName, cancellationToken);
+        var branches = await dbContext.Branches.AsNoTracking().Where(x => x.DeletedAt == null)
+            .Select(x => new { x.Id, x.BranchCode }).ToListAsync(cancellationToken);
+        var map = new Dictionary<ulong, ulong>();
+        foreach (var branch in branches)
+            if (BranchZoneId(branch.BranchCode, zones) is { } zoneId) map[branch.Id] = zoneId;
+        return map;
+    }
+
     private async Task<BranchDto> WithZoneAsync(BranchDto row, CancellationToken cancellationToken)
     {
         AttachZone(row, await ZoneNamesAsync(cancellationToken));

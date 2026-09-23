@@ -4,6 +4,7 @@ using ClosedXML.Excel;
 using Application.Interfaces.Repositories;
 using Domain.Entities;
 using Infrastructure.Data;
+using Infrastructure.Repositories;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -46,8 +47,10 @@ public sealed class PromotionalActivityManagementController : ControllerBase
         var users = await _db.Users.AsNoTracking().Where(x => ids.Contains(x.Id)).OrderBy(x => x.Name)
             .Select(x => new { id = x.Id, name = x.Name, employee_code = x.EmployeeCodes }).ToListAsync(ct);
         var branchIds = await activityUsers.Where(x => x.BranchId != null).Select(x => x.BranchId!.Value).Distinct().ToListAsync(ct);
-        var branches = await _db.Branches.AsNoTracking().Where(x => branchIds.Contains((long)x.Id)).OrderBy(x => x.BranchName)
-            .Select(x => new { id = x.Id, name = x.BranchName }).ToListAsync(ct);
+        var branchZones = await _db.BranchZoneMapAsync(ct);
+        var branches = (await _db.Branches.AsNoTracking().Where(x => branchIds.Contains((long)x.Id)).OrderBy(x => x.BranchName)
+                .Select(x => new { id = x.Id, name = x.BranchName }).ToListAsync(ct))
+            .Select(x => new { x.id, x.name, zone_id = branchZones.TryGetValue(x.id, out var zoneId) ? zoneId : (ulong?)null }).ToList();
         var zones = (await _db.Divisions.AsNoTracking().Select(x => new { id = x.Id, name = x.DivisionName }).ToListAsync(ct))
             .OrderBy(x => Domain.Services.ZoneOrder.Rank(x.name)).ThenBy(x => x.name).ToList();
         return Ok(new

@@ -4,6 +4,7 @@ using Api.Filters;
 using Application.Interfaces.Repositories;
 using ClosedXML.Excel;
 using Infrastructure.Data;
+using Infrastructure.Repositories;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -41,7 +42,9 @@ public sealed class CheckinReportsController : ControllerBase
             .OrderBy(x => x.Name).Select(x => new { x.Id, x.Name, x.Mobile }).ToListAsync(ct);
         var divisions = (await _db.Divisions.AsNoTracking().Where(x => x.Active == "Y").Select(x => new { x.Id, name = x.DivisionName }).ToListAsync(ct))
             .ByZone(x => x.name).ToList();
-        var branches = await _db.Branches.AsNoTracking().Where(x => x.Active == "Y").OrderBy(x => x.BranchName).Select(x => new { x.Id, name = x.BranchName }).ToListAsync(ct);
+        var branchZones = await _db.BranchZoneMapAsync(ct);
+        var branches = (await _db.Branches.AsNoTracking().Where(x => x.Active == "Y").OrderBy(x => x.BranchName).Select(x => new { x.Id, name = x.BranchName }).ToListAsync(ct))
+            .Select(x => new { x.Id, x.name, zone_id = branchZones.TryGetValue(x.Id, out var zoneId) ? zoneId : (ulong?)null }).ToList();
         var designations = await _db.Designations.AsNoTracking().Where(x => x.Active == "Y").OrderBy(x => x.DesignationName).Select(x => new { x.Id, name = x.DesignationName }).ToListAsync(ct);
         return Ok(new { users, divisions, branches, designations });
     }

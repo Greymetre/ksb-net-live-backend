@@ -226,6 +226,10 @@ public sealed class OptionDto
 {
     public ulong Id { get; set; }
     public string Name { get; set; } = string.Empty;
+    /// <summary>Branch options only: the branch's zone, so a screen filtered on a zone can
+    /// offer that zone's branches. Null on every other option list, and on a branch that has
+    /// no zone yet.</summary>
+    public ulong? ZoneId { get; set; }
 }
 
 public sealed class UserExcelRowDto

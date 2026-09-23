@@ -87,7 +87,7 @@ public sealed class FieldKonnectCustomerController : ControllerBase
             var rows = await QueryCustomerRows(new CustomerRowFilter
             {
                 Search = query.Search,
-                ActiveOnly = false,
+                ActiveOnly = true,
                 DistributorOnly = true,
                 VisibleUserIds = isAdmin ? null : visibleUsers,
                 PageSize = query.PageSize,
@@ -135,6 +135,7 @@ public sealed class FieldKonnectCustomerController : ControllerBase
             var rows = await QueryCustomerRows(new CustomerRowFilter
             {
                 ExecutiveUserIds = visibleUsers,
+                ActiveOnly = true,
                 PageSize = query.PageSize,
                 Latest = true
             }, cancellationToken);

@@ -421,7 +421,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         if (dealerIds.Count == 0) return [];
 
         var dealers = await _dbContext.Customers.AsNoTracking()
-            .Where(x => dealerIds.Contains(x.Id) && x.CustomerType == DistributorCustomerType)
+            .Where(x => dealerIds.Contains(x.Id) && x.CustomerType == DistributorCustomerType && x.Active == "Y")
             .ToListAsync(cancellationToken);
 
         // Kept in the order the retailer lists them, so the domestic dealer leads.

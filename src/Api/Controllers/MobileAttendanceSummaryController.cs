@@ -65,7 +65,7 @@ public sealed class MobileAttendanceSummaryController : ControllerBase
         var approvedYear = await approvedBase.CountAsync(x => x.CreatedAt >= yearStart && x.CreatedAt < yearEnd, ct);
         var orderedBuyerIds = await _db.Orders.AsNoTracking().Where(x => x.OrderDate >= yearStart && x.OrderDate < yearEnd && x.BuyerId.HasValue)
             .Select(x => x.BuyerId!.Value).Distinct().ToListAsync(ct);
-        var secondaryWithOrder = await _db.Customers.AsNoTracking().CountAsync(x => x.CreatedBy.HasValue && visibleWithActor.Contains(x.CreatedBy.Value) && orderedBuyerIds.Contains(x.Id), ct);
+        var secondaryWithOrder = await _db.Customers.AsNoTracking().CountAsync(x => x.Active == "Y" && x.CreatedBy.HasValue && visibleWithActor.Contains(x.CreatedBy.Value) && orderedBuyerIds.Contains(x.Id), ct);
 
         var data = new Dictionary<string, object?>
         {

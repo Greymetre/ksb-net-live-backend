@@ -136,10 +136,7 @@ public sealed class ExpenseRepository : IExpenseRepository
                 .Select(x => new ExpenseUserOptionDto { Id = x.Id, Name = x.Name, Payroll = x.Payroll })
                 .ToListAsync(cancellationToken),
             ExpenseTypes = (await new ExpenseTypeRepository(_dbContext).GetExpenseTypesAsync(null, cancellationToken)).Where(x => x.Active == "Y").ToArray(),
-            Branches = await _dbContext.Branches.AsNoTracking()
-                .OrderBy(x => x.BranchName)
-                .Select(x => new OptionDto { Id = x.Id, Name = x.BranchName })
-                .ToListAsync(cancellationToken),
+            Branches = await _dbContext.BranchOptionsAsync(cancellationToken),
             Divisions = await _dbContext.Divisions.AsNoTracking()
                 .OrderBy(x => x.DivisionName)
                 .Select(x => new OptionDto { Id = x.Id, Name = x.DivisionName })

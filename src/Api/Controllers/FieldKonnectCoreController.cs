@@ -91,8 +91,8 @@ public sealed class FieldKonnectCoreController : ControllerBase
                     ("@schedule_id", schedule.Id));
             }
 
-            var assignCounter = await _dbContext.Customers.CountAsync(x => x.ExecutiveId == userId, cancellationToken);
-            var newAddedCounter = await _dbContext.Customers.CountAsync(x => x.CreatedBy == userId && x.CreatedAt >= fromDate && x.CreatedAt < toExclusive, cancellationToken);
+            var assignCounter = await _dbContext.Customers.CountAsync(x => x.Active == "Y" && x.ExecutiveId == userId, cancellationToken);
+            var newAddedCounter = await _dbContext.Customers.CountAsync(x => x.Active == "Y" && x.CreatedBy == userId && x.CreatedAt >= fromDate && x.CreatedAt < toExclusive, cancellationToken);
             var activeCounter = orders.Select(x => x.BuyerId).Where(x => x.HasValue).Distinct().Count();
 
             var workings = await _dbContext.Attendances

@@ -5,6 +5,7 @@ using System.Text.Json;
 using Api.Filters;
 using Application.Interfaces.Repositories;
 using Infrastructure.Data;
+using Infrastructure.Repositories;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -47,7 +48,10 @@ WHERE"), cancellationToken);
             var row = group.First();
             return new { id = group.Key, name = Str(row, "name"), branch_id=Obj(row,"branch_id"), division_id=Obj(row,"division_id"), department_id=Obj(row,"department_id") };
         }).ToList();
-        var branches = rows.Where(x=>Obj(x,"branch_id_value") is not null).GroupBy(x=>ULong(x,"branch_id_value")).Select(g=>new { id=g.Key, name=Str(g.First(),"branch_name") }).OrderBy(x=>x.name).ToList();
+        var branchZones = await _dbContext.BranchZoneMapAsync(cancellationToken);
+        var branches = rows.Where(x=>Obj(x,"branch_id_value") is not null).GroupBy(x=>ULong(x,"branch_id_value"))
+            .Select(g=>new { id=g.Key, name=Str(g.First(),"branch_name"), zone_id = branchZones.TryGetValue(g.Key, out var zoneId) ? zoneId : (ulong?)null })
+            .OrderBy(x=>x.name).ToList();
         var divisions = rows.Where(x=>Obj(x,"division_id_value") is not null).GroupBy(x=>ULong(x,"division_id_value")).Select(g=>new { id=g.Key, name=Str(g.First(),"division_name") }).OrderBy(x=>x.name).ToList();
         var departments = rows.Where(x=>Obj(x,"department_id_value") is not null).GroupBy(x=>ULong(x,"department_id_value")).Select(g=>new { id=g.Key, name=Str(g.First(),"department_name") }).OrderBy(x=>x.name).ToList();
         return Ok(new { users, branches, divisions, departments });
@@ -128,7 +132,7 @@ OFFSET {offset} ROWS FETCH NEXT {pageSize} ROWS ONLY", cancellationToken);
         if (ids.Count == 0) return Ok(new { customers = Array.Empty<object>(), customer_types = Array.Empty<object>() });
 
         var customers = await _dbContext.Customers.AsNoTracking()
-            .Where(x => ids.Contains(x.Id) && x.DeletedAt == null)
+            .Where(x => ids.Contains(x.Id) && x.DeletedAt == null && x.Active == "Y")
             .Select(x => new { id = x.Id, name = x.Name, mobile = x.Mobile, customer_type = x.CustomerType })
             .OrderBy(x => x.name)
             .ToListAsync(cancellationToken);
@@ -165,7 +169,7 @@ WHERE deleted_at IS NULL AND id IN ({string.Join(',', typeIds)}) ORDER BY custom
         var typeClause = customerType.HasValue ? $" AND c.customertype = {customerType.Value}" : string.Empty;
 
         var total = await QueryScalarLong($@"SELECT COUNT(*) FROM (SELECT m.customer_id
-FROM mobile_user_login_details m INNER JOIN customers c ON c.id=m.customer_id AND c.deleted_at IS NULL
+FROM mobile_user_login_details m INNER JOIN customers c ON c.id=m.customer_id AND c.deleted_at IS NULL AND c.active = 'Y'
 WHERE m.app='{CustomerAppKey}' AND m.customer_id IN ({idCsv}){typeClause} GROUP BY m.customer_id) q", cancellationToken);
 
         var offset = (page - 1) * pageSize;
@@ -175,7 +179,7 @@ m.app_version, m.device_name, m.device_type, m.unique_id, m.first_login_date,
 m.last_login_date, m.login_status, m.login_at,
 ROW_NUMBER() OVER (PARTITION BY m.customer_id ORDER BY COALESCE(m.updated_at,m.last_login_date,m.created_at) DESC,m.id DESC) AS rn
 FROM mobile_user_login_details m
-INNER JOIN customers c ON c.id=m.customer_id AND c.deleted_at IS NULL
+INNER JOIN customers c ON c.id=m.customer_id AND c.deleted_at IS NULL AND c.active = 'Y'
 LEFT JOIN customer_types ct ON ct.id=c.customertype AND ct.deleted_at IS NULL
 WHERE m.app='{CustomerAppKey}' AND m.customer_id IN ({idCsv}){typeClause})
 SELECT * FROM latest WHERE rn=1 ORDER BY COALESCE(login_at,last_login_date,first_login_date) DESC,id DESC
@@ -413,9 +417,9 @@ a.attendance_status,
 a.working_type,
 	ru.name AS reporting_manager_name,
 	ru.mobile AS reporting_manager_mobile,
-	(SELECT COUNT(*) FROM customers c WHERE c.deleted_at IS NULL AND c.created_by = a.user_id AND CAST(c.created_at AS date) = a.punchin_date) AS total_customers,
-	(SELECT COUNT(*) FROM customers c LEFT JOIN customer_types ct ON ct.id = c.customertype AND ct.deleted_at IS NULL WHERE c.deleted_at IS NULL AND c.created_by = a.user_id AND CAST(c.created_at AS date) = a.punchin_date AND NOT (c.customertype IN (1,3) OR COALESCE(ct.customertype_name, '') LIKE '%Distributor%' OR COALESCE(ct.type_name, '') LIKE '%Distributor%')) AS total_secondary_customers,
-	(SELECT COUNT(*) FROM customers c LEFT JOIN customer_types ct ON ct.id = c.customertype AND ct.deleted_at IS NULL WHERE c.deleted_at IS NULL AND c.created_by = a.user_id AND CAST(c.created_at AS date) = a.punchin_date AND (c.customertype IN (1,3) OR COALESCE(ct.customertype_name, '') LIKE '%Distributor%' OR COALESCE(ct.type_name, '') LIKE '%Distributor%')) AS total_master_distributors,
+	(SELECT COUNT(*) FROM customers c WHERE c.deleted_at IS NULL AND c.active = 'Y' AND c.created_by = a.user_id AND CAST(c.created_at AS date) = a.punchin_date) AS total_customers,
+	(SELECT COUNT(*) FROM customers c LEFT JOIN customer_types ct ON ct.id = c.customertype AND ct.deleted_at IS NULL WHERE c.deleted_at IS NULL AND c.active = 'Y' AND c.created_by = a.user_id AND CAST(c.created_at AS date) = a.punchin_date AND NOT (c.customertype IN (1,3) OR COALESCE(ct.customertype_name, '') LIKE '%Distributor%' OR COALESCE(ct.type_name, '') LIKE '%Distributor%')) AS total_secondary_customers,
+	(SELECT COUNT(*) FROM customers c LEFT JOIN customer_types ct ON ct.id = c.customertype AND ct.deleted_at IS NULL WHERE c.deleted_at IS NULL AND c.active = 'Y' AND c.created_by = a.user_id AND CAST(c.created_at AS date) = a.punchin_date AND (c.customertype IN (1,3) OR COALESCE(ct.customertype_name, '') LIKE '%Distributor%' OR COALESCE(ct.type_name, '') LIKE '%Distributor%')) AS total_master_distributors,
 	(SELECT COUNT(*) FROM orders o WHERE o.deleted_at IS NULL AND COALESCE(o.executive_id, o.created_by) = a.user_id AND COALESCE(o.order_date, CAST(o.created_at AS date)) = a.punchin_date) AS total_orders,
 	(SELECT COALESCE(SUM(COALESCE(NULLIF(o.grand_total, 0), NULLIF(o.total_amount, 0), NULLIF(o.sub_total, 0), 0)), 0) FROM orders o WHERE o.deleted_at IS NULL AND COALESCE(o.executive_id, o.created_by) = a.user_id AND COALESCE(o.order_date, CAST(o.created_at AS date)) = a.punchin_date) AS total_order_value,
 	(SELECT COALESCE(SUM(od.quantity), 0) FROM orders o INNER JOIN order_details od ON od.order_id = o.id WHERE o.deleted_at IS NULL AND COALESCE(o.executive_id, o.created_by) = a.user_id AND COALESCE(o.order_date, CAST(o.created_at AS date)) = a.punchin_date) AS total_quantity,
@@ -849,8 +853,8 @@ ORDER BY u.name ASC", cancellationToken);
         var userCsv = string.Join(',', userIds);
         var row = (await QueryRows($@"SELECT
 (SELECT COUNT(*) FROM users u WHERE u.deleted_at IS NULL AND u.id IN ({userCsv})) AS total_users,
-(SELECT COUNT(*) FROM customers c LEFT JOIN customer_types ct ON ct.id = c.customertype AND ct.deleted_at IS NULL WHERE c.deleted_at IS NULL AND c.created_by IN ({userCsv}) AND CAST(c.created_at AS date) BETWEEN @start_date AND @end_date AND NOT (c.customertype IN (1,3) OR COALESCE(ct.customertype_name, '') LIKE '%Distributor%' OR COALESCE(ct.type_name, '') LIKE '%Distributor%')) AS total_secondary_customers,
-	(SELECT COUNT(*) FROM customers c LEFT JOIN customer_types ct ON ct.id = c.customertype AND ct.deleted_at IS NULL WHERE c.deleted_at IS NULL AND c.created_by IN ({userCsv}) AND CAST(c.created_at AS date) BETWEEN @start_date AND @end_date AND (c.customertype IN (1,3) OR COALESCE(ct.customertype_name, '') LIKE '%Distributor%' OR COALESCE(ct.type_name, '') LIKE '%Distributor%')) AS total_master_distributors,
+(SELECT COUNT(*) FROM customers c LEFT JOIN customer_types ct ON ct.id = c.customertype AND ct.deleted_at IS NULL WHERE c.deleted_at IS NULL AND c.active = 'Y' AND c.created_by IN ({userCsv}) AND CAST(c.created_at AS date) BETWEEN @start_date AND @end_date AND NOT (c.customertype IN (1,3) OR COALESCE(ct.customertype_name, '') LIKE '%Distributor%' OR COALESCE(ct.type_name, '') LIKE '%Distributor%')) AS total_secondary_customers,
+	(SELECT COUNT(*) FROM customers c LEFT JOIN customer_types ct ON ct.id = c.customertype AND ct.deleted_at IS NULL WHERE c.deleted_at IS NULL AND c.active = 'Y' AND c.created_by IN ({userCsv}) AND CAST(c.created_at AS date) BETWEEN @start_date AND @end_date AND (c.customertype IN (1,3) OR COALESCE(ct.customertype_name, '') LIKE '%Distributor%' OR COALESCE(ct.type_name, '') LIKE '%Distributor%')) AS total_master_distributors,
 	(SELECT COUNT(*) FROM orders o WHERE o.deleted_at IS NULL AND COALESCE(o.executive_id, o.created_by) IN ({userCsv}) AND COALESCE(o.order_date, CAST(o.created_at AS date)) BETWEEN @start_date AND @end_date) AS total_orders,
 	(SELECT COALESCE(SUM(COALESCE(NULLIF(o.grand_total, 0), NULLIF(o.total_amount, 0), NULLIF(o.sub_total, 0), 0)), 0) FROM orders o WHERE o.deleted_at IS NULL AND COALESCE(o.executive_id, o.created_by) IN ({userCsv}) AND COALESCE(o.order_date, CAST(o.created_at AS date)) BETWEEN @start_date AND @end_date) AS total_order_value,
 	(SELECT COALESCE(SUM(od.quantity), 0) FROM orders o INNER JOIN order_details od ON od.order_id = o.id WHERE o.deleted_at IS NULL AND COALESCE(o.executive_id, o.created_by) IN ({userCsv}) AND COALESCE(o.order_date, CAST(o.created_at AS date)) BETWEEN @start_date AND @end_date) AS total_quantity,

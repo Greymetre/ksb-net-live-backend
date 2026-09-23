@@ -96,6 +96,7 @@ public sealed class UserRepository : IUserRepository
             .OrderBy(x => x.BranchName)
             .Select(x => new OptionDto { Id = x.Id, Name = x.BranchName })
             .ToListAsync(cancellationToken);
+        await _dbContext.AttachBranchZonesAsync(branches, cancellationToken);
 
         var designations = await _dbContext.Designations.AsNoTracking()
             .Where(x => x.Active == "Y")

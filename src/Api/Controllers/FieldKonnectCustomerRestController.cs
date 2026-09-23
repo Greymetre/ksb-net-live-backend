@@ -404,16 +404,16 @@ ORDER BY page.created_at DESC, page.id DESC", cancellationToken, parameters.ToAr
             var rows = await QueryRows($@"SELECT bs.id AS beatscheduleid, bs.beat_id,
 COALESCE(b.beat_name, '') AS beat_name, COALESCE(b.description, '') AS description,
 bs.beat_date,
-(SELECT COUNT_BIG(*) FROM beat_customers bc INNER JOIN customers c ON c.id = bc.customer_id WHERE bc.beat_id = bs.beat_id AND c.deleted_at IS NULL) AS total_customers,
+(SELECT COUNT_BIG(*) FROM beat_customers bc INNER JOIN customers c ON c.id = bc.customer_id WHERE bc.beat_id = bs.beat_id AND c.deleted_at IS NULL AND c.active = 'Y') AS total_customers,
 (SELECT COUNT_BIG(DISTINCT ci.entity_id) FROM check_in ci
  WHERE ci.user_id = bs.user_id AND ci.deleted_at IS NULL
  AND ci.checkin_date = CAST(GETDATE() AS date)
- AND (ci.customer_id IN (SELECT bc.customer_id FROM beat_customers bc INNER JOIN customers c ON c.id = bc.customer_id AND c.deleted_at IS NULL WHERE bc.beat_id = bs.beat_id)
-      OR ci.entity_id IN (SELECT bc.customer_id FROM beat_customers bc INNER JOIN customers c ON c.id = bc.customer_id AND c.deleted_at IS NULL WHERE bc.beat_id = bs.beat_id))) AS visited_customers,
+ AND (ci.customer_id IN (SELECT bc.customer_id FROM beat_customers bc INNER JOIN customers c ON c.id = bc.customer_id AND c.deleted_at IS NULL AND c.active = 'Y' WHERE bc.beat_id = bs.beat_id)
+      OR ci.entity_id IN (SELECT bc.customer_id FROM beat_customers bc INNER JOIN customers c ON c.id = bc.customer_id AND c.deleted_at IS NULL AND c.active = 'Y' WHERE bc.beat_id = bs.beat_id))) AS visited_customers,
 (SELECT COUNT_BIG(*) FROM orders o WHERE o.beatscheduleid = bs.id AND o.deleted_at IS NULL) AS order_count,
 (SELECT COUNT_BIG(*) FROM customers c
  INNER JOIN beat_customers bc ON bc.customer_id = c.id AND bc.beat_id = bs.beat_id
- WHERE CAST(c.created_at AS date) = bs.beat_date AND c.deleted_at IS NULL) AS new_customers,
+ WHERE CAST(c.created_at AS date) = bs.beat_date AND c.deleted_at IS NULL AND c.active = 'Y') AS new_customers,
 CAST(CASE WHEN bs.beat_date = CAST(GETDATE() AS date) THEN 1 ELSE 0 END AS bit) AS is_today
 FROM beat_schedules bs
 LEFT JOIN beats b ON b.id = bs.beat_id
@@ -451,7 +451,9 @@ OFFSET {offset} ROWS FETCH NEXT {perPage} ROWS ONLY", cancellationToken, paramet
         var page = Page();
         var perPage = PerPage(10);
         var offset = (page - 1) * perPage;
-        var where = new List<string> { "bc.beat_id = @beat_id", "c.id IS NOT NULL", "c.deleted_at IS NULL" };
+        // A customer switched off in the master is off the beat list too, the same as
+        // everywhere else the app lists customers.
+        var where = new List<string> { "bc.beat_id = @beat_id", "c.id IS NOT NULL", "c.deleted_at IS NULL", "c.active = 'Y'" };
         var parameters = BaseParameters();
         parameters.Add(("@beat_id", beatId.Value));
         var search = Request.Query["search"].ToString();

@@ -6,6 +6,7 @@ using Api.Filters;
 using Application.Interfaces.Repositories;
 using ClosedXML.Excel;
 using Infrastructure.Data;
+using Infrastructure.Repositories;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -34,12 +35,22 @@ public sealed class ReportManagementController : ControllerBase
             .OrderBy(x => x.Name).Select(x => new { id = x.Id, name = x.Name }).ToListAsync(cancellationToken);
         var divisions = (await _db.Divisions.AsNoTracking().Where(x => x.Active == "Y" && x.DeletedAt == null)
             .Select(x => new { id = x.Id, name = x.DivisionName }).ToListAsync(cancellationToken)).ByZone(x => x.name).ToList();
-        var branches = await _db.Branches.AsNoTracking().Where(x => x.Active == "Y" && x.DeletedAt == null)
-            .OrderBy(x => x.BranchName).Select(x => new { id = x.Id, name = x.BranchName }).ToListAsync(cancellationToken);
+        var branches = await BranchOptionRowsAsync(cancellationToken);
         var designations = await _db.Designations.AsNoTracking().Where(x => x.Active == "Y" && x.DeletedAt == null)
             .OrderBy(x => x.DesignationName).Select(x => new { id = x.Id, name = x.DesignationName }).ToListAsync(cancellationToken);
         var defaultDesignationId = designations.FirstOrDefault(x => string.Equals(x.name.Trim(), "ASR", StringComparison.OrdinalIgnoreCase))?.id;
         return Ok(new { users, divisions, branches, designations, default_designation_id = defaultDesignationId });
+    }
+
+    /// <summary>The branch dropdown, each branch with its zone so a report filtered on a
+    /// zone offers only that zone's branches.</summary>
+    private async Task<object> BranchOptionRowsAsync(CancellationToken cancellationToken)
+    {
+        var zones = await _db.BranchZoneMapAsync(cancellationToken);
+        return (await _db.Branches.AsNoTracking().Where(x => x.Active == "Y" && x.DeletedAt == null)
+                .OrderBy(x => x.BranchName).Select(x => new { id = x.Id, name = x.BranchName }).ToListAsync(cancellationToken))
+            .Select(x => new { x.id, x.name, zone_id = zones.TryGetValue(x.id, out var zoneId) ? zoneId : (ulong?)null })
+            .ToList();
     }
 
     // Loyalty > Performance Report. Dropdown feeds only, ungated like the other report
@@ -337,10 +348,10 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
         var users = await _db.Users.AsNoTracking().Where(x => visibleIds.Contains(x.Id) && x.Active == "Y" && !x.IsDeleted && x.DeletedAt == null)
             .OrderBy(x => x.Name).Select(x => new { id = x.Id, name = x.Name }).ToListAsync(cancellationToken);
         var divisions = (await _db.Divisions.AsNoTracking().Where(x => x.Active == "Y" && x.DeletedAt == null).Select(x => new { id = x.Id, name = x.DivisionName }).ToListAsync(cancellationToken)).ByZone(x => x.name).ToList();
-        var branches = await _db.Branches.AsNoTracking().Where(x => x.Active == "Y" && x.DeletedAt == null).OrderBy(x => x.BranchName).Select(x => new { id = x.Id, name = x.BranchName }).ToListAsync(cancellationToken);
+        var branches = await BranchOptionRowsAsync(cancellationToken);
         var designations = await _db.Designations.AsNoTracking().Where(x => x.Active == "Y" && x.DeletedAt == null).OrderBy(x => x.DesignationName).Select(x => new { id = x.Id, name = x.DesignationName }).ToListAsync(cancellationToken);
         var states = await _db.States.AsNoTracking().Where(x => x.Active == "Y" && x.DeletedAt == null).OrderBy(x => x.StateName).Select(x => new { id = x.Id, name = x.StateName }).ToListAsync(cancellationToken);
-        var customers = await _db.Customers.AsNoTracking().Where(x => x.DeletedAt == null && (x.CustomerType == 1 || x.CustomerType == 2)).OrderBy(x => x.Name)
+        var customers = await _db.Customers.AsNoTracking().Where(x => x.DeletedAt == null && x.Active == "Y" && (x.CustomerType == 1 || x.CustomerType == 2)).OrderBy(x => x.Name)
             .Select(x => new { id = x.Id, name = x.Name, type = x.CustomerType }).ToListAsync(cancellationToken);
         var asrId = designations.FirstOrDefault(x => string.Equals(x.name.Trim(), "ASR", StringComparison.OrdinalIgnoreCase))?.id;
         var dealerDefaults = designations.Where(x => string.Equals(x.name.Trim(), "ASR", StringComparison.OrdinalIgnoreCase) || string.Equals(x.name.Trim(), "DSR", StringComparison.OrdinalIgnoreCase)).Select(x => x.id).ToArray();
@@ -357,7 +368,7 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
         var users = await _db.Users.AsNoTracking().Where(x => visible.Contains(x.Id) && x.Active == "Y" && !x.IsDeleted && x.DeletedAt == null).ToListAsync(ct);
         users = users.Where(x => (!filter.EmployeeId.HasValue || x.Id == filter.EmployeeId) && x.DivisionId == filter.DivisionId && (filter.DesignationIds.Length == 0 || (x.DesignationId.HasValue && filter.DesignationIds.Contains(x.DesignationId.Value)))).ToList();
         var userIds = users.Select(x => x.Id).ToArray();
-        var retailers = await _db.Customers.AsNoTracking().Where(x => x.DeletedAt == null && x.CustomerType == 2 && (!filter.RetailerId.HasValue || x.Id == filter.RetailerId)).ToListAsync(ct);
+        var retailers = await _db.Customers.AsNoTracking().Where(x => x.DeletedAt == null && x.Active == "Y" && x.CustomerType == 2 && (!filter.RetailerId.HasValue || x.Id == filter.RetailerId)).ToListAsync(ct);
         retailers = retailers.Where(x => (x.ExecutiveId.HasValue && userIds.Contains(x.ExecutiveId.Value)) || userIds.Contains(x.CreatedBy ?? 0)).ToList();
         if (filter.StateId.HasValue) retailers = retailers.Where(x => JsonULong(x.CustomFields, "state_id") == filter.StateId).ToList();
         if (filter.DealerId.HasValue) retailers = retailers.Where(x => JsonULong(x.CustomFields, "distributor_name") == filter.DealerId).ToList();
@@ -400,7 +411,7 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
         users = users.Where(x => (!filter.EmployeeId.HasValue || x.Id == filter.EmployeeId) && (!filter.DivisionId.HasValue || x.DivisionId == filter.DivisionId) && (!filter.BranchId.HasValue || UserHasBranch(x, filter.BranchId.Value)) && (filter.DesignationIds.Length == 0 || (x.DesignationId.HasValue && filter.DesignationIds.Contains(x.DesignationId.Value)))).ToList();
         var userIds = users.Select(x => x.Id).ToArray(); var assignments = await DealerAssignments(userIds, ct);
         var dealerIds = assignments.Keys.ToArray();
-        var dealers = await _db.Customers.AsNoTracking().Where(x => x.CustomerType == 1 && x.DeletedAt == null && dealerIds.Contains(x.Id) && (!filter.DealerId.HasValue || x.Id == filter.DealerId)).ToListAsync(ct);
+        var dealers = await _db.Customers.AsNoTracking().Where(x => x.CustomerType == 1 && x.DeletedAt == null && x.Active == "Y" && dealerIds.Contains(x.Id) && (!filter.DealerId.HasValue || x.Id == filter.DealerId)).ToListAsync(ct);
         var year = filter.Year ?? DateTime.UtcNow.Year; var selectedDealerIds = dealers.Select(x => x.Id).ToArray();
         var orders = await _db.Orders.AsNoTracking().Where(x => x.SellerId.HasValue && selectedDealerIds.Contains(x.SellerId.Value) && x.OrderDate.HasValue && x.OrderDate.Value.Year == year && x.DeletedAt == null)
             .Select(x => new PerformanceOrder(x.BuyerId, x.SellerId, x.ExecutiveId, x.CreatedBy, x.OrderDate, (long?)x.TotalQty ?? 0, (decimal?)x.GrandTotal ?? 0)).ToListAsync(ct);
@@ -470,7 +481,7 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
             .Select(x => new { x.OrderId, x.ProductId }).ToListAsync(cancellationToken);
         var attendances = await _db.Attendances.AsNoTracking().Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value)
                 && x.PunchinDate >= rangeStart && x.PunchinDate < rangeEndExclusive && x.DeletedAt == null).ToListAsync(cancellationToken);
-        var customers = await _db.Customers.AsNoTracking().Where(x => x.DeletedAt == null).Select(x => new { x.Id, x.CreatedBy, x.ExecutiveId, x.CreatedAt }).ToListAsync(cancellationToken);
+        var customers = await _db.Customers.AsNoTracking().Where(x => x.DeletedAt == null && x.Active == "Y").Select(x => new { x.Id, x.CreatedBy, x.ExecutiveId, x.CreatedAt }).ToListAsync(cancellationToken);
 
         var visitCounts = await VisitCounts(userIds, filter.StartDate, filter.EndDate, cancellationToken);
         var assignedCounts = await AssignedCustomerCounts(userIds, cancellationToken);
@@ -604,8 +615,8 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id", ct);
     {
         if (userIds.Length == 0) return [];
         var rows = await Query($@"SELECT user_id, COUNT(DISTINCT customer_id) customer_count FROM (
-SELECT CAST(executive_id AS bigint) user_id, CAST(id AS bigint) customer_id FROM customers WHERE deleted_at IS NULL AND executive_id IN ({string.Join(',', userIds)})
-UNION SELECT CAST(ed.user_id AS bigint), CAST(ed.customer_id AS bigint) FROM employee_details ed INNER JOIN customers c ON c.id = ed.customer_id AND c.deleted_at IS NULL WHERE ed.deleted_at IS NULL AND ed.user_id IN ({string.Join(',', userIds)})
+SELECT CAST(executive_id AS bigint) user_id, CAST(id AS bigint) customer_id FROM customers WHERE deleted_at IS NULL AND active = 'Y' AND executive_id IN ({string.Join(',', userIds)})
+UNION SELECT CAST(ed.user_id AS bigint), CAST(ed.customer_id AS bigint) FROM employee_details ed INNER JOIN customers c ON c.id = ed.customer_id AND c.deleted_at IS NULL AND c.active = 'Y' WHERE ed.deleted_at IS NULL AND ed.user_id IN ({string.Join(',', userIds)})
 ) assignments GROUP BY user_id", ct);
         return rows.ToDictionary(x => ULong(x, "user_id"), x => Convert.ToInt32(Obj(x, "customer_count"), CultureInfo.InvariantCulture));
     }
@@ -1027,7 +1038,8 @@ WHERE customertype = 1 AND deleted_at IS NULL AND executive_id IN ({string.Join(
                                 where order.ExecutiveId.HasValue && reportAsrIds.Contains(order.ExecutiveId.Value)
                                     && order.DeletedAt == null
                                     && order.OrderDate >= rangeStart && order.OrderDate < rangeEndExclusive
-                                    && (product != null ? product.CategoryId : line.CategoryId) == filter.SegmentId
+                                    && (!filter.SegmentId.HasValue
+                                        || (product != null ? product.CategoryId : line.CategoryId) == filter.SegmentId)
                                 group line by new { AsrId = order.ExecutiveId!.Value, DealerId = order.SellerId } into sales
                                 select new { sales.Key.AsrId, sales.Key.DealerId, Total = sales.Sum(x => x.LineTotal) })
             .ToListAsync(cancellationToken);
@@ -1158,7 +1170,6 @@ WHERE customertype = 1 AND deleted_at IS NULL AND executive_id IN ({string.Join(
 
     private static string? ValidateLoyaltyPerformanceFilter(LoyaltyPerformanceFilter filter)
     {
-        if (!filter.SegmentId.HasValue) return "Segment is required.";
         if (!filter.ZoneId.HasValue) return "Zone is required.";
         if (!filter.SchemeId.HasValue) return "Scheme is required.";
         if (filter.StartDate == default || filter.EndDate == default) return "Start date and end date are required.";
