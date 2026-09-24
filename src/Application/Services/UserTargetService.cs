@@ -85,14 +85,14 @@ public sealed class UserTargetService : IUserTargetService
         worksheet.Style.Font.FontName = "Calibri";
         worksheet.Style.Font.FontSize = 9;
 
-        var staticHeadings = new[] { "Emp Code", "User Name", "Date Of Joining", "Designation", "Branch Id", "Branch Name", "Division", "Sales Type" };
+        var staticHeadings = new[] { "Emp Code", "User Name", "Employee Status", "Date Of Joining", "Designation", "Branch Id", "Branch Name", "Division", "Sales Type" };
         for (var column = 1; column <= staticHeadings.Length; column++)
         {
             worksheet.Cell(1, column).Value = staticHeadings[column - 1];
             worksheet.Range(1, column, 2, column).Merge();
         }
 
-        var columnNumber = 9;
+        var columnNumber = staticHeadings.Length + 1;
         for (var monthIndex = 0; monthIndex < Months.Length; monthIndex++)
         {
             var firstColumn = columnNumber;
@@ -107,8 +107,6 @@ public sealed class UserTargetService : IUserTargetService
         worksheet.Range(1, totalStartColumn, 1, totalStartColumn + 5).Merge();
         WriteMetricHeadings(worksheet, 2, totalStartColumn);
         columnNumber += 6;
-        worksheet.Cell(1, columnNumber).Value = "User Active";
-        worksheet.Range(1, columnNumber, 2, columnNumber).Merge();
 
         var groupedRows = rows
             .GroupBy(row => new { row.UserId, row.BranchId, Type = row.Type.ToLowerInvariant() })
@@ -121,16 +119,17 @@ public sealed class UserTargetService : IUserTargetService
             var first = group.First();
             worksheet.Cell(excelRow, 1).Value = first.EmployeeCode ?? string.Empty;
             worksheet.Cell(excelRow, 2).Value = first.UserName ?? string.Empty;
+            worksheet.Cell(excelRow, 3).Value = Domain.Services.EmployeeStatus.Of(first.UserActive);
             if (first.DateOfJoining.HasValue)
             {
-                worksheet.Cell(excelRow, 3).Value = first.DateOfJoining.Value;
-                worksheet.Cell(excelRow, 3).Style.DateFormat.Format = "dd-MMM-yyyy";
+                worksheet.Cell(excelRow, 4).Value = first.DateOfJoining.Value;
+                worksheet.Cell(excelRow, 4).Style.DateFormat.Format = "dd-MMM-yyyy";
             }
-            worksheet.Cell(excelRow, 4).Value = first.DesignationName ?? string.Empty;
-            worksheet.Cell(excelRow, 5).Value = first.BranchId.HasValue ? (double)first.BranchId.Value : 0;
-            worksheet.Cell(excelRow, 6).Value = first.BranchName ?? string.Empty;
-            worksheet.Cell(excelRow, 7).Value = first.DivisionName ?? string.Empty;
-            worksheet.Cell(excelRow, 8).Value = first.Type;
+            worksheet.Cell(excelRow, 5).Value = first.DesignationName ?? string.Empty;
+            worksheet.Cell(excelRow, 6).Value = first.BranchId.HasValue ? (double)first.BranchId.Value : 0;
+            worksheet.Cell(excelRow, 7).Value = first.BranchName ?? string.Empty;
+            worksheet.Cell(excelRow, 8).Value = first.DivisionName ?? string.Empty;
+            worksheet.Cell(excelRow, 9).Value = first.Type;
 
             decimal totalTarget = 0, totalAchievement = 0, totalQuantityTarget = 0, totalQuantityAchievement = 0;
             for (var monthIndex = 0; monthIndex < Months.Length; monthIndex++)
@@ -140,7 +139,7 @@ public sealed class UserTargetService : IUserTargetService
                 var achievement = monthRows.Sum(row => row.Achievement);
                 var quantityTarget = monthRows.Sum(row => row.QuantityTarget ?? 0);
                 var quantityAchievement = monthRows.Sum(row => row.QuantityAchievement ?? 0);
-                WriteMetrics(worksheet, excelRow, 9 + (monthIndex * 6), target, achievement, quantityTarget, quantityAchievement, monthRows.Length > 0);
+                WriteMetrics(worksheet, excelRow, staticHeadings.Length + 1 + (monthIndex * 6), target, achievement, quantityTarget, quantityAchievement, monthRows.Length > 0);
                 totalTarget += target;
                 totalAchievement += achievement;
                 totalQuantityTarget += quantityTarget;
@@ -148,11 +147,10 @@ public sealed class UserTargetService : IUserTargetService
             }
 
             WriteMetrics(worksheet, excelRow, totalStartColumn, totalTarget, totalAchievement, totalQuantityTarget, totalQuantityAchievement, true);
-            worksheet.Cell(excelRow, columnNumber).Value = first.UserActive.Equals("Y", StringComparison.OrdinalIgnoreCase) ? "Y" : "N";
             excelRow++;
         }
 
-        var lastColumn = columnNumber;
+        var lastColumn = columnNumber - 1;
         var header = worksheet.Range(1, 1, 2, lastColumn);
         header.Style.Font.Bold = true;
         header.Style.Font.FontColor = XLColor.White;

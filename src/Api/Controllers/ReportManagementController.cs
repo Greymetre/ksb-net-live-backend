@@ -102,12 +102,16 @@ public sealed class ReportManagementController : ControllerBase
         if (!filter.DesignationId.HasValue) return BadRequest(new { status = false, message = "Designation is required." });
 
         var actor = CurrentUserId();
-        var visibleIds = (await _hr.GetVisibleUserIdsAsync(actor, ct)).Distinct().ToHashSet();
+        // An employee switched off since still worked the months being rated, so they keep
+        // their row; the Employee Status filter narrows to one or the other.
+        var employeeStatus = Domain.Services.EmployeeStatus.Read(filter.EmployeeStatus);
+        var visibleIds = (await _hr.GetVisibleUserIdsAsync(actor, includeInactive: true, ct)).Distinct().ToHashSet();
         var users = await _db.Users.AsNoTracking()
-            .Where(x => visibleIds.Contains(x.Id) && x.Active == "Y" && !x.IsDeleted && x.DeletedAt == null && x.DesignationId == filter.DesignationId)
+            .Where(x => visibleIds.Contains(x.Id) && !x.IsDeleted && x.DeletedAt == null && x.DesignationId == filter.DesignationId)
             .ToListAsync(ct);
         users = users.Where(x => (!filter.DivisionId.HasValue || x.DivisionId == filter.DivisionId)
-            && (!filter.BranchId.HasValue || UserHasBranch(x, filter.BranchId.Value))).ToList();
+            && (!filter.BranchId.HasValue || UserHasBranch(x, filter.BranchId.Value))
+            && Domain.Services.EmployeeStatus.Matches(employeeStatus, x.Active)).ToList();
 
         var userIds = users.Select(x => x.Id).ToArray();
         var userDetailJoiningDates = (await _db.UserDetails.AsNoTracking()
@@ -237,7 +241,7 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
             var eligibleRatings = monthlyRatings.Where(item => eligibleMonthKeys.Contains(item.Key)).Select(item => item.Value).ToArray();
 
             return new RatingTrendRow(user.Id, BranchName(user, branches), user.EmployeeCodes ?? string.Empty, user.Name,
-                Name(userNames, user.ReportingId), Name(divisions, user.DivisionId),
+                Domain.Services.EmployeeStatus.Of(user.Active), Name(userNames, user.ReportingId), Name(divisions, user.DivisionId),
                 Math.Round(eligibleRatings.DefaultIfEmpty(0m).Average(), 2), joiningDate, ratingStartMonth,
                 eligibleRatings.Length, monthlyRatings, monthlyDetails);
         }).OrderByDescending(x => x.AverageRating).ThenBy(x => x.EmployeeName).ToList();
@@ -314,6 +318,7 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
                 branch = x.Branch,
                 employee_code = x.EmployeeCode,
                 employee_name = x.EmployeeName,
+                employee_status = x.EmployeeStatus,
                 reporting_manager = x.ReportingManager,
                 zone = x.Zone,
                 average_rating = x.AverageRating,
@@ -364,9 +369,10 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
     {
         if (!filter.DivisionId.HasValue) return BadRequest(new { status = false, message = "Please select a zone before downloading the report." });
         var actor = CurrentUserId();
-        var visible = (await _hr.GetVisibleUserIdsAsync(actor, ct)).Distinct().ToHashSet();
-        var users = await _db.Users.AsNoTracking().Where(x => visible.Contains(x.Id) && x.Active == "Y" && !x.IsDeleted && x.DeletedAt == null).ToListAsync(ct);
-        users = users.Where(x => (!filter.EmployeeId.HasValue || x.Id == filter.EmployeeId) && x.DivisionId == filter.DivisionId && (filter.DesignationIds.Length == 0 || (x.DesignationId.HasValue && filter.DesignationIds.Contains(x.DesignationId.Value)))).ToList();
+        var employeeStatus = Domain.Services.EmployeeStatus.Read(filter.EmployeeStatus);
+        var visible = (await _hr.GetVisibleUserIdsAsync(actor, includeInactive: true, ct)).Distinct().ToHashSet();
+        var users = await _db.Users.AsNoTracking().Where(x => visible.Contains(x.Id) && !x.IsDeleted && x.DeletedAt == null).ToListAsync(ct);
+        users = users.Where(x => (!filter.EmployeeId.HasValue || x.Id == filter.EmployeeId) && x.DivisionId == filter.DivisionId && (filter.DesignationIds.Length == 0 || (x.DesignationId.HasValue && filter.DesignationIds.Contains(x.DesignationId.Value))) && Domain.Services.EmployeeStatus.Matches(employeeStatus, x.Active)).ToList();
         var userIds = users.Select(x => x.Id).ToArray();
         var retailers = await _db.Customers.AsNoTracking().Where(x => x.DeletedAt == null && x.Active == "Y" && x.CustomerType == 2 && (!filter.RetailerId.HasValue || x.Id == filter.RetailerId)).ToListAsync(ct);
         retailers = retailers.Where(x => (x.ExecutiveId.HasValue && userIds.Contains(x.ExecutiveId.Value)) || userIds.Contains(x.CreatedBy ?? 0)).ToList();
@@ -383,7 +389,7 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
         var userMap = users.ToDictionary(x => x.Id);
         var allUserNames = await _db.Users.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.Name, ct);
         using var workbook = new XLWorkbook(); var sheet = workbook.Worksheets.Add("Retailer Productivity");
-        var headers = new List<string> { "Employee Name", "Customer Name", "City", "District", "State", "Distributor Name", "Reporting Manager" };
+        var headers = new List<string> { "Employee Name", "Employee Status", "Customer Name", "City", "District", "State", "Distributor Name", "Reporting Manager" };
         for (var month = 1; month <= 12; month++) { headers.Add(CultureInfo.InvariantCulture.DateTimeFormat.GetAbbreviatedMonthName(month) + "-Qty"); headers.Add(CultureInfo.InvariantCulture.DateTimeFormat.GetAbbreviatedMonthName(month) + "-Value"); }
         headers.AddRange(["YTD Order Qty", "YTD Order Value", "Customer Id", "Employee Code", "Distributor Id"]);
         for (var i = 0; i < headers.Count; i++) sheet.Cell(1, i + 1).Value = headers[i];
@@ -392,7 +398,7 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
         {
             var employeeId = customer.ExecutiveId ?? customer.CreatedBy; userMap.TryGetValue(employeeId ?? 0, out var employee);
             var customerOrders = orders.Where(x => x.BuyerId == customer.Id).ToList(); var dealerId = JsonULong(customer.CustomFields, "distributor_name");
-            var values = new List<object?> { employee?.Name ?? "-", customer.Name, Name(cities, JsonULong(customer.CustomFields, "city_id")), Name(districts, JsonULong(customer.CustomFields, "district_id")), Name(states, JsonULong(customer.CustomFields, "state_id")), Name(dealers, dealerId), Name(allUserNames, employee?.ReportingId) };
+            var values = new List<object?> { employee?.Name ?? "-", employee is null ? "-" : Domain.Services.EmployeeStatus.Of(employee.Active), customer.Name, Name(cities, JsonULong(customer.CustomFields, "city_id")), Name(districts, JsonULong(customer.CustomFields, "district_id")), Name(states, JsonULong(customer.CustomFields, "state_id")), Name(dealers, dealerId), Name(allUserNames, employee?.ReportingId) };
             for (var month = 1; month <= 12; month++) { var monthOrders = customerOrders.Where(x => x.OrderDate!.Value.Month == month); values.Add(monthOrders.Sum(x => x.TotalQty)); values.Add(monthOrders.Sum(x => x.GrandTotal)); }
             values.Add(customerOrders.Sum(x => x.TotalQty)); values.Add(customerOrders.Sum(x => x.GrandTotal)); values.Add(customer.Id); values.Add(employee?.EmployeeCodes ?? "-"); values.Add(dealerId ?? 0);
             WriteRow(sheet, rowNumber++, values);
@@ -406,9 +412,11 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
     [RequirePermission("dealer_performance_report.export")]
     public async Task<IActionResult> ExportDealerPerformance([FromQuery] ProductivityFilter filter, CancellationToken ct)
     {
-        var actor = CurrentUserId(); var visible = (await _hr.GetVisibleUserIdsAsync(actor, ct)).Distinct().ToHashSet();
-        var users = await _db.Users.AsNoTracking().Where(x => visible.Contains(x.Id) && x.Active == "Y" && !x.IsDeleted && x.DeletedAt == null).ToListAsync(ct);
-        users = users.Where(x => (!filter.EmployeeId.HasValue || x.Id == filter.EmployeeId) && (!filter.DivisionId.HasValue || x.DivisionId == filter.DivisionId) && (!filter.BranchId.HasValue || UserHasBranch(x, filter.BranchId.Value)) && (filter.DesignationIds.Length == 0 || (x.DesignationId.HasValue && filter.DesignationIds.Contains(x.DesignationId.Value)))).ToList();
+        var actor = CurrentUserId();
+        var employeeStatus = Domain.Services.EmployeeStatus.Read(filter.EmployeeStatus);
+        var visible = (await _hr.GetVisibleUserIdsAsync(actor, includeInactive: true, ct)).Distinct().ToHashSet();
+        var users = await _db.Users.AsNoTracking().Where(x => visible.Contains(x.Id) && !x.IsDeleted && x.DeletedAt == null).ToListAsync(ct);
+        users = users.Where(x => (!filter.EmployeeId.HasValue || x.Id == filter.EmployeeId) && (!filter.DivisionId.HasValue || x.DivisionId == filter.DivisionId) && (!filter.BranchId.HasValue || UserHasBranch(x, filter.BranchId.Value)) && (filter.DesignationIds.Length == 0 || (x.DesignationId.HasValue && filter.DesignationIds.Contains(x.DesignationId.Value))) && Domain.Services.EmployeeStatus.Matches(employeeStatus, x.Active)).ToList();
         var userIds = users.Select(x => x.Id).ToArray(); var assignments = await DealerAssignments(userIds, ct);
         var dealerIds = assignments.Keys.ToArray();
         var dealers = await _db.Customers.AsNoTracking().Where(x => x.CustomerType == 1 && x.DeletedAt == null && x.Active == "Y" && dealerIds.Contains(x.Id) && (!filter.DealerId.HasValue || x.Id == filter.DealerId)).ToListAsync(ct);
@@ -431,13 +439,13 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
             }))
             .OrderBy(x => ZoneOrder.Rank(x.Zone)).ThenBy(x => x.Zone).ThenBy(x => x.Branch).ThenBy(x => x.Dealer.Name).ThenBy(x => x.User.Name).ToList();
         using var workbook = new XLWorkbook(); var sheet = workbook.Worksheets.Add("Distributor Productivity");
-        var headers = new[] { "Distributor Code", "Distributor Name", "Distributor Location", "Employees Code", "Designation", "Employees Name", "Reporting Manager", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Total" };
-        for (var m = 1; m <= 12; m++) sheet.Cell(1, 7 + m).Value = CultureInfo.InvariantCulture.DateTimeFormat.GetAbbreviatedMonthName(m); sheet.Cell(1, 20).Value = "Total";
-        for (var i = 0; i < 7; i++) sheet.Cell(2, i + 1).Value = headers[i]; for (var i = 7; i < headers.Length; i++) sheet.Cell(2, i + 1).Value = "Secondary Val (Lac)";
+        var headers = new[] { "Distributor Code", "Distributor Name", "Distributor Location", "Employees Code", "Designation", "Employees Name", "Employee Status", "Reporting Manager", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Total" };
+        for (var m = 1; m <= 12; m++) sheet.Cell(1, 8 + m).Value = CultureInfo.InvariantCulture.DateTimeFormat.GetAbbreviatedMonthName(m); sheet.Cell(1, 21).Value = "Total";
+        for (var i = 0; i < 8; i++) sheet.Cell(2, i + 1).Value = headers[i]; for (var i = 8; i < headers.Length; i++) sheet.Cell(2, i + 1).Value = "Secondary Val (Lac)";
         var outputRow = 3;
-        foreach (var zone in prepared.GroupBy(x => x.Zone)) { foreach (var branch in zone.GroupBy(x => x.Branch)) { foreach (var item in branch) { var cityId = JsonULong(item.Dealer.CustomFields, "billing_city") ?? JsonULong(item.Dealer.CustomFields, "city_id"); var vals = new List<object?> { item.Dealer.CustomerCode, item.Dealer.Name, Name(cities, cityId), item.User.EmployeeCodes, Name(designations, item.User.DesignationId), item.User.Name, item.Reporting }; vals.AddRange(item.Monthly.Values.Select(value => (object?)ToLac(value))); vals.Add(ToLac(item.Monthly.Values.Sum())); WriteRow(sheet, outputRow++, vals); } WriteDealerTotal(sheet, outputRow++, branch.Key + " Total", branch.SelectMany(x => x.Monthly).GroupBy(x => x.Key).ToDictionary(x => x.Key, x => x.Sum(y => y.Value)), XLColor.FromHtml("FFF59D"), false); } WriteDealerTotal(sheet, outputRow++, zone.Key + " Total", zone.SelectMany(x => x.Monthly).GroupBy(x => x.Key).ToDictionary(x => x.Key, x => x.Sum(y => y.Value)), XLColor.FromHtml("004A88"), true); }
+        foreach (var zone in prepared.GroupBy(x => x.Zone)) { foreach (var branch in zone.GroupBy(x => x.Branch)) { foreach (var item in branch) { var cityId = JsonULong(item.Dealer.CustomFields, "billing_city") ?? JsonULong(item.Dealer.CustomFields, "city_id"); var vals = new List<object?> { item.Dealer.CustomerCode, item.Dealer.Name, Name(cities, cityId), item.User.EmployeeCodes, Name(designations, item.User.DesignationId), item.User.Name, Domain.Services.EmployeeStatus.Of(item.User.Active), item.Reporting }; vals.AddRange(item.Monthly.Values.Select(value => (object?)ToLac(value))); vals.Add(ToLac(item.Monthly.Values.Sum())); WriteRow(sheet, outputRow++, vals); } WriteDealerTotal(sheet, outputRow++, branch.Key + " Total", branch.SelectMany(x => x.Monthly).GroupBy(x => x.Key).ToDictionary(x => x.Key, x => x.Sum(y => y.Value)), XLColor.FromHtml("FFF59D"), false); } WriteDealerTotal(sheet, outputRow++, zone.Key + " Total", zone.SelectMany(x => x.Monthly).GroupBy(x => x.Key).ToDictionary(x => x.Key, x => x.Sum(y => y.Value)), XLColor.FromHtml("004A88"), true); }
         WriteDealerTotal(sheet, outputRow++, "Grand Total", prepared.SelectMany(x => x.Monthly).GroupBy(x => x.Key).ToDictionary(x => x.Key, x => x.Sum(y => y.Value)), XLColor.FromHtml("43A047"), true);
-        StyleSimpleExport(sheet, 20, outputRow - 1, "1E88E5", 2); sheet.Range(3, 8, outputRow - 1, 20).Style.NumberFormat.Format = "0.00"; sheet.SheetView.FreezeRows(2);
+        StyleSimpleExport(sheet, 21, outputRow - 1, "1E88E5", 2); sheet.Range(3, 9, outputRow - 1, 21).Style.NumberFormat.Format = "0.00"; sheet.SheetView.FreezeRows(2);
         using var stream = new MemoryStream(); workbook.SaveAs(stream); return File(stream.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", $"Distributors_Productivity_Report_{DateTime.Now:yyyy-MM-dd_HHmmss}.xlsx");
     }
 
@@ -453,13 +461,15 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
             return BadRequest(new { status = false, message = "Designation is required." });
 
         var actor = CurrentUserId();
-        var visibleIds = (await _hr.GetVisibleUserIdsAsync(actor, cancellationToken)).Distinct().ToHashSet();
-        var allUsers = await _db.Users.AsNoTracking().Where(x => visibleIds.Contains(x.Id) && x.Active == "Y" && !x.IsDeleted && x.DeletedAt == null)
+        var employeeStatus = Domain.Services.EmployeeStatus.Read(filter.EmployeeStatus);
+        var visibleIds = (await _hr.GetVisibleUserIdsAsync(actor, includeInactive: true, cancellationToken)).Distinct().ToHashSet();
+        var allUsers = await _db.Users.AsNoTracking().Where(x => visibleIds.Contains(x.Id) && !x.IsDeleted && x.DeletedAt == null)
             .ToListAsync(cancellationToken);
         var users = allUsers.Where(x => (!filter.EmployeeId.HasValue || x.Id == filter.EmployeeId)
                 && (!filter.DivisionId.HasValue || x.DivisionId == filter.DivisionId)
                 && (!filter.DesignationId.HasValue || x.DesignationId == filter.DesignationId)
-                && (!filter.BranchId.HasValue || UserHasBranch(x, filter.BranchId.Value)))
+                && (!filter.BranchId.HasValue || UserHasBranch(x, filter.BranchId.Value))
+                && Domain.Services.EmployeeStatus.Matches(employeeStatus, x.Active))
             .ToList();
 
         var userIds = users.Select(x => x.Id).ToArray();
@@ -494,7 +504,7 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
             var productive = userOrders.Count;
             var target = workingDays * 15;
             var newCounters = customers.Count(x => x.CreatedBy == user.Id && x.CreatedAt >= rangeStart && x.CreatedAt < rangeEndExclusive);
-            return new AsrPerformanceRow(user.Id, user.Name, 15, workingDays, target, visited,
+            return new AsrPerformanceRow(user.Id, user.Name, Domain.Services.EmployeeStatus.Of(user.Active), 15, workingDays, target, visited,
                 target > 0 ? Math.Round(visited * 100m / target, 1) : 0, productive,
                 visited > 0 ? Math.Round(productive * 100m / visited, 1) : 0, newCounters,
                 userOrders.Sum(x => x.TotalQty), userOrders.Sum(x => x.GrandTotal),
@@ -505,7 +515,7 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
 
         using var workbook = new XLWorkbook();
         var sheet = workbook.Worksheets.Add("ASR Performance");
-        var headers = new[] { "Employees Code", "Employees Name", "Daily Visit Target", "Total Working Days", "Total Visit Target", "Total Visits", "Adherance %", "Total Productive Visits", "Productivity %", "New Counter Added", "Total Order Qty", "Total Order Value", "Unique SKU Ordered", "Total Cumulative Counter", "ZONE", "Branch", "Designation", "Reporting Manager" };
+        var headers = new[] { "Employees Code", "Employees Name", "Employee Status", "Daily Visit Target", "Total Working Days", "Total Visit Target", "Total Visits", "Adherance %", "Total Productive Visits", "Productivity %", "New Counter Added", "Total Order Qty", "Total Order Value", "Unique SKU Ordered", "Total Cumulative Counter", "ZONE", "Branch", "Designation", "Reporting Manager" };
         for (var column = 0; column < headers.Length; column++) sheet.Cell(1, column + 1).Value = headers[column];
         var outputRow = 2;
         foreach (var zoneGroup in rows.GroupBy(x => x.Zone))
@@ -733,12 +743,16 @@ assigned_at, unassigned_at FROM (
     {
         var isWeekly = string.Equals(filter.Period, "weekly", StringComparison.OrdinalIgnoreCase);
         var actor = CurrentUserId();
-        var visibleIds = (await _hr.GetVisibleUserIdsAsync(actor, ct)).Distinct().ToHashSet();
+        // An employee switched off since still worked the months being rated, so they keep
+        // their row; the Employee Status filter narrows to one or the other.
+        var employeeStatus = Domain.Services.EmployeeStatus.Read(filter.EmployeeStatus);
+        var visibleIds = (await _hr.GetVisibleUserIdsAsync(actor, includeInactive: true, ct)).Distinct().ToHashSet();
         var users = await _db.Users.AsNoTracking()
-            .Where(x => visibleIds.Contains(x.Id) && x.Active == "Y" && !x.IsDeleted && x.DeletedAt == null && x.DesignationId == filter.DesignationId)
+            .Where(x => visibleIds.Contains(x.Id) && !x.IsDeleted && x.DeletedAt == null && x.DesignationId == filter.DesignationId)
             .ToListAsync(ct);
         users = users.Where(x => (!filter.DivisionId.HasValue || x.DivisionId == filter.DivisionId)
-            && (!filter.BranchId.HasValue || UserHasBranch(x, filter.BranchId.Value))).ToList();
+            && (!filter.BranchId.HasValue || UserHasBranch(x, filter.BranchId.Value))
+            && Domain.Services.EmployeeStatus.Matches(employeeStatus, x.Active)).ToList();
 
         var userIds = users.Select(x => x.Id).ToArray();
         var divisions = await _db.Divisions.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.DivisionName, ct);
@@ -813,7 +827,7 @@ assigned_at, unassigned_at FROM (
                 var promotionalTarget = weekly ? 1m : Math.Round(4m * periodMonths, 2);
                 var score = CalculateRatingScores(marketDays, customerVisits, achievement, target, promotional, assigned.Count, active,
                     marketTarget, visitTarget, promotionalTarget);
-                return new RatingReportRow(user.Id, BranchName(user, branches), user.EmployeeCodes ?? string.Empty, user.Name, Name(userNames, user.ReportingId), Name(divisions, user.DivisionId), null, score.FinalRating,
+                return new RatingReportRow(user.Id, BranchName(user, branches), user.EmployeeCodes ?? string.Empty, user.Name, Domain.Services.EmployeeStatus.Of(user.Active), Name(userNames, user.ReportingId), Name(divisions, user.DivisionId), null, score.FinalRating,
                     marketTarget, marketDays, score.MarketRatio, score.MarketRating, visitTarget, customerVisits, score.VisitRatio, score.VisitRating, Math.Round(target, 2), achievement, score.SalesRatio, score.SalesRating,
                     promotional, score.PromoRatio, score.PromoRating, promotionalTarget, assigned.Count, active, score.ActiveRatio, score.ActiveRatingRatio, score.ActiveRating);
             }).ToList();
@@ -834,19 +848,21 @@ assigned_at, unassigned_at FROM (
         decimal marketWeight, decimal visitWeight, decimal salesWeight, decimal promoWeight, decimal retailerWeight, bool includeLastRating)
     {
         var shift = includeLastRating ? 1 : 0;
-        var lastColumn = 31 + shift;
-        int C(int original) => original + (original >= 7 ? shift : 0);
+        // Six label columns now (Employee Status sits after the ASR name), so every banded
+        // column of the old layout moves one to the right.
+        var lastColumn = 32 + shift;
+        int C(int original) => original + 1 + (original >= 7 ? shift : 0);
         sheet.Cell("A1").Value = month;
         sheet.Cell("A1").Style.DateFormat.Format = "mmm-yy";
-        sheet.Range(1, 1, 1, 6 + shift).Merge();
+        sheet.Range(1, 1, 1, 7 + shift).Merge();
         sheet.Cell(1, C(7)).Value = "Number of days per Month dedicated to market visits"; sheet.Range(1, C(7), 1, C(11)).Merge();
         sheet.Cell(1, C(12)).Value = "All Customer Visit"; sheet.Range(1, C(12), 1, C(16)).Merge();
         sheet.Cell(1, C(17)).Value = "Target Vs Ach"; sheet.Range(1, C(17), 1, C(21)).Merge();
         sheet.Cell(1, C(22)).Value = "Promotional Activity"; sheet.Range(1, C(22), 1, C(26)).Merge();
         sheet.Cell(1, C(27)).Value = "Active Retailer"; sheet.Range(1, C(27), 1, C(31)).Merge();
 
-        sheet.Cell("A2").Value = "Target & Weightage"; sheet.Range("A2:E2").Merge();
-        sheet.Cell(2, 6 + shift).Value = 100;
+        sheet.Cell("A2").Value = "Target & Weightage"; sheet.Range("A2:F2").Merge();
+        sheet.Cell(2, 7 + shift).Value = 100;
         sheet.Cell(2, C(7)).Value = marketWeight; sheet.Cell(2, C(8)).Value = "Above 100% achievement will be considered 100%"; sheet.Range(2, C(8), 2, C(11)).Merge();
         sheet.Cell(2, C(12)).Value = visitWeight; sheet.Cell(2, C(13)).Value = "Above 100% achievement will be considered 100%"; sheet.Range(2, C(13), 2, C(16)).Merge();
         sheet.Cell(2, C(17)).Value = "Target"; sheet.Cell(2, C(18)).Value = "Ach"; sheet.Cell(2, C(19)).Value = salesWeight;
@@ -854,7 +870,7 @@ assigned_at, unassigned_at FROM (
         sheet.Cell(2, C(22)).Value = promoWeight; sheet.Cell(2, C(23)).Value = "Above 100% achievement will be considered 100%"; sheet.Range(2, C(23), 2, C(26)).Merge();
         sheet.Cell(2, C(27)).Value = retailerWeight; sheet.Cell(2, C(28)).Value = "Above 30% achievement will be considered 30%"; sheet.Range(2, C(28), 2, C(31)).Merge();
 
-        var headers = new List<string> { "Branch", "Emp Code", "ASR", "Reporting Person", "Zone" };
+        var headers = new List<string> { "Branch", "Emp Code", "ASR", "Employee Status", "Reporting Person", "Zone" };
         if (includeLastRating) headers.Add("LM Rating");
         headers.AddRange(["CM Rating", "Tgt", "Ach", "% ACHD", "For Rating %", "Final Rating", "TGT", "Ach", "% ACHD", "For Rating %", "Final Rating", "TGT", "Ach", "% ACHD", "For Rating %", "Final Rating", "Tgt", "Ach", "% ACHD", "For Rating %", "Final Rating", "Total Registred Retailer", "Active", "Active %", "For Rating %", "Final Rating"]);
         for (var i = 0; i < headers.Count; i++) sheet.Cell(3, i + 1).Value = headers[i];
@@ -863,7 +879,7 @@ assigned_at, unassigned_at FROM (
         foreach (var item in rows)
         {
             WriteRow(sheet, outputRow, item.Values(includeLastRating));
-            foreach (var column in new[] { 6, 7, C(11), C(16), C(17), C(18), C(21), C(26), C(31) }.Where(x => x <= lastColumn)) sheet.Cell(outputRow, column).Style.NumberFormat.Format = "0.00";
+            foreach (var column in new[] { 7, 8, C(11), C(16), C(17), C(18), C(21), C(26), C(31) }.Where(x => x <= lastColumn)) sheet.Cell(outputRow, column).Style.NumberFormat.Format = "0.00";
             sheet.Cell(outputRow, C(9)).Style.NumberFormat.Format = "0.00%"; sheet.Cell(outputRow, C(10)).Style.NumberFormat.Format = "0.00%";
             sheet.Cell(outputRow, C(14)).Style.NumberFormat.Format = "0.00%"; sheet.Cell(outputRow, C(15)).Style.NumberFormat.Format = "0.00%";
             sheet.Cell(outputRow, C(19)).Style.NumberFormat.Format = "0.00%"; sheet.Cell(outputRow, C(20)).Style.NumberFormat.Format = "0.00%";
@@ -921,8 +937,8 @@ WHERE customertype = 1 AND deleted_at IS NULL AND executive_id IN ({string.Join(
     }
     private static void WriteDealerTotal(IXLWorksheet sheet, int row, string label, IReadOnlyDictionary<int, decimal> monthly, XLColor color, bool white)
     {
-        var values = new List<object?> { "", label, "", "", "", "", "" }; values.AddRange(Enumerable.Range(1, 12).Select(month => (object?)ToLac(monthly.GetValueOrDefault(month)))); values.Add(ToLac(monthly.Values.Sum())); WriteRow(sheet, row, values);
-        var range = sheet.Range(row, 1, row, 20); range.Style.Fill.BackgroundColor = color; range.Style.Font.Bold = true; if (white) range.Style.Font.FontColor = XLColor.White;
+        var values = new List<object?> { "", label, "", "", "", "", "", "" }; values.AddRange(Enumerable.Range(1, 12).Select(month => (object?)ToLac(monthly.GetValueOrDefault(month)))); values.Add(ToLac(monthly.Values.Sum())); WriteRow(sheet, row, values);
+        var range = sheet.Range(row, 1, row, 21); range.Style.Fill.BackgroundColor = color; range.Style.Font.Bold = true; if (white) range.Style.Font.FontColor = XLColor.White;
     }
 
     private static decimal ToLac(decimal value) => Math.Round(value / 100000m, 2, MidpointRounding.AwayFromZero);
@@ -959,12 +975,15 @@ WHERE customertype = 1 AND deleted_at IS NULL AND executive_id IN ({string.Join(
 
         var asrDesignationIds = await _db.Designations.AsNoTracking()
             .Where(x => x.DesignationName.Trim() == "ASR").Select(x => x.Id).ToListAsync(cancellationToken);
-        var visibleIds = (await _hr.GetVisibleUserIdsAsync(CurrentUserId(), cancellationToken)).ToHashSet();
+        // An ASR switched off since keeps the invoices raised under them in the report - the
+        // row says so in Employee Status - unless the filter asks for one side only.
+        var employeeStatus = Domain.Services.EmployeeStatus.Read(filter.EmployeeStatus);
+        var visibleIds = (await _hr.GetVisibleUserIdsAsync(CurrentUserId(), includeInactive: true, cancellationToken)).ToHashSet();
         var zoneAsrs = (await _db.Users.AsNoTracking()
                 .Where(x => x.DesignationId.HasValue && asrDesignationIds.Contains(x.DesignationId.Value)
-                    && x.DivisionId == filter.ZoneId && x.Active == "Y" && !x.IsDeleted && x.DeletedAt == null)
+                    && x.DivisionId == filter.ZoneId && !x.IsDeleted && x.DeletedAt == null)
                 .ToListAsync(cancellationToken))
-            .Where(x => visibleIds.Contains(x.Id))
+            .Where(x => visibleIds.Contains(x.Id) && Domain.Services.EmployeeStatus.Matches(employeeStatus, x.Active))
             .ToDictionary(x => x.Id);
 
         var rangeStart = filter.StartDate.ToDateTime(TimeOnly.MinValue);
@@ -1066,6 +1085,7 @@ WHERE customertype = 1 AND deleted_at IS NULL AND executive_id IN ({string.Join(
                     BranchName(asr, branches),
                     dealerWise ? (group.Key.DealerId == 0 ? "No Dealer" : Name(dealerNames, group.Key.DealerId)) : null,
                     asr.Name,
+                    Domain.Services.EmployeeStatus.Of(asr.Active),
                     Name(managers, asr.ReportingId),
                     dealerWise ? salesByDealerAsr.GetValueOrDefault((group.Key.DealerId, asr.Id)) : salesByAsr.GetValueOrDefault(asr.Id),
                     // Every invoice under the scheme in the range, whatever its approval stage -
@@ -1085,10 +1105,10 @@ WHERE customertype = 1 AND deleted_at IS NULL AND executive_id IN ({string.Join(
         using var workbook = new XLWorkbook();
         var sheet = workbook.Worksheets.Add(dealerWise ? "Dealer Wise" : "ASR Wise");
         var headers = dealerWise
-            ? new[] { "Branch", "Dealer Name", "ASR Name", "Reporting Mgr", "Primary Sales", "Act Sec Sales (Lac)", "Total Invoice Amount (Lac)", "Approved Invoice Val (Lac)", "No. of Active Retailers", "KYC Pending" }
-            : new[] { "Branch", "ASR Name", "Reporting Mgr", "Primary Sales", "Act Sec Sales (Lac)", "Total Invoice Amount (Lac)", "Approved Invoice Val (Lac)", "No. of Active Retailers", "KYC Pending" };
+            ? new[] { "Branch", "Dealer Name", "ASR Name", "Employee Status", "Reporting Mgr", "Primary Sales", "Act Sec Sales (Lac)", "Total Invoice Amount (Lac)", "Approved Invoice Val (Lac)", "No. of Active Retailers", "KYC Pending" }
+            : new[] { "Branch", "ASR Name", "Employee Status", "Reporting Mgr", "Primary Sales", "Act Sec Sales (Lac)", "Total Invoice Amount (Lac)", "Approved Invoice Val (Lac)", "No. of Active Retailers", "KYC Pending" };
         // Everything left of Primary Sales names the row; the figures sit to its right.
-        var labelColumns = dealerWise ? 4 : 3;
+        var labelColumns = dealerWise ? 5 : 4;
         // Two header rows: the last four columns sit under one "Loyalty Program Performance"
         // heading, and every other heading spans both rows.
         const int loyaltyColumns = 4;
@@ -1130,8 +1150,8 @@ WHERE customertype = 1 AND deleted_at IS NULL AND executive_id IN ({string.Join(
             foreach (var row in branchGroup)
             {
                 var names = dealerWise
-                    ? new object?[] { row.Branch, row.DealerName, row.AsrName, row.ReportingManager }
-                    : new object?[] { row.Branch, row.AsrName, row.ReportingManager };
+                    ? new object?[] { row.Branch, row.DealerName, row.AsrName, row.EmployeeStatus, row.ReportingManager }
+                    : new object?[] { row.Branch, row.AsrName, row.EmployeeStatus, row.ReportingManager };
                 WriteLine(outputRow++, names, new[] { row }, isTotal: false);
             }
             WriteTotal(outputRow++, "SUBTOTAL - " + (string.IsNullOrWhiteSpace(branchGroup.Key) ? "No Branch" : branchGroup.Key), branchGroup.ToList(), XLColor.Yellow, whiteText: false);
@@ -1207,16 +1227,18 @@ WHERE customertype = 1 AND deleted_at IS NULL AND executive_id IN ({string.Join(
     private static void WriteTotal(IXLWorksheet sheet, int row, string label, IReadOnlyCollection<AsrPerformanceRow> rows, XLColor color)
     {
         var working = rows.Sum(x => x.WorkingDays); var target = rows.Sum(x => x.VisitTarget); var visited = rows.Sum(x => x.Visited); var productive = rows.Sum(x => x.Productive);
-        WriteRow(sheet, row, new object?[] { "", label, "", working, target, visited, target > 0 ? $"{Math.Round(visited * 100m / target, 1)} %" : "0 %", productive, visited > 0 ? $"{Math.Round(productive * 100m / visited, 1)} %" : "0 %", rows.Sum(x => x.NewCounters), rows.Sum(x => x.OrderQty), rows.Sum(x => x.OrderValue), rows.Sum(x => x.UniqueSku), rows.Sum(x => x.Cumulative), "", "", "", "" });
-        var range = sheet.Range(row, 1, row, 18); range.Style.Fill.BackgroundColor = color; range.Style.Font.Bold = true;
+        WriteRow(sheet, row, new object?[] { "", label, "", "", working, target, visited, target > 0 ? $"{Math.Round(visited * 100m / target, 1)} %" : "0 %", productive, visited > 0 ? $"{Math.Round(productive * 100m / visited, 1)} %" : "0 %", rows.Sum(x => x.NewCounters), rows.Sum(x => x.OrderQty), rows.Sum(x => x.OrderValue), rows.Sum(x => x.UniqueSku), rows.Sum(x => x.Cumulative), "", "", "", "" });
+        var range = sheet.Range(row, 1, row, 19); range.Style.Fill.BackgroundColor = color; range.Style.Font.Bold = true;
         if (color != XLColor.Yellow) range.Style.Font.FontColor = XLColor.White;
     }
 }
 
-public sealed record LoyaltyReportRow(string Branch, string? DealerName, string AsrName, string ReportingManager, decimal SecondarySales, decimal TotalInvoiceAmount, decimal ApprovedInvoiceValue, int ActiveRetailers, int KycPending);
+public sealed record LoyaltyReportRow(string Branch, string? DealerName, string AsrName, string EmployeeStatus, string ReportingManager, decimal SecondarySales, decimal TotalInvoiceAmount, decimal ApprovedInvoiceValue, int ActiveRetailers, int KycPending);
 
 public sealed class LoyaltyPerformanceFilter
 {
+    /// <summary>"Y", "N" or nothing at all - see Domain.Services.EmployeeStatus.</summary>
+    [FromQuery(Name = "employee_status")] public string? EmployeeStatus { get; set; }
     [FromQuery(Name = "segment_id")] public ulong? SegmentId { get; set; }
     [FromQuery(Name = "zone_id")] public ulong? ZoneId { get; set; }
     [FromQuery(Name = "scheme_id")] public ulong? SchemeId { get; set; }
@@ -1226,6 +1248,8 @@ public sealed class LoyaltyPerformanceFilter
 
 public sealed class AsrPerformanceFilter
 {
+    /// <summary>"Y", "N" or nothing at all - see Domain.Services.EmployeeStatus.</summary>
+    [FromQuery(Name = "employee_status")] public string? EmployeeStatus { get; set; }
     [FromQuery(Name = "employee_id")] public ulong? EmployeeId { get; set; }
     [FromQuery(Name = "division_id")] public ulong? DivisionId { get; set; }
     [FromQuery(Name = "branch_id")] public ulong? BranchId { get; set; }
@@ -1236,6 +1260,8 @@ public sealed class AsrPerformanceFilter
 
 public sealed class ProductivityFilter
 {
+    /// <summary>"Y", "N" or nothing at all - see Domain.Services.EmployeeStatus.</summary>
+    [FromQuery(Name = "employee_status")] public string? EmployeeStatus { get; set; }
     [FromQuery(Name = "employee_id")] public ulong? EmployeeId { get; set; }
     [FromQuery(Name = "retailer_id")] public ulong? RetailerId { get; set; }
     [FromQuery(Name = "dealer_id")] public ulong? DealerId { get; set; }
@@ -1250,6 +1276,8 @@ public sealed class ProductivityFilter
 
 public sealed class RatingReportFilter
 {
+    /// <summary>"Y", "N" or nothing at all - see Domain.Services.EmployeeStatus.</summary>
+    [FromQuery(Name = "employee_status")] public string? EmployeeStatus { get; set; }
     [FromQuery(Name = "designation_id")] public ulong? DesignationId { get; set; }
     [FromQuery(Name = "year")] public int? Year { get; set; }
     [FromQuery(Name = "month")] public int? Month { get; set; }
@@ -1262,14 +1290,14 @@ public sealed class RatingReportFilter
     [FromQuery(Name = "page_size")] public int PageSize { get; set; } = 10;
 }
 
-internal sealed record RatingReportRow(ulong UserId, string Branch, string EmployeeCode, string EmployeeName, string ReportingManager, string Zone,
+internal sealed record RatingReportRow(ulong UserId, string Branch, string EmployeeCode, string EmployeeName, string EmployeeStatus, string ReportingManager, string Zone,
     decimal? LastFinalRating, decimal FinalRating, decimal MarketTarget, int MarketDays, decimal MarketRatio, decimal MarketRating, decimal VisitTarget, int Visits, decimal VisitRatio, decimal VisitRating,
     decimal SalesTarget, decimal SalesAchievement, decimal SalesRatio, decimal SalesRating, int Promotional, decimal PromotionalRatio,
     decimal PromotionalRating, decimal PromotionalTarget, int RegisteredRetailers, int ActiveRetailers, decimal ActiveRatio, decimal ActiveRatingRatio, decimal ActiveRating)
 {
     public object?[] Values(bool includeLastRating)
     {
-        var values = new List<object?> { Branch, EmployeeCode, EmployeeName, ReportingManager, Zone };
+        var values = new List<object?> { Branch, EmployeeCode, EmployeeName, EmployeeStatus, ReportingManager, Zone };
         if (includeLastRating) values.Add(LastFinalRating ?? 0m);
         values.AddRange([FinalRating, MarketTarget, MarketDays, MarketRatio, MarketRatio, MarketRating, VisitTarget, Visits, VisitRatio, VisitRatio, VisitRating,
         SalesTarget, SalesAchievement, SalesRatio, SalesRatio, SalesRating, PromotionalTarget, Promotional, PromotionalRatio, PromotionalRatio,
@@ -1285,7 +1313,7 @@ internal sealed record RatingScores(decimal MarketRatio, decimal VisitRatio, dec
     decimal ActiveRatio, decimal ActiveRatingRatio, decimal MarketRating, decimal VisitRating, decimal SalesRating,
     decimal PromoRating, decimal ActiveRating, decimal FinalRating);
 
-internal sealed record RatingTrendRow(ulong UserId, string Branch, string EmployeeCode, string EmployeeName,
+internal sealed record RatingTrendRow(ulong UserId, string Branch, string EmployeeCode, string EmployeeName, string EmployeeStatus,
     string ReportingManager, string Zone, decimal AverageRating, DateTime? DateOfJoining, DateTime RatingStartMonth,
     int AverageMonthCount, IReadOnlyDictionary<string, decimal> MonthlyRatings,
     IReadOnlyDictionary<string, RatingTrendMonthDetail> MonthlyDetails);
@@ -1299,7 +1327,7 @@ internal sealed record RetailerOrderActivity(ulong CustomerId, DateTime OrderDat
 public sealed record DealerPerformanceRow(Domain.Entities.Customer Dealer, Domain.Entities.User User, IReadOnlyDictionary<int, decimal> Monthly, string Zone, string Branch, string Reporting);
 public sealed record PerformanceOrder(ulong? BuyerId, ulong? SellerId, ulong? ExecutiveId, ulong? CreatedBy, DateTime? OrderDate, long TotalQty, decimal GrandTotal);
 
-public sealed record AsrPerformanceRow(ulong UserId, string UserName, int DailyTarget, int WorkingDays, int VisitTarget, int Visited, decimal Adherence, int Productive, decimal Productivity, int NewCounters, long OrderQty, decimal OrderValue, int UniqueSku, int Cumulative, string Zone, string Branch, string Designation, string ReportingManager)
+public sealed record AsrPerformanceRow(ulong UserId, string UserName, string EmployeeStatus, int DailyTarget, int WorkingDays, int VisitTarget, int Visited, decimal Adherence, int Productive, decimal Productivity, int NewCounters, long OrderQty, decimal OrderValue, int UniqueSku, int Cumulative, string Zone, string Branch, string Designation, string ReportingManager)
 {
-    public object?[] Values() => [UserId, UserName, DailyTarget, WorkingDays, VisitTarget, Visited, $"{Adherence} %", Productive, $"{Productivity} %", NewCounters, OrderQty, OrderValue, UniqueSku, Cumulative, Zone, Branch, Designation, ReportingManager];
+    public object?[] Values() => [UserId, UserName, EmployeeStatus, DailyTarget, WorkingDays, VisitTarget, Visited, $"{Adherence} %", Productive, $"{Productivity} %", NewCounters, OrderQty, OrderValue, UniqueSku, Cumulative, Zone, Branch, Designation, ReportingManager];
 }

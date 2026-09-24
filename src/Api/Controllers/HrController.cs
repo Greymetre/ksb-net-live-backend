@@ -209,8 +209,8 @@ public sealed class HrController : ControllerBase
     [RequirePermission("attendance.view")]
     [HttpGet("attendances")]
     [HttpGet("attendancesInfo")]
-    public async Task<IActionResult> Attendances([FromQuery(Name = "executive_id")] ulong? executiveId, [FromQuery(Name = "branch_id")] ulong? branchId, [FromQuery(Name = "division_id")] ulong? divisionId, [FromQuery(Name = "designation_id")] ulong? designationId, [FromQuery(Name = "start_date")] DateTime? startDate, [FromQuery(Name = "end_date")] DateTime? endDate, [FromQuery] string? active, [FromQuery] string? status, [FromQuery] string? type, [FromQuery] string? search, [FromQuery] int page = 1, [FromQuery(Name = "page_size")] int pageSize = 10, CancellationToken cancellationToken = default) =>
-        Ok(await _hrService.GetAttendancesAsync(new AttendanceListFilterDto { ActorUserId = CurrentUserId(), ExecutiveId = executiveId, BranchId = branchId, DivisionId = divisionId, DesignationId = designationId, StartDate = startDate, EndDate = endDate, Active = active, Status = status, Type = type, Search = search, Page = page, PageSize = pageSize }, cancellationToken));
+    public async Task<IActionResult> Attendances([FromQuery(Name = "executive_id")] ulong? executiveId, [FromQuery(Name = "branch_id")] ulong? branchId, [FromQuery(Name = "division_id")] ulong? divisionId, [FromQuery(Name = "designation_id")] ulong? designationId, [FromQuery(Name = "start_date")] DateTime? startDate, [FromQuery(Name = "end_date")] DateTime? endDate, [FromQuery] string? active, [FromQuery(Name = "employee_status")] string? employeeStatus, [FromQuery] string? status, [FromQuery] string? type, [FromQuery] string? search, [FromQuery] int page = 1, [FromQuery(Name = "page_size")] int pageSize = 10, CancellationToken cancellationToken = default) =>
+        Ok(await _hrService.GetAttendancesAsync(new AttendanceListFilterDto { ActorUserId = CurrentUserId(), ExecutiveId = executiveId, BranchId = branchId, DivisionId = divisionId, DesignationId = designationId, StartDate = startDate, EndDate = endDate, Active = active ?? employeeStatus, Status = status, Type = type, Search = search, Page = page, PageSize = pageSize }, cancellationToken));
 
     [RequirePermission("attendance.view")]
     [HttpGet("attendance-plan")]
@@ -271,23 +271,23 @@ public sealed class HrController : ControllerBase
     [RequirePermission("attendance.export")]
     [HttpGet("attendance-download")]
     [HttpGet("attendances/export")]
-    public async Task<IActionResult> ExportAttendances([FromQuery(Name = "executive_id")] ulong? executiveId, [FromQuery(Name = "branch_id")] ulong? branchId, [FromQuery(Name = "division_id")] ulong? divisionId, [FromQuery(Name = "designation_id")] ulong? designationId, [FromQuery(Name = "start_date")] DateTime? startDate, [FromQuery(Name = "end_date")] DateTime? endDate, [FromQuery] string? active, [FromQuery] string? status, [FromQuery] string? type, [FromQuery] string? search, CancellationToken cancellationToken)
+    public async Task<IActionResult> ExportAttendances([FromQuery(Name = "executive_id")] ulong? executiveId, [FromQuery(Name = "branch_id")] ulong? branchId, [FromQuery(Name = "division_id")] ulong? divisionId, [FromQuery(Name = "designation_id")] ulong? designationId, [FromQuery(Name = "start_date")] DateTime? startDate, [FromQuery(Name = "end_date")] DateTime? endDate, [FromQuery] string? active, [FromQuery(Name = "employee_status")] string? employeeStatus, [FromQuery] string? status, [FromQuery] string? type, [FromQuery] string? search, CancellationToken cancellationToken)
     {
-        var file = await _hrService.ExportAttendancesAsync(new AttendanceListFilterDto { ActorUserId = CurrentUserId(), ExecutiveId = executiveId, BranchId = branchId, DivisionId = divisionId, DesignationId = designationId, StartDate = startDate, EndDate = endDate, Active = active, Status = status, Type = type, Search = search }, cancellationToken);
+        var file = await _hrService.ExportAttendancesAsync(new AttendanceListFilterDto { ActorUserId = CurrentUserId(), ExecutiveId = executiveId, BranchId = branchId, DivisionId = divisionId, DesignationId = designationId, StartDate = startDate, EndDate = endDate, Active = active ?? employeeStatus, Status = status, Type = type, Search = search }, cancellationToken);
         return File(file.Content, file.ContentType, file.FileName);
     }
 
     [RequirePermission("attendance_summary.view")]
     [HttpGet("attendance-summary")]
-    public async Task<IActionResult> AttendanceSummary([FromQuery(Name = "executive_id")] ulong? executiveId, [FromQuery(Name = "branch_id")] ulong? branchId, [FromQuery(Name = "division_id")] ulong? divisionId, [FromQuery(Name = "designation_id")] ulong? designationId, [FromQuery(Name = "start_date")] DateTime? startDate, [FromQuery(Name = "end_date")] DateTime? endDate, CancellationToken cancellationToken) =>
-        Ok(await _hrService.GetAttendanceSummaryAsync(new AttendanceListFilterDto { ActorUserId = CurrentUserId(), ExecutiveId = executiveId, BranchId = branchId, DivisionId = divisionId, DesignationId = designationId, StartDate = startDate, EndDate = endDate }, cancellationToken));
+    public async Task<IActionResult> AttendanceSummary([FromQuery(Name = "executive_id")] ulong? executiveId, [FromQuery(Name = "branch_id")] ulong? branchId, [FromQuery(Name = "division_id")] ulong? divisionId, [FromQuery(Name = "designation_id")] ulong? designationId, [FromQuery(Name = "start_date")] DateTime? startDate, [FromQuery(Name = "end_date")] DateTime? endDate, [FromQuery(Name = "employee_status")] string? employeeStatus, CancellationToken cancellationToken) =>
+        Ok(await _hrService.GetAttendanceSummaryAsync(new AttendanceListFilterDto { ActorUserId = CurrentUserId(), ExecutiveId = executiveId, BranchId = branchId, DivisionId = divisionId, DesignationId = designationId, StartDate = startDate, EndDate = endDate, Active = employeeStatus }, cancellationToken));
 
     [RequirePermission("attendance_summary.export")]
     [HttpGet("attendancesummary-download")]
     [HttpGet("attendance-summary/export")]
-    public async Task<IActionResult> ExportAttendanceSummary([FromQuery(Name = "executive_id")] ulong? executiveId, [FromQuery(Name = "branch_id")] ulong? branchId, [FromQuery(Name = "division_id")] ulong? divisionId, [FromQuery(Name = "designation_id")] ulong? designationId, [FromQuery(Name = "start_date")] DateTime? startDate, [FromQuery(Name = "end_date")] DateTime? endDate, CancellationToken cancellationToken)
+    public async Task<IActionResult> ExportAttendanceSummary([FromQuery(Name = "executive_id")] ulong? executiveId, [FromQuery(Name = "branch_id")] ulong? branchId, [FromQuery(Name = "division_id")] ulong? divisionId, [FromQuery(Name = "designation_id")] ulong? designationId, [FromQuery(Name = "start_date")] DateTime? startDate, [FromQuery(Name = "end_date")] DateTime? endDate, [FromQuery(Name = "employee_status")] string? employeeStatus, CancellationToken cancellationToken)
     {
-        var file = await _hrService.ExportAttendanceSummaryAsync(new AttendanceListFilterDto { ActorUserId = CurrentUserId(), ExecutiveId = executiveId, BranchId = branchId, DivisionId = divisionId, DesignationId = designationId, StartDate = startDate, EndDate = endDate }, cancellationToken);
+        var file = await _hrService.ExportAttendanceSummaryAsync(new AttendanceListFilterDto { ActorUserId = CurrentUserId(), ExecutiveId = executiveId, BranchId = branchId, DivisionId = divisionId, DesignationId = designationId, StartDate = startDate, EndDate = endDate, Active = employeeStatus }, cancellationToken);
         return File(file.Content, file.ContentType, file.FileName);
     }
 

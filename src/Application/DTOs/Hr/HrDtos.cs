@@ -187,6 +187,8 @@ public sealed class AttendanceDto
     public ulong Id { get; init; }
     public ulong? UserId { get; init; }
     public string? UserName { get; init; }
+    /// <summary>"Y" while the employee is switched on in the user master, "N" once they are not.</summary>
+    public string EmployeeStatus { get; init; } = "Y";
     public string? EmployeeCode { get; init; }
     public string? BranchName { get; set; }
     [System.Text.Json.Serialization.JsonIgnore]
@@ -283,6 +285,8 @@ public sealed class AttendanceSummaryDto
     public ulong UserId { get; init; }
     public string? EmployeeCode { get; init; }
     public string UserName { get; init; } = string.Empty;
+    /// <summary>"Y" while the employee is switched on in the user master, "N" once they are not.</summary>
+    public string EmployeeStatus { get; init; } = "Y";
     public string? ReportingManagers { get; init; }
     public IReadOnlyDictionary<string, string> Days { get; init; } = new Dictionary<string, string>();
     public int WeekOff { get; init; }

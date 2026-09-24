@@ -271,6 +271,11 @@ public sealed class MobileAppController : ControllerBase
         if (await EmailInUseAsync(email, null, cancellationToken)) return Conflict(new { status = "error", message = "Email address is already registered." });
 
         var customerType = ResolveCustomerType(request.AppType, request.CustomerType, GetString(request.Extra, "customer_type"));
+        // Signing up makes a retailer or an influencer. A dealer is set up in the CRM, so an
+        // app that still offers it (an older build) is answered rather than obeyed.
+        if (customerType == DealerType)
+            return BadRequest(new { status = "error", message = "Dealer accounts are created by KSB. Please sign up as a Retailer or an Influencer." });
+
         var fields = ToFieldDictionary(request.Extra);
         fields["owner_name"] = ownerName;
         fields["shop_name"] = shopName ?? ownerName;
@@ -529,6 +534,9 @@ public sealed class MobileAppController : ControllerBase
         });
     }
 
+    /// <summary>The kinds of account that can be signed up for in VRiDDHi: a retailer and an
+    /// influencer. A dealer is not one of them - dealer accounts are created in the CRM, with
+    /// their code and their retailers, and a dealer simply signs in to the app.</summary>
     [AllowAnonymous]
     [HttpGet("masters/customer-types")]
     public IActionResult CustomerTypes() => Ok(new
@@ -536,7 +544,6 @@ public sealed class MobileAppController : ControllerBase
         status = "success",
         data = new[]
         {
-            new { id = DealerType, name = "Dealer", type_name = "Dealer" },
             new { id = RetailerType, name = "Retailer", type_name = "Retailer" },
             new { id = InfluencerType, name = "Influencer", type_name = "Influencer" }
         }

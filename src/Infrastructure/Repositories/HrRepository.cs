@@ -321,7 +321,9 @@ public sealed class HrRepository : IHrRepository
 
     public async Task<PagedResult<AttendanceDto>> GetAttendancesAsync(AttendanceListFilterDto filter, CancellationToken cancellationToken)
     {
-        var visibleUserIds = await GetVisibleUserIdsAsync(filter.ActorUserId, cancellationToken);
+        // Attendance already recorded for someone since switched off stays on the screen; the
+        // row says so in its Employee Status column, and the filter narrows to one side.
+        var visibleUserIds = await GetVisibleUserIdsAsync(filter.ActorUserId, includeInactive: true, cancellationToken);
         var query = from attendance in _db.Attendances.AsNoTracking()
                     join user in _db.Users.AsNoTracking() on attendance.UserId equals user.Id into users
                     from user in users.DefaultIfEmpty()
@@ -347,7 +349,8 @@ public sealed class HrRepository : IHrRepository
                  x.user.BranchId.EndsWith("," + branchId) || x.user.BranchId.Contains("," + branchId + ","))));
         }
         if (filter.DivisionId.HasValue) query = query.Where(x => x.user.DivisionId == filter.DivisionId);
-        if (!string.IsNullOrWhiteSpace(filter.Active)) query = query.Where(x => x.user.Active == filter.Active);
+        if (Domain.Services.EmployeeStatus.Read(filter.Active) is { } employeeStatus)
+            query = query.Where(x => employeeStatus == Domain.Services.EmployeeStatus.Inactive ? x.user.Active == "N" : x.user.Active != "N");
         if (filter.StartDate.HasValue) query = query.Where(x => x.attendance.PunchinDate >= filter.StartDate.Value.Date);
         if (filter.EndDate.HasValue) query = query.Where(x => x.attendance.PunchinDate <= filter.EndDate.Value.Date);
         if (int.TryParse(filter.Status, out var status)) query = query.Where(x => x.attendance.AttendanceStatus == status);
@@ -376,6 +379,7 @@ public sealed class HrRepository : IHrRepository
                 Id = x.attendance.Id,
                 UserId = x.attendance.UserId,
                 UserName = x.user.Name,
+                EmployeeStatus = x.user.Active,
                 EmployeeCode = x.user.EmployeeCodes,
                 BranchName = x.branch.BranchName,
                 LegacyBranchIds = x.user.BranchId,
@@ -527,10 +531,15 @@ public sealed class HrRepository : IHrRepository
     public Task<IReadOnlyCollection<ulong>> GetVisibleUserIdsAsync(ulong? actorUserId, CancellationToken cancellationToken) =>
         ReportingVisibility.GetVisibleUserIdsAsync(_db, actorUserId, cancellationToken);
 
+    public Task<IReadOnlyCollection<ulong>> GetVisibleUserIdsAsync(ulong? actorUserId, bool includeInactive, CancellationToken cancellationToken) =>
+        ReportingVisibility.GetVisibleUserIdsAsync(_db, actorUserId, includeInactive, cancellationToken);
+
     public async Task<IReadOnlyList<User>> GetReportUsersAsync(AttendanceListFilterDto filter, CancellationToken cancellationToken)
     {
-        var visibleUserIds = await GetVisibleUserIdsAsync(filter.ActorUserId, cancellationToken);
-        var query = _db.Users.AsNoTracking().Where(x => x.Active == "Y" && !x.IsDeleted && x.ShowAttandanceReport == "1");
+        var visibleUserIds = await GetVisibleUserIdsAsync(filter.ActorUserId, includeInactive: true, cancellationToken);
+        var query = _db.Users.AsNoTracking().Where(x => !x.IsDeleted && x.ShowAttandanceReport == "1");
+        if (Domain.Services.EmployeeStatus.Read(filter.Active) is { } employeeStatus)
+            query = query.Where(x => employeeStatus == Domain.Services.EmployeeStatus.Inactive ? x.Active == "N" : x.Active != "N");
         query = query.Where(x => visibleUserIds.Contains(x.Id));
         if (filter.ExecutiveId.HasValue) query = query.Where(x => x.Id == filter.ExecutiveId);
         if (filter.DesignationId.HasValue) query = query.Where(x => x.DesignationId == filter.DesignationId);

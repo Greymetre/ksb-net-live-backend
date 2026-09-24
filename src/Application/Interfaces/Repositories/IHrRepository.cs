@@ -43,6 +43,9 @@ public interface IHrRepository
 
     Task<User?> GetUserAsync(ulong id, CancellationToken cancellationToken);
     Task<IReadOnlyCollection<ulong>> GetVisibleUserIdsAsync(ulong? actorUserId, CancellationToken cancellationToken);
+    /// <summary>With <paramref name="includeInactive"/>, the employees switched off in the user
+    /// master come too - for the reports that show a row per employee (see ReportingVisibility).</summary>
+    Task<IReadOnlyCollection<ulong>> GetVisibleUserIdsAsync(ulong? actorUserId, bool includeInactive, CancellationToken cancellationToken);
     Task<IReadOnlyList<User>> GetReportUsersAsync(AttendanceListFilterDto filter, CancellationToken cancellationToken);
     Task<IReadOnlyList<Holiday>> GetActiveHolidaysAsync(CancellationToken cancellationToken);
     Task<IReadOnlyList<Leave>> GetLeavesForUserDateRangeAsync(ulong userId, DateTime startDate, DateTime endDate, CancellationToken cancellationToken);

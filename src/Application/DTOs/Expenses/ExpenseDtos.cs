@@ -14,6 +14,8 @@ public sealed class ExpenseFilterDto
     public string? EndDate { get; set; }
     public ulong? ExpenseId { get; set; }
     public string? Search { get; set; }
+    /// <summary>"Y", "N" or nothing at all - see Domain.Services.EmployeeStatus.</summary>
+    public string? EmployeeStatus { get; set; }
 
     /// <summary>Signed-in user. Rows are narrowed to whoever this user may report on.</summary>
     public ulong? ActorUserId { get; set; }
@@ -26,6 +28,8 @@ public sealed class ExpenseDto
     public string? ExpenseTypeName { get; set; }
     public ulong? UserId { get; set; }
     public string? UserName { get; set; }
+    /// <summary>"Y" while the employee is switched on in the user master, "N" once they are not.</summary>
+    public string EmployeeStatus { get; set; } = "Y";
     public string? EmployeeCode { get; set; }
     public string? DesignationName { get; set; }
     public ulong? BranchId { get; set; }

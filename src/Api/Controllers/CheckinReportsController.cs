@@ -56,11 +56,11 @@ public sealed class CheckinReportsController : ControllerBase
         var rows = await Rows(filter, await VisibleUserIds(ct), null, null, ct);
         using var workbook = new XLWorkbook();
         var sheet = workbook.Worksheets.Add("Checkin Checkout");
-        var headers = new[] { "ID", "Visit Date", "User ID", "Employee Code", "Employee Name", "Reporting Manager", "Designation", "Division", "Branch", "Checkin Time", "Checkout Time", "Spend Time", "Checkin Address", "Checkout Address", "Distance (KM)", "Customer ID", "Customer Type", "Customer Name", "Customer Mobile", "Beat Name", "City", "District", "Pincode", "Address", "Visit Type", "Visit Remark" };
+        var headers = new[] { "ID", "Visit Date", "User ID", "Employee Code", "Employee Name", "Employee Status", "Reporting Manager", "Designation", "Division", "Branch", "Checkin Time", "Checkout Time", "Spend Time", "Checkin Address", "Checkout Address", "Distance (KM)", "Customer ID", "Customer Type", "Customer Name", "Customer Mobile", "Beat Name", "City", "District", "Pincode", "Address", "Visit Type", "Visit Remark" };
         for (var i = 0; i < headers.Length; i++) sheet.Cell(1, i + 1).Value = headers[i];
         for (var i = 0; i < rows.Count; i++)
         {
-            var r = rows[i]; var values = new object?[] { r.Id, r.CheckinDate?.ToString("yyyy-MM-dd"), r.UserId, r.EmployeeCode, r.UserName, r.ReportingManager, r.Designation, r.Division, r.Branch, r.CheckinTime, r.CheckoutTime, r.TimeInterval, r.CheckinAddress, r.CheckoutAddress, r.Distance, r.CustomerId, r.CustomerType, r.CustomerName, FirstMobile(r.CustomerMobile), r.BeatName, r.City, r.District, r.Pincode, r.Address, r.VisitType, r.VisitRemark };
+            var r = rows[i]; var values = new object?[] { r.Id, r.CheckinDate?.ToString("yyyy-MM-dd"), r.UserId, r.EmployeeCode, r.UserName, r.EmployeeStatus, r.ReportingManager, r.Designation, r.Division, r.Branch, r.CheckinTime, r.CheckoutTime, r.TimeInterval, r.CheckinAddress, r.CheckoutAddress, r.Distance, r.CustomerId, r.CustomerType, r.CustomerName, FirstMobile(r.CustomerMobile), r.BeatName, r.City, r.District, r.Pincode, r.Address, r.VisitType, r.VisitRemark };
             for (var j = 0; j < values.Length; j++) sheet.Cell(i + 2, j + 1).Value = XLCellValue.FromObject(values[j]);
         }
         sheet.Row(1).Style.Font.Bold = true;
@@ -84,7 +84,7 @@ public sealed class CheckinReportsController : ControllerBase
     {
         const string select = @"SELECT CAST(ci.id AS bigint) id,ci.checkin_date,ci.checkin_time,ci.checkout_date,ci.checkout_time,ci.time_interval,
 ci.checkin_latitude,ci.checkin_longitude,ci.checkin_address,ci.checkout_latitude,ci.checkout_longitude,ci.checkout_address,ci.distance,
-CAST(ci.user_id AS bigint) user_id,u.name user_name,u.employee_codes,rm.name reporting_manager,dg.designation_name,dv.division_name,br.branch_name,
+CAST(ci.user_id AS bigint) user_id,u.name user_name,COALESCE(u.active,'Y') employee_status,u.employee_codes,rm.name reporting_manager,dg.designation_name,dv.division_name,br.branch_name,
 CAST(COALESCE(ci.entity_id,ci.customer_id) AS bigint) customer_id,c.name customer_name,c.mobile customer_mobile,ct.customertype_name customer_type,
 c.latitude customer_latitude,c.longitude customer_longitude,
 b.beat_name,city.city_name,district.district_name,COALESCE(pin.pincode,addr.zipcode,'') pincode,
@@ -132,7 +132,7 @@ OUTER APPLY (SELECT SUM(o.total_qty) order_qty,SUM(o.grand_total) order_value,CO
             rows.Add(new CheckinRow {
             Id=L(reader,"id"),CheckinDate=D(reader,"checkin_date"),CheckinTime=S(reader,"checkin_time"),CheckoutDate=D(reader,"checkout_date"),CheckoutTime=S(reader,"checkout_time"),TimeInterval=S(reader,"time_interval"),
             CheckinLatitude=checkinLatitude,CheckinLongitude=checkinLongitude,CheckinAddress=checkinAddress,CheckoutLatitude=checkoutLatitude,CheckoutLongitude=checkoutLongitude,CheckoutAddress=checkoutAddress,Distance=distance,
-            UserId=L(reader,"user_id"),UserName=S(reader,"user_name"),EmployeeCode=S(reader,"employee_codes"),ReportingManager=S(reader,"reporting_manager"),Designation=S(reader,"designation_name"),Division=S(reader,"division_name"),Branch=S(reader,"branch_name"),
+            UserId=L(reader,"user_id"),UserName=S(reader,"user_name"),EmployeeStatus=EmployeeStatus.Of(S(reader,"employee_status")),EmployeeCode=S(reader,"employee_codes"),ReportingManager=S(reader,"reporting_manager"),Designation=S(reader,"designation_name"),Division=S(reader,"division_name"),Branch=S(reader,"branch_name"),
             CustomerId=L(reader,"customer_id"),CustomerName=S(reader,"customer_name"),CustomerMobile=S(reader,"customer_mobile"),CustomerType=S(reader,"customer_type"),BeatName=S(reader,"beat_name"),City=S(reader,"city_name"),District=S(reader,"district_name"),Pincode=S(reader,"pincode"),Address=S(reader,"customer_address"),VisitType=S(reader,"visit_type"),VisitRemark=S(reader,"visit_remark"),OrderQty=L(reader,"order_qty"),OrderValue=M(reader,"order_value"),UniqueSku=L(reader,"unique_sku"),UniqueOrders=L(reader,"unique_orders")
             });
         }
@@ -184,6 +184,7 @@ OUTER APPLY (SELECT SUM(o.total_qty) order_qty,SUM(o.grand_total) order_value,CO
             var designationParams=f.DesignationIds.Distinct().Select((id,index)=>(Name:$"@designation{index}",Value:(object)(decimal)id)).ToArray();
             where.Add($"u.designation_id IN ({string.Join(',',designationParams.Select(x=>x.Name))})");args.AddRange(designationParams);
         }
+        if(EmployeeStatus.Read(f.EmployeeStatus) is { } employeeStatus){where.Add("COALESCE(u.active,'Y')=@employeeStatus");args.Add(("@employeeStatus",employeeStatus));}
         if(!string.IsNullOrWhiteSpace(f.Search)){where.Add("(u.name LIKE @search OR c.name LIKE @search OR c.mobile LIKE @search OR ci.checkin_address LIKE @search OR b.beat_name LIKE @search)");args.Add(("@search","%"+f.Search.Trim()+"%"));}
         return " WHERE "+string.Join(" AND ",where);
     }
@@ -197,7 +198,9 @@ OUTER APPLY (SELECT SUM(o.total_qty) order_qty,SUM(o.grand_total) order_value,CO
     private static string FirstMobile(string? value) => string.IsNullOrWhiteSpace(value) ? "" : value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault() ?? "";
     private ulong CurrentUserId() => ulong.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var id) ? id : throw new UnauthorizedAccessException("Authenticated user id is missing.");
     private async Task<IReadOnlyCollection<ulong>> VisibleUserIds(CancellationToken ct) =>
-        (await _hr.GetVisibleUserIdsAsync(CurrentUserId(), ct)).Distinct().ToArray();
+        // A visit made by someone since switched off still happened, so their rows stay; the
+        // Employee Status filter narrows to one side when asked.
+        (await _hr.GetVisibleUserIdsAsync(CurrentUserId(), includeInactive: true, ct)).Distinct().ToArray();
 
     public sealed class CheckinFilter
     {
@@ -214,6 +217,8 @@ OUTER APPLY (SELECT SUM(o.total_qty) order_qty,SUM(o.grand_total) order_value,CO
         /// customer_id is found.</summary>
         [FromQuery(Name = "customer_id")] public ulong? CustomerId { get; set; }
         [FromQuery(Name = "designation_id")] public List<ulong> DesignationIds { get; set; } = [];
+        /// <summary>"Y", "N" or nothing at all - see Domain.Services.EmployeeStatus.</summary>
+        [FromQuery(Name = "employee_status")] public string? EmployeeStatus { get; set; }
     }
-    public sealed class CheckinRow { public long Id{get;set;} public DateTime? CheckinDate{get;set;} public string CheckinTime{get;set;}=""; public DateTime? CheckoutDate{get;set;} public string CheckoutTime{get;set;}=""; public string TimeInterval{get;set;}=""; public string CheckinLatitude{get;set;}=""; public string CheckinLongitude{get;set;}=""; public string CheckinAddress{get;set;}=""; public string CheckoutLatitude{get;set;}=""; public string CheckoutLongitude{get;set;}=""; public string CheckoutAddress{get;set;}=""; public string Distance{get;set;}=""; public long UserId{get;set;} public string UserName{get;set;}=""; public string EmployeeCode{get;set;}=""; public string ReportingManager{get;set;}=""; public string Designation{get;set;}=""; public string Division{get;set;}=""; public string Branch{get;set;}=""; public long CustomerId{get;set;} public string CustomerName{get;set;}=""; public string CustomerMobile{get;set;}=""; public string CustomerType{get;set;}=""; public string BeatName{get;set;}=""; public string City{get;set;}=""; public string District{get;set;}=""; public string Pincode{get;set;}=""; public string Address{get;set;}=""; public string VisitType{get;set;}=""; public string VisitRemark{get;set;}=""; public long OrderQty{get;set;} public decimal OrderValue{get;set;} public long UniqueSku{get;set;} public long UniqueOrders{get;set;} }
+    public sealed class CheckinRow { public long Id{get;set;} public DateTime? CheckinDate{get;set;} public string CheckinTime{get;set;}=""; public DateTime? CheckoutDate{get;set;} public string CheckoutTime{get;set;}=""; public string TimeInterval{get;set;}=""; public string CheckinLatitude{get;set;}=""; public string CheckinLongitude{get;set;}=""; public string CheckinAddress{get;set;}=""; public string CheckoutLatitude{get;set;}=""; public string CheckoutLongitude{get;set;}=""; public string CheckoutAddress{get;set;}=""; public string Distance{get;set;}=""; public long UserId{get;set;} public string UserName{get;set;}=""; public string EmployeeStatus{get;set;}=""; public string EmployeeCode{get;set;}=""; public string ReportingManager{get;set;}=""; public string Designation{get;set;}=""; public string Division{get;set;}=""; public string Branch{get;set;}=""; public long CustomerId{get;set;} public string CustomerName{get;set;}=""; public string CustomerMobile{get;set;}=""; public string CustomerType{get;set;}=""; public string BeatName{get;set;}=""; public string City{get;set;}=""; public string District{get;set;}=""; public string Pincode{get;set;}=""; public string Address{get;set;}=""; public string VisitType{get;set;}=""; public string VisitRemark{get;set;}=""; public long OrderQty{get;set;} public decimal OrderValue{get;set;} public long UniqueSku{get;set;} public long UniqueOrders{get;set;} }
 }

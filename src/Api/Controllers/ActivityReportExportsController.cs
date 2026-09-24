@@ -35,7 +35,7 @@ public sealed class ActivityReportExportsController : ControllerBase
         if (!ValidMeet(filter.Meet)) return BadRequest(new { status = "error", message = "Please select a valid meet before downloading the report." });
         var raw = await Rows(filter, ct);
         var rows = raw.GroupBy(x => new { x.Zone, x.Branch, x.CreatorId, x.CreatorName, x.UserId, x.UserName })
-            .Select(g => new ActivityExportRow(g.Key.Zone, g.Key.Branch, null, g.Key.CreatorName, g.Key.UserName, g.Count(), g.Sum(x => x.Participants), g.Sum(x => x.GiftCount), g.Sum(x => x.TotalExpense)))
+            .Select(g => new ActivityExportRow(g.Key.Zone, g.Key.Branch, null, g.Key.CreatorName, g.Key.UserName, EmployeeStatus.Of(g.First().UserStatus), g.Count(), g.Sum(x => x.Participants), g.Sum(x => x.GiftCount), g.Sum(x => x.TotalExpense)))
             .OrderBy(x => ZoneOrder.Rank(x.Zone)).ThenBy(x => x.Zone).ThenBy(x => x.Branch).ThenBy(x => x.SalesEngineer).ThenBy(x => x.AsrName).ToList();
         return Workbook(rows, filter, "Sales Engg wise", false);
     }
@@ -46,7 +46,7 @@ public sealed class ActivityReportExportsController : ControllerBase
         if (!ValidMeet(filter.Meet)) return BadRequest(new { status = "error", message = "Please select a valid meet before downloading the report." });
         var raw = await Rows(filter, ct);
         var rows = raw.GroupBy(x => new { x.Zone, x.Branch, x.DistributorId, x.DistributorName, x.CreatorId, x.CreatorName, x.UserId, x.UserName })
-            .Select(g => new ActivityExportRow(g.Key.Zone, g.Key.Branch, g.Key.DistributorName, g.Key.CreatorName, g.Key.UserName, g.Count(), g.Sum(x => x.Participants), g.Sum(x => x.GiftCount), g.Sum(x => x.TotalExpense)))
+            .Select(g => new ActivityExportRow(g.Key.Zone, g.Key.Branch, g.Key.DistributorName, g.Key.CreatorName, g.Key.UserName, EmployeeStatus.Of(g.First().UserStatus), g.Count(), g.Sum(x => x.Participants), g.Sum(x => x.GiftCount), g.Sum(x => x.TotalExpense)))
             .OrderBy(x => ZoneOrder.Rank(x.Zone)).ThenBy(x => x.Zone).ThenBy(x => x.Branch).ThenBy(x => x.Distributor).ThenBy(x => x.AsrName).ToList();
         return Workbook(rows, filter, "Distributor wise", true);
     }
@@ -90,10 +90,10 @@ public sealed class ActivityReportExportsController : ControllerBase
             .Where(x => ids.Contains(x.ActivityId) && x.DeletedAt == null && x.GiftName != null && x.GiftName != "")
             .Select(x => new GiftEntry(x.ActivityId, x.GiftName!)).ToListAsync(ct);
         var sales = raw.GroupBy(x => new { x.Zone, x.Branch, x.CreatorId, x.CreatorName, x.UserId, x.UserName })
-            .Select(g => new { zone = g.Key.Zone, branch = g.Key.Branch, sales_engineer = g.Key.CreatorName, asr_name = g.Key.UserName, meets = g.Count(), participants = g.Sum(x => x.Participants), gifts = g.Sum(x => x.GiftCount), expense = g.Sum(x => x.TotalExpense) })
+            .Select(g => new { zone = g.Key.Zone, branch = g.Key.Branch, sales_engineer = g.Key.CreatorName, asr_name = g.Key.UserName, employee_status = EmployeeStatus.Of(g.First().UserStatus), meets = g.Count(), participants = g.Sum(x => x.Participants), gifts = g.Sum(x => x.GiftCount), expense = g.Sum(x => x.TotalExpense) })
             .OrderBy(x => x.zone).ThenBy(x => x.branch).ThenBy(x => x.sales_engineer).ToList();
         var distributors = raw.GroupBy(x => new { x.Zone, x.Branch, x.DistributorId, x.DistributorName, x.CreatorName, x.UserName })
-            .Select(g => new { zone = g.Key.Zone, branch = g.Key.Branch, distributor = g.Key.DistributorName, sales_engineer = g.Key.CreatorName, asr_name = g.Key.UserName, meets = g.Count(), participants = g.Sum(x => x.Participants), gifts = g.Sum(x => x.GiftCount), expense = g.Sum(x => x.TotalExpense) })
+            .Select(g => new { zone = g.Key.Zone, branch = g.Key.Branch, distributor = g.Key.DistributorName, sales_engineer = g.Key.CreatorName, asr_name = g.Key.UserName, employee_status = EmployeeStatus.Of(g.First().UserStatus), meets = g.Count(), participants = g.Sum(x => x.Participants), gifts = g.Sum(x => x.GiftCount), expense = g.Sum(x => x.TotalExpense) })
             .OrderBy(x => x.zone).ThenBy(x => x.branch).ThenBy(x => x.distributor).ToList();
         var giftSummary = giftEntries.GroupBy(x => x.Name.Trim(), StringComparer.OrdinalIgnoreCase).Where(x => x.Key.Length > 0)
             .Select(g => new { gift_name = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ThenBy(x => x.gift_name).ToList();
@@ -112,18 +112,22 @@ public sealed class ActivityReportExportsController : ControllerBase
             join division in _db.Divisions.AsNoTracking() on user.DivisionId equals (ulong?)division.Id into divisions from division in divisions.DefaultIfEmpty()
             join branch in _db.Branches.AsNoTracking() on (ulong?)a.BranchId equals (ulong?)branch.Id into branches from branch in branches.DefaultIfEmpty()
             select new ActivityRawRow(a.Id, division == null ? null : division.Id, division == null ? "Unassigned" : division.DivisionName, a.BranchId, branch == null ? "Unassigned" : branch.BranchName,
-                a.DistributorId, a.DistributorName ?? "Unassigned", creator.Id, creator.Name, user.Id, user.Name, a.Participants.Count, a.GiftCount, a.TotalExpense)).ToListAsync(ct);
-        return filter.ZoneId.HasValue ? result.Where(x => x.DivisionId == filter.ZoneId).ToList() : result;
+                a.DistributorId, a.DistributorName ?? "Unassigned", creator.Id, creator.Name, user.Id, user.Name, user.Active, a.Participants.Count, a.GiftCount, a.TotalExpense)).ToListAsync(ct);
+        if (filter.ZoneId.HasValue) result = result.Where(x => x.DivisionId == filter.ZoneId).ToList();
+        // A meet held by someone since switched off still happened, so the row stays; the
+        // Employee Status filter narrows to one side when asked.
+        var employeeStatus = EmployeeStatus.Read(filter.EmployeeStatus);
+        return result.Where(x => EmployeeStatus.Matches(employeeStatus, x.UserStatus)).ToList();
     }
 
     private async Task<HashSet<ulong>> VisibleIds(ulong current, CancellationToken ct) =>
-        (await _hr.GetVisibleUserIdsAsync(current, ct)).ToHashSet();
+        (await _hr.GetVisibleUserIdsAsync(current, includeInactive: true, ct)).ToHashSet();
 
     private IActionResult Workbook(List<ActivityExportRow> rows, ActivityReportFilter filter, string kind, bool distributor) {
         using var book = new XLWorkbook(); var sheet = book.Worksheets.Add("Activity Report");
-        var headers = distributor ? new[] { "Sr. No", "Zone", "Branch", "Distributor Name", "Sales Engineer", "ASR / DSR Name", "No. of Meets", "Participation Count", "Gift Count", "Expenses Total" } : new[] { "Sr. No", "Zone", "Branch", "Sales Engineer", "ASR / DSR Name", "No. of Meets", "Participation Count", "Gift Count", "Expenses Total" };
+        var headers = distributor ? new[] { "Sr. No", "Zone", "Branch", "Distributor Name", "Sales Engineer", "ASR / DSR Name", "Employee Status", "No. of Meets", "Participation Count", "Gift Count", "Expenses Total" } : new[] { "Sr. No", "Zone", "Branch", "Sales Engineer", "ASR / DSR Name", "Employee Status", "No. of Meets", "Participation Count", "Gift Count", "Expenses Total" };
         const int header = 1; for (var i = 0; i < headers.Length; i++) sheet.Cell(header, i + 1).Value = headers[i]; var output = header + 1; var serial = 1;
-        foreach (var zone in rows.GroupBy(x => x.Zone).ByZone(x => x.Key)) { foreach (var row in zone) { object?[] values = distributor ? [serial++, row.Zone, row.Branch, row.Distributor, row.SalesEngineer, row.AsrName, row.Meets, row.Participants, row.Gifts, row.Expense] : [serial++, row.Zone, row.Branch, row.SalesEngineer, row.AsrName, row.Meets, row.Participants, row.Gifts, row.Expense]; for (var i = 0; i < values.Length; i++) sheet.Cell(output, i + 1).Value = XLCellValue.FromObject(values[i]); output++; } Total(sheet, output++, $"{zone.Key} ZONE TOTAL", zone, headers.Length, XLColor.FromHtml("FFF2CC")); }
+        foreach (var zone in rows.GroupBy(x => x.Zone).ByZone(x => x.Key)) { foreach (var row in zone) { object?[] values = distributor ? [serial++, row.Zone, row.Branch, row.Distributor, row.SalesEngineer, row.AsrName, row.AsrStatus, row.Meets, row.Participants, row.Gifts, row.Expense] : [serial++, row.Zone, row.Branch, row.SalesEngineer, row.AsrName, row.AsrStatus, row.Meets, row.Participants, row.Gifts, row.Expense]; for (var i = 0; i < values.Length; i++) sheet.Cell(output, i + 1).Value = XLCellValue.FromObject(values[i]); output++; } Total(sheet, output++, $"{zone.Key} ZONE TOTAL", zone, headers.Length, XLColor.FromHtml("FFF2CC")); }
         Total(sheet, output, "GRAND TOTAL", rows, headers.Length, XLColor.FromHtml("1F4E78"), true); Style(sheet, header, output, headers.Length); return Excel(book, $"{MeetFileName(filter.Meet)}_Activity_{kind.Replace(" ", "_")}_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx");
     }
     private static string MeetLabel(string? meet) => string.IsNullOrWhiteSpace(meet) ? "All Meets" : meet.ToLower() switch { "retailer" => "Retailer Meet", "nukkad" => "Nukkad Meet", "farmer" => "Farmer Meet / Demo", "influencer" => "Influencer Meet", _ => meet };
@@ -136,7 +140,9 @@ public sealed class ActivityReportExportsController : ControllerBase
     private IActionResult Excel(XLWorkbook book, string name) { using var stream = new MemoryStream(); book.SaveAs(stream); return File(stream.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", name); }
 }
 
-public sealed class ActivityReportFilter { public DateTime? StartDate { get; set; } public DateTime? EndDate { get; set; } public ulong? ZoneId { get; set; } public ulong? BranchId { get; set; } public string? Meet { get; set; } }
-public sealed record ActivityRawRow(long Id, ulong? DivisionId, string Zone, long? BranchId, string Branch, long? DistributorId, string DistributorName, ulong CreatorId, string CreatorName, ulong UserId, string UserName, int Participants, int GiftCount, decimal TotalExpense);
-public sealed record ActivityExportRow(string Zone, string Branch, string? Distributor, string SalesEngineer, string AsrName, int Meets, int Participants, int Gifts, decimal Expense);
+public sealed class ActivityReportFilter { public DateTime? StartDate { get; set; } public DateTime? EndDate { get; set; } public ulong? ZoneId { get; set; } public ulong? BranchId { get; set; } public string? Meet { get; set; }
+    /// <summary>"Y", "N" or nothing at all - see Domain.Services.EmployeeStatus.</summary>
+    [FromQuery(Name = "employee_status")] public string? EmployeeStatus { get; set; } }
+public sealed record ActivityRawRow(long Id, ulong? DivisionId, string Zone, long? BranchId, string Branch, long? DistributorId, string DistributorName, ulong CreatorId, string CreatorName, ulong UserId, string UserName, string UserStatus, int Participants, int GiftCount, decimal TotalExpense);
+public sealed record ActivityExportRow(string Zone, string Branch, string? Distributor, string SalesEngineer, string AsrName, string AsrStatus, int Meets, int Participants, int Gifts, decimal Expense);
 public sealed record GiftEntry(long ActivityId, string Name);

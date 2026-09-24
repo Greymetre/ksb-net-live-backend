@@ -25,8 +25,18 @@ public sealed class UserTargetRepository : IUserTargetRepository
         // screen. It now shows only the users the caller may see.
         if (filter.ActorUserId.HasValue)
         {
-            var visibleUserIds = await ReportingVisibility.GetVisibleUserIdsAsync(_dbContext, filter.ActorUserId, cancellationToken);
+            // Targets set for someone since switched off stay on the screen - the row says so in
+            // its Employee Status column - and the Employee Status filter narrows to one side.
+            var visibleUserIds = await ReportingVisibility.GetVisibleUserIdsAsync(_dbContext, filter.ActorUserId, includeInactive: true, cancellationToken);
             query = query.Where(target => target.UserId.HasValue && visibleUserIds.Contains(target.UserId.Value));
+        }
+
+        if (Domain.Services.EmployeeStatus.Read(filter.EmployeeStatus) is { } employeeStatus)
+        {
+            var userIds = _dbContext.Users.AsNoTracking()
+                .Where(user => employeeStatus == Domain.Services.EmployeeStatus.Inactive ? user.Active == "N" : user.Active != "N")
+                .Select(user => user.Id);
+            query = query.Where(target => target.UserId.HasValue && userIds.Contains(target.UserId.Value));
         }
 
         var rows = await (

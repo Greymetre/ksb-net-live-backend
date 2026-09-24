@@ -29,6 +29,16 @@ public sealed class ExpenseRepository : IExpenseRepository
             query = query.Where(x => x.UserId.HasValue && visibleUserIds.Contains(x.UserId.Value));
         }
 
+        // A claim raised by someone since switched off stays on the screen; the row says so in
+        // its Employee Status column, and the Employee Status filter narrows to one side.
+        if (Domain.Services.EmployeeStatus.Read(filter.EmployeeStatus) is { } employeeStatus)
+        {
+            var userIds = _dbContext.Users.AsNoTracking()
+                .Where(user => employeeStatus == Domain.Services.EmployeeStatus.Inactive ? user.Active == "N" : user.Active != "N")
+                .Select(user => user.Id);
+            query = query.Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value));
+        }
+
         var rows = await (
             from expense in query
             join typeRow in _dbContext.ExpenseTypes.AsNoTracking() on expense.ExpensesType equals typeRow.Id into types
@@ -51,6 +61,7 @@ public sealed class ExpenseRepository : IExpenseRepository
                 ExpenseTypeName = type.Name,
                 UserId = expense.UserId,
                 UserName = user.Name,
+                EmployeeStatus = user.Active,
                 EmployeeCode = user.EmployeeCodes,
                 DesignationName = designation.DesignationName,
                 BranchId = user.PrimaryBranchId,
@@ -219,9 +230,10 @@ public sealed class ExpenseRepository : IExpenseRepository
     {
         if (!actorUserId.HasValue) return null;
 
-        var visibleUserIds = await ReportingVisibility.GetVisibleUserIdsAsync(_dbContext, actorUserId, cancellationToken);
+        // Inactive employees come too: their past claims belong on the screen.
+        var visibleUserIds = await ReportingVisibility.GetVisibleUserIdsAsync(_dbContext, actorUserId, includeInactive: true, cancellationToken);
         var totalInternal = await ReportingVisibility.InternalUsersQuery(_dbContext, _dbContext.Users.AsNoTracking())
-            .CountAsync(x => x.Active == "Y" && !x.IsDeleted, cancellationToken);
+            .CountAsync(x => !x.IsDeleted, cancellationToken);
 
         return visibleUserIds.Count >= totalInternal ? null : visibleUserIds.ToArray();
     }

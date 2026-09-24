@@ -58,10 +58,21 @@ internal static class ReportingVisibility
         return roleNames.Any(IsAdminRole) || roleNames.Any(PrivilegedReportingRoles.Contains);
     }
 
-    public static async Task<IReadOnlyCollection<ulong>> GetVisibleUserIdsAsync(AppDbContext db, ulong? actorUserId, CancellationToken cancellationToken)
+    public static Task<IReadOnlyCollection<ulong>> GetVisibleUserIdsAsync(AppDbContext db, ulong? actorUserId, CancellationToken cancellationToken) =>
+        GetVisibleUserIdsAsync(db, actorUserId, includeInactive: false, cancellationToken);
+
+    /// <summary>The users whose data the caller may see.
+    ///
+    /// <paramref name="includeInactive"/> is for the reports that show a row per employee:
+    /// an employee switched off in the user master still worked the months the report covers,
+    /// so their figures must stay in it - the row simply says so in its Employee Status column.
+    /// Everywhere else (dropdowns that pick who to act on, team sizes and other counts) the
+    /// default stands and only active employees are returned. A deleted user is never returned.
+    /// An inactive manager is kept in the walk as well, or their whole team would drop out.</summary>
+    public static async Task<IReadOnlyCollection<ulong>> GetVisibleUserIdsAsync(AppDbContext db, ulong? actorUserId, bool includeInactive, CancellationToken cancellationToken)
     {
         var internalUsers = await InternalUsersQuery(db, db.Users.AsNoTracking())
-            .Where(x => x.Active == "Y" && !x.IsDeleted)
+            .Where(x => (includeInactive || x.Active == "Y") && !x.IsDeleted)
             .Select(x => new { x.Id, x.ReportingId, x.BranchId, x.DesignationId })
             .Take(MaxRows)
             .ToListAsync(cancellationToken);

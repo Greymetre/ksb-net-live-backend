@@ -481,8 +481,8 @@ public sealed class HrService : IHrService
             Search = filter.Search, Unpaged = true, PageSize = 200
         }, cancellationToken)).Items;
         var userNames = (await _repository.GetUsersAsync(null, cancellationToken)).ToDictionary(x => x.Id, x => x.Name);
-        return Workbook("attendancereports.xlsx", ["id", "Employee Code", "Employee Name", "Designation", "Branch", "Division", "Reporting Manager", "Punchin Date", "Punchin Time", "Punchout Time", "Worked Time", "Status", "Objective", "Attendance Status", "Approve/Reject Reason", "Punchin Address", "Punchout Address", "From", "Approve/Reject By"],
-            rows.Select(x => new object?[] { x.Id, x.EmployeeCode, x.UserName, x.DesignationName, x.BranchName, x.DivisionName, x.ReportingManager ?? "—", x.PunchinDate, x.PunchinTime, x.PunchoutTime ?? "misspunch", x.WorkedTime, AttendanceExportLabel(x), x.WorkingType, x.AttendanceStatusLabel, x.RemarkStatus, x.PunchinAddress, x.PunchoutAddress, x.PunchinFrom, ulong.TryParse(x.ApproveRejectBy, out var approverId) && userNames.TryGetValue(approverId, out var approverName) ? approverName : null }));
+        return Workbook("attendancereports.xlsx", ["id", "Employee Code", "Employee Name", "Employee Status", "Designation", "Branch", "Division", "Reporting Manager", "Punchin Date", "Punchin Time", "Punchout Time", "Worked Time", "Status", "Objective", "Attendance Status", "Approve/Reject Reason", "Punchin Address", "Punchout Address", "From", "Approve/Reject By"],
+            rows.Select(x => new object?[] { x.Id, x.EmployeeCode, x.UserName, Domain.Services.EmployeeStatus.Of(x.EmployeeStatus), x.DesignationName, x.BranchName, x.DivisionName, x.ReportingManager ?? "—", x.PunchinDate, x.PunchinTime, x.PunchoutTime ?? "misspunch", x.WorkedTime, AttendanceExportLabel(x), x.WorkingType, x.AttendanceStatusLabel, x.RemarkStatus, x.PunchinAddress, x.PunchoutAddress, x.PunchinFrom, ulong.TryParse(x.ApproveRejectBy, out var approverId) && userNames.TryGetValue(approverId, out var approverName) ? approverName : null }));
     }
 
     public async Task<LaravelApiResponse> GetAttendanceSummaryAsync(AttendanceListFilterDto filter, CancellationToken cancellationToken) =>
@@ -494,12 +494,12 @@ public sealed class HrService : IHrService
         var start = filter.StartDate?.Date ?? new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1);
         var end = filter.EndDate?.Date ?? start.AddMonths(1).AddDays(-1);
         var dayHeadings = EachDate(start, end).Select(x => x.ToString("d-MMM-yyyy", CultureInfo.InvariantCulture)).ToArray();
-        var headings = new[] { "user_id", "employee_code", "user_name", "reporting_managers" }
+        var headings = new[] { "user_id", "employee_code", "user_name", "employee_status", "reporting_managers" }
             .Concat(dayHeadings)
             .Concat(["week_off", "absent", "half_day", "holiday", "present", "total_days"])
             .ToArray();
         return Workbook($"attendance-summary-{DateTime.Today:yyyy-MM-dd}.xlsx", headings, rows.Select(row =>
-            new object?[] { row.UserId, row.EmployeeCode, row.UserName, row.ReportingManagers }
+            new object?[] { row.UserId, row.EmployeeCode, row.UserName, row.EmployeeStatus, row.ReportingManagers }
                 .Concat(dayHeadings.Select(day => row.Days.TryGetValue(day, out var value) ? value : "-"))
                 .Concat([row.WeekOff, row.Absent, row.HalfDay, row.Holiday, row.Present, row.TotalDays])
                 .ToArray()));
@@ -549,6 +549,7 @@ public sealed class HrService : IHrService
                 UserId = user.Id,
                 EmployeeCode = user.EmployeeCodes,
                 UserName = user.Name,
+                EmployeeStatus = Domain.Services.EmployeeStatus.Of(user.Active),
                 ReportingManagers = user.ReportingId.HasValue && managerNames.TryGetValue(user.ReportingId.Value, out var managerName) ? managerName : "-",
                 Days = days,
                 WeekOff = weekOff,

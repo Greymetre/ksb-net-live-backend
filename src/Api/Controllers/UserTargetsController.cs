@@ -21,9 +21,9 @@ public sealed class UserTargetsController : ControllerBase
     [Authorize]
     [RequirePermission("user_target.view")]
     [HttpGet("user-targets")]
-    public async Task<IActionResult> GetTargets([FromQuery(Name = "branch_id")] ulong? branchId, [FromQuery(Name = "user_id")] ulong? userId, [FromQuery(Name = "division_id")] ulong? divisionId, [FromQuery] string? type, [FromQuery] string? month, [FromQuery(Name = "financial_year")] string? financialYear, [FromQuery] string? search, CancellationToken cancellationToken)
+    public async Task<IActionResult> GetTargets([FromQuery(Name = "branch_id")] ulong? branchId, [FromQuery(Name = "user_id")] ulong? userId, [FromQuery(Name = "division_id")] ulong? divisionId, [FromQuery] string? type, [FromQuery] string? month, [FromQuery(Name = "financial_year")] string? financialYear, [FromQuery] string? search, [FromQuery(Name = "employee_status")] string? employeeStatus, CancellationToken cancellationToken)
     {
-        var response = await _service.GetTargetsAsync(new UserTargetFilterDto { ActorUserId = CurrentUserId(), BranchId = branchId, UserId = userId, DivisionId = divisionId, Type = type, Month = month, FinancialYear = financialYear, Search = search }, cancellationToken);
+        var response = await _service.GetTargetsAsync(new UserTargetFilterDto { ActorUserId = CurrentUserId(), BranchId = branchId, UserId = userId, DivisionId = divisionId, Type = type, Month = month, FinancialYear = financialYear, Search = search, EmployeeStatus = employeeStatus }, cancellationToken);
         return Ok(response);
     }
 
@@ -60,9 +60,9 @@ public sealed class UserTargetsController : ControllerBase
     [Authorize]
     [RequirePermission("user_target.export")]
     [HttpGet("user-targets/export")]
-    public async Task<IActionResult> ExportTargets([FromQuery(Name = "branch_id")] ulong? branchId, [FromQuery(Name = "user_id")] ulong? userId, [FromQuery(Name = "division_id")] ulong? divisionId, [FromQuery] string? type, [FromQuery] string? month, [FromQuery(Name = "financial_year")] string? financialYear, [FromQuery] string? search, CancellationToken cancellationToken)
+    public async Task<IActionResult> ExportTargets([FromQuery(Name = "branch_id")] ulong? branchId, [FromQuery(Name = "user_id")] ulong? userId, [FromQuery(Name = "division_id")] ulong? divisionId, [FromQuery] string? type, [FromQuery] string? month, [FromQuery(Name = "financial_year")] string? financialYear, [FromQuery] string? search, [FromQuery(Name = "employee_status")] string? employeeStatus, CancellationToken cancellationToken)
     {
-        var file = await _service.ExportTargetsAsync(new UserTargetFilterDto { ActorUserId = CurrentUserId(), BranchId = branchId, UserId = userId, DivisionId = divisionId, Type = type, Month = month, FinancialYear = financialYear, Search = search }, cancellationToken);
+        var file = await _service.ExportTargetsAsync(new UserTargetFilterDto { ActorUserId = CurrentUserId(), BranchId = branchId, UserId = userId, DivisionId = divisionId, Type = type, Month = month, FinancialYear = financialYear, Search = search, EmployeeStatus = employeeStatus }, cancellationToken);
         return File(file.Content, file.ContentType, file.FileName);
     }
 

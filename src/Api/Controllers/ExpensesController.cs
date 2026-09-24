@@ -24,9 +24,9 @@ public sealed class ExpensesController : ControllerBase
 
     [HttpGet]
     [RequirePermission("expense.view")]
-    public async Task<IActionResult> GetExpenses([FromQuery(Name = "executive_id")] ulong? executiveId, [FromQuery(Name = "expenses_type")] ulong? expensesType, [FromQuery(Name = "branch_id")] ulong? branchId, [FromQuery(Name = "division_id")] ulong? divisionId, [FromQuery] string? payroll, [FromQuery] int? status, [FromQuery(Name = "start_date")] string? startDate, [FromQuery(Name = "end_date")] string? endDate, [FromQuery(Name = "expense_id")] ulong? expenseId, [FromQuery] string? search, CancellationToken cancellationToken)
+    public async Task<IActionResult> GetExpenses([FromQuery(Name = "executive_id")] ulong? executiveId, [FromQuery(Name = "expenses_type")] ulong? expensesType, [FromQuery(Name = "branch_id")] ulong? branchId, [FromQuery(Name = "division_id")] ulong? divisionId, [FromQuery] string? payroll, [FromQuery] int? status, [FromQuery(Name = "start_date")] string? startDate, [FromQuery(Name = "end_date")] string? endDate, [FromQuery(Name = "expense_id")] ulong? expenseId, [FromQuery] string? search, [FromQuery(Name = "employee_status")] string? employeeStatus, CancellationToken cancellationToken)
     {
-        var response = await _service.GetExpensesAsync(new ExpenseFilterDto { ExecutiveId = executiveId, ExpensesType = expensesType, BranchId = branchId, DivisionId = divisionId, Payroll = payroll, Status = status, StartDate = startDate, EndDate = endDate, ExpenseId = expenseId, Search = search, ActorUserId = CurrentUserId() }, cancellationToken);
+        var response = await _service.GetExpensesAsync(new ExpenseFilterDto { ExecutiveId = executiveId, ExpensesType = expensesType, BranchId = branchId, DivisionId = divisionId, Payroll = payroll, Status = status, StartDate = startDate, EndDate = endDate, ExpenseId = expenseId, Search = search, EmployeeStatus = employeeStatus, ActorUserId = CurrentUserId() }, cancellationToken);
         NormalizeAttachmentUrls(response);
         return Ok(response);
     }
