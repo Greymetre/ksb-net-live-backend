@@ -397,10 +397,14 @@ public sealed class CustomerService : ICustomerService
                 var existing = await _repository.GetCustomerAsync(id, actorUserId, cancellationToken)
                     ?? throw NotFound($"Customer ID {id} was not found.");
                 request.CustomFields = MergeImportFields(existing.CustomFields, request.CustomFields);
+                // The merge carries the stored fields along, so the file paths are taken back out
+                // here: an import must leave every document exactly as it was saved.
+                DropAttachments(request.CustomFields);
                 await UpdateCustomerAsync(id, request, actorUserId, cancellationToken);
                 return true;
             }
 
+            DropAttachments(request.CustomFields);
             await CreateCustomerAsync(request, actorUserId, cancellationToken);
             return false;
         }, cancellationToken);
@@ -521,10 +525,24 @@ public sealed class CustomerService : ICustomerService
         }
     }
 
+    /// <summary>Takes every file out of a set of fields an import is about to save.</summary>
+    private static void DropAttachments(IDictionary<string, string?>? fields)
+    {
+        if (fields is null) return;
+        foreach (var column in AttachmentColumns) fields.Remove(column);
+    }
+
+    /// <summary>The fields an import row carries.
+    ///
+    /// Files are never among them: an import moves data, not documents. The export writes an
+    /// attachment as a link reading "View", so reading those columns back would put the word
+    /// "View" where the file's path was and lose the document. Uploading a KYC file is the
+    /// apps' and the customer screen's job; an import leaves whatever is stored alone.</summary>
     private static Dictionary<string, string?> ReadCustomFields(ExcelRow row)
     {
         var fields = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        foreach (var column in ImportColumns.Where(x => x != "id" && x != "customer_type" && x != "name" && x != "mobile" && x != "email" && x != "customer_code" && x != "contact_number" && x != "active"))
+        foreach (var column in ImportColumns.Where(x => x != "id" && x != "customer_type" && x != "name" && x != "mobile" && x != "email" && x != "customer_code" && x != "contact_number" && x != "active")
+                     .Where(x => !AttachmentColumns.Contains(x)))
         {
             SetField(fields, column, row.Value(column));
         }

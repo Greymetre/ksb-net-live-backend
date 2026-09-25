@@ -534,12 +534,29 @@ public sealed class MobileAppController : ControllerBase
         });
     }
 
-    /// <summary>The kinds of account that can be signed up for in VRiDDHi: a retailer and an
-    /// influencer. A dealer is not one of them - dealer accounts are created in the CRM, with
-    /// their code and their retailers, and a dealer simply signs in to the app.</summary>
+    /// <summary>Every kind of customer the field app works with. The SFA app's Customers
+    /// chooser reads this, so a dealer belongs in it.</summary>
     [AllowAnonymous]
     [HttpGet("masters/customer-types")]
     public IActionResult CustomerTypes() => Ok(new
+    {
+        status = "success",
+        data = new[]
+        {
+            new { id = DealerType, name = "Dealer", type_name = "Dealer" },
+            new { id = RetailerType, name = "Retailer", type_name = "Retailer" },
+            new { id = InfluencerType, name = "Influencer", type_name = "Influencer" }
+        }
+    });
+
+    /// <summary>The kinds of account that can be signed up for in VRiDDHi: a retailer and an
+    /// influencer. A dealer is not one of them - dealer accounts are created in the CRM, with
+    /// their code and their retailers, and a dealer simply signs in to the app. This is a list
+    /// of its own so that trimming it never touches the field app's Customers chooser, which
+    /// reads masters/customer-types; a sign-up asking for a dealer is refused either way.</summary>
+    [AllowAnonymous]
+    [HttpGet("masters/signup-customer-types")]
+    public IActionResult SignupCustomerTypes() => Ok(new
     {
         status = "success",
         data = new[]
