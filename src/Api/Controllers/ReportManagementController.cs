@@ -22,7 +22,8 @@ public sealed class ReportManagementController : ControllerBase
 {
     private readonly AppDbContext _db;
     private readonly IHrRepository _hr;
-    public ReportManagementController(AppDbContext db, IHrRepository hr) { _db = db; _hr = hr; }
+    private readonly ICustomerRepository _customers;
+    public ReportManagementController(AppDbContext db, IHrRepository hr, ICustomerRepository customers) { _db = db; _hr = hr; _customers = customers; }
 
     // Filter dropdowns only ever return id/name lists (users already limited to the
     // caller's own hierarchy), so they stay ungated - the report data itself does not.
@@ -89,9 +90,11 @@ public sealed class ReportManagementController : ControllerBase
         var sheet = workbook.Worksheets.Add(isWeekly ? "ASR(Weekly)" : "ASR(Monthly)");
         BuildRatingSheet(sheet, rows, start, report.MarketWeight, report.VisitWeight, report.SalesWeight, report.PromoWeight, report.RetailerWeight, !isYtd);
         if (isWeekly) { sheet.Cell("A1").Value = $"Weekly {start:dd-MMM-yyyy} to {end.AddDays(-1):dd-MMM-yyyy}"; sheet.Cell("A1").Style.DateFormat.Format = "General"; }
-        else if (isYtd) { sheet.Cell("A1").Value = $"YTD {filter.Year}"; sheet.Cell("A1").Style.DateFormat.Format = "General"; }
+        else if (isYtd) { sheet.Cell("A1").Value = $"YTD {start:MMM yyyy} to {end.AddDays(-1):MMM yyyy}"; sheet.Cell("A1").Style.DateFormat.Format = "General"; }
         using var stream = new MemoryStream(); workbook.SaveAs(stream);
-        var period = isWeekly ? $"Weekly_{start:yyyy-MM-dd}_to_{end.AddDays(-1):yyyy-MM-dd}" : isYtd ? $"YTD_{filter.Year}" : start.ToString("MMM_yyyy", CultureInfo.InvariantCulture);
+        var period = isWeekly ? $"Weekly_{start:yyyy-MM-dd}_to_{end.AddDays(-1):yyyy-MM-dd}"
+            : isYtd ? $"YTD_{start:MMM-yyyy}_to_{end.AddDays(-1):MMM-yyyy}"
+            : start.ToString("MMM_yyyy", CultureInfo.InvariantCulture);
         return File(stream.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", $"Rating_Report_{period}.xlsx");
     }
 
@@ -407,6 +410,889 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
         using var stream = new MemoryStream(); workbook.SaveAs(stream);
         return File(stream.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", $"Retailer_Productivity_Report_{DateTime.Now:yyyy-MM-dd_HHmmss}.xlsx");
     }
+
+    // ---------- Reports > Customers > RFM Report ----------
+    // Recency, Frequency and Monetary value for every active retailer that has ordered at
+    // least once. There is no listing - the file is the report.
+
+    /// <summary>The RFM filter bar: Zone, Branch, State and District. A dropdown feed, so
+    /// ungated like the other report options above - the download carries the permission.
+    /// Each branch names its zone and each district its state, so the second list follows
+    /// whatever the first is set to.</summary>
+    [HttpGet("rfm/options")]
+    public async Task<IActionResult> RfmOptions(CancellationToken ct)
+    {
+        var zones = (await _db.Divisions.AsNoTracking().Where(x => x.Active == "Y" && x.DeletedAt == null)
+            .Select(x => new { id = x.Id, name = x.DivisionName }).ToListAsync(ct)).ByZone(x => x.name).ToList();
+        var branches = await BranchOptionRowsAsync(ct);
+        var states = await _db.States.AsNoTracking().Where(x => x.Active == "Y" && x.DeletedAt == null)
+            .OrderBy(x => x.StateName).Select(x => new { id = x.Id, name = x.StateName }).ToListAsync(ct);
+        var districts = await _db.Districts.AsNoTracking().Where(x => x.Active == "Y" && x.DeletedAt == null)
+            .OrderBy(x => x.DistrictName).Select(x => new { id = x.Id, name = x.DistrictName, state_id = x.StateId }).ToListAsync(ct);
+        return Ok(new { zones, branches, states, districts });
+    }
+
+    /// <summary>
+    /// The RFM report.
+    ///
+    /// One row per active retailer that has placed at least one order - a retailer with no
+    /// order has no recency, frequency or monetary value to score, so it is not in the file.
+    /// Every order the retailer has ever placed counts; the three figures are measured over
+    /// the whole history, not over a period.
+    ///
+    /// Each of R, F and M is scored 1 to 5 by splitting the retailers that made it into the
+    /// report into five equal groups of 20%: ordered most recent first, most orders first
+    /// and highest value first, the leading fifth scores 5 and the trailing fifth 1. Rating
+    /// Code is the three digits side by side (a "555" is the best customer on all three),
+    /// Total Rating their sum, and Rating % what that sum is worth out of the 15 on offer.
+    ///
+    /// Zone and Branch come from the retailer's assigned employee, State from the retailer's
+    /// own address, and the dealer from the customer master - the dealer the retailer is
+    /// mapped to, never the seller on an order.
+    /// </summary>
+    [HttpGet("rfm/retailer-export")]
+    [RequirePermission("rfm_report.export")]
+    public async Task<IActionResult> ExportRfmRetailerWise([FromQuery] RfmFilter filter, CancellationToken ct)
+    {
+        var (rows, _) = await RfmRetailersAsync(filter, ct);
+        var scored = ScoreRfm(rows, x => x.CustomerId, x => x.RecencyDays, x => x.Frequency, x => x.Monetary);
+
+        using var workbook = new XLWorkbook();
+        var sheet = workbook.Worksheets.Add("RFM Retailer Wise");
+        var headers = new[] { "Retailer ID", "Retailer Name", "Number", "Dealer Code", "Dealer Name", "State", "Dealer City",
+            "Recency (Days)", "R Rating", "Frequency (Orders)", "F Rating", "Monetary Value", "M Rating",
+            "Total Rating", "Rating %", "Category" };
+        for (var i = 0; i < headers.Length; i++) sheet.Cell(1, i + 1).Value = headers[i];
+        var rowNumber = 2;
+        foreach (var item in scored)
+            WriteRow(sheet, rowNumber++, new object?[] { item.Row.CustomerId, item.Row.Name, item.Row.Mobile, item.Row.DealerCode,
+                item.Row.DealerName, item.Row.State, item.Row.DealerCity, item.Row.RecencyDays, item.R, item.Row.Frequency, item.F,
+                item.Row.Monetary, item.M, item.Total, item.Percent, RfmCategory(item.Percent) });
+        StyleSimpleExport(sheet, headers.Length, rowNumber - 1, "D9E1F2");
+        if (rowNumber > 2)
+        {
+            sheet.Range(2, 12, rowNumber - 1, 12).Style.NumberFormat.Format = "0.00";   // Monetary Value
+            sheet.Range(2, 14, rowNumber - 1, 14).Style.NumberFormat.Format = "0.0";    // Total Rating
+        }
+        WriteRfmLogicSheet(workbook, dealerWise: false, scored);
+        using var stream = new MemoryStream(); workbook.SaveAs(stream);
+        return File(stream.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", $"RFM_Report_Retailer_Wise_{DateTime.Now:yyyy-MM-dd_HHmmss}.xlsx");
+    }
+
+    /// <summary>
+    /// The same retailers read a level up: one row per dealer, saying how its book is doing.
+    ///
+    /// There is no rating at the dealer level. Each retailer keeps the category it earned on
+    /// the retailer-wise sheet - scored against every other retailer in the file - and this
+    /// sheet counts how many of a dealer's retailers landed in each one. So the five category
+    /// columns always add up to Active Retailers.
+    ///
+    /// Total Registered counts every retailer on the dealer's book, switched off or never
+    /// ordered included; Active Retailers counts only the ones this report scores.
+    ///
+    /// A retailer that names no dealer in the customer master cannot be attributed to one and
+    /// is left out of this sheet; it is still on the retailer-wise one.
+    /// </summary>
+    [HttpGet("rfm/dealer-export")]
+    [RequirePermission("rfm_report.export")]
+    public async Task<IActionResult> ExportRfmDealerWise([FromQuery] RfmFilter filter, CancellationToken ct)
+    {
+        var (retailers, registered) = await RfmRetailersAsync(filter, ct);
+        var scored = ScoreRfm(retailers, x => x.CustomerId, x => x.RecencyDays, x => x.Frequency, x => x.Monetary);
+
+        var rows = scored.Where(x => x.Row.DealerId.HasValue)
+            .GroupBy(x => x.Row.DealerId!.Value)
+            .Select(group =>
+            {
+                var first = group.First().Row;
+                int InCategory(string name) => group.Count(x => RfmCategory(x.Percent) == name);
+                return new
+                {
+                    DealerId = group.Key,
+                    first.DealerCode,
+                    Name = first.DealerName,
+                    first.DealerState,
+                    first.DealerCity,
+                    Registered = registered.GetValueOrDefault(group.Key),
+                    Active = group.Count(),
+                    OrderValue = group.Sum(x => x.Row.Monetary),
+                    Platinum = InCategory("Platinum"),
+                    Diamond = InCategory("Diamond"),
+                    Gold = InCategory("Gold"),
+                    Silver = InCategory("Silver"),
+                    Bronze = InCategory("Bronze"),
+                };
+            })
+            .OrderByDescending(x => x.OrderValue).ThenBy(x => x.Name).ToList();
+
+        using var workbook = new XLWorkbook();
+        var sheet = workbook.Worksheets.Add("RFM Dealer Wise");
+        var headers = new[] { "Dealer Code", "Dealer Name", "State", "City", "Total Registered Retailers",
+            "Active Retailers", "Order Value (Lac)", "Platinum", "Diamond", "Gold", "Silver", "Bronze" };
+        for (var i = 0; i < headers.Length; i++) sheet.Cell(1, i + 1).Value = headers[i];
+        var rowNumber = 2;
+        foreach (var item in rows)
+            WriteRow(sheet, rowNumber++, new object?[] { item.DealerCode, item.Name, item.DealerState, item.DealerCity,
+                item.Registered, item.Active, ToLakh(item.OrderValue),
+                item.Platinum, item.Diamond, item.Gold, item.Silver, item.Bronze });
+        StyleSimpleExport(sheet, headers.Length, rowNumber - 1, "D9E1F2");
+        if (rowNumber > 2) sheet.Range(2, 7, rowNumber - 1, 7).Style.NumberFormat.Format = "0.00";   // Order Value, in lakhs
+        WriteRfmLogicSheet(workbook, dealerWise: true, scored, rows.Count);
+        using var stream = new MemoryStream(); workbook.SaveAs(stream);
+        return File(stream.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", $"RFM_Report_Dealer_Wise_{DateTime.Now:yyyy-MM-dd_HHmmss}.xlsx");
+    }
+
+    /// <summary>
+    /// The retailers both sheets are built from.
+    ///
+    /// <c>Rows</c> is the report's population - switched on, not deleted, and with at least
+    /// one order - each with its recency, order count, order value and dealer. <c>Registered</c>
+    /// counts every retailer on a dealer's book that got through the same filters and the
+    /// same visibility scope, whether or not it is switched on or has ever ordered, which is
+    /// what the dealer sheet's Total Registered column reports.
+    /// </summary>
+
+    /// <summary>
+    /// RFM Movement: how each retailer's standing changed over the chosen month.
+    ///
+    /// Both sides are read from the beginning, not month by month. Pick August and the
+    /// report scores everything up to the end of July, scores everything up to the end of
+    /// August, and compares the two.
+    ///
+    /// A running total can only grow, so nothing here falls in rupees or in order count.
+    /// What falls is the retailer's place among the others: stand still while the rest of
+    /// the market keeps ordering and the 1-to-5 rating slides, and the category with it.
+    /// That is what the report is for - it says who is being left behind.
+    ///
+    /// A retailer whose first order ever lands in the chosen month reads "No Order Yet" on
+    /// the earlier side. One that has never ordered at all is not in the file.
+    /// </summary>
+    [HttpGet("rfm/movement-export")]
+    [RequirePermission("rfm_report.export")]
+    public async Task<IActionResult> ExportRfmMovement([FromQuery] RfmMovementFilter filter, CancellationToken ct)
+    {
+        if (filter.Year is null or < 2000 or > 2100) return BadRequest(new { status = false, message = "Please select a year." });
+        if (filter.Month is null or < 1 or > 12) return BadRequest(new { status = false, message = "Please select a month." });
+
+        var currentStart = new DateTime(filter.Year.Value, filter.Month.Value, 1);
+        var currentEnd = currentStart.AddMonths(1);
+        var previousStart = currentStart.AddMonths(-1);
+
+        // Everything up to the end of the chosen month, and everything up to the end of the
+        // month before it - both counted from the first order the system holds.
+        var current = await RfmSnapshotAsync(filter, currentEnd, ct);
+        var previous = await RfmSnapshotAsync(filter, currentStart, ct);
+
+        var rows = current.Keys.Union(previous.Keys).Select(id =>
+        {
+            current.TryGetValue(id, out var now);
+            previous.TryGetValue(id, out var before);
+            var name = now?.Row.Name ?? before!.Row.Name;
+            var mobile = now?.Row.Mobile ?? before!.Row.Mobile;
+            var dealer = now?.Row.DealerName ?? before!.Row.DealerName;
+            var state = now?.Row.State ?? before!.Row.State;
+            var dealerCity = now?.Row.DealerCity ?? before!.Row.DealerCity;
+            var beforeCategory = before is null ? NoOrder : RfmCategory(before.Percent);
+            var nowCategory = now is null ? NoOrder : RfmCategory(now.Percent);
+            return new
+            {
+                Id = id, Name = name, Mobile = mobile, Dealer = dealer, State = state, DealerCity = dealerCity,
+                Previous = beforeCategory, Current = nowCategory,
+                R = Movement(before?.R, now?.R), F = Movement(before?.F, now?.F), M = Movement(before?.M, now?.M),
+                Direction = CategoryMovement(beforeCategory, nowCategory),
+                Reason = MovementReason(before, now),
+                Rank = CategoryRank(nowCategory),
+                // How far it moved, in category steps. A Platinum that has gone quiet has
+                // fallen five; a Gold that slipped to Silver has fallen one.
+                Swing = CategoryRank(nowCategory) - CategoryRank(beforeCategory),
+            };
+        })
+        .OrderBy(x => x.Direction == "Downgraded" ? 0 : x.Direction == "Upgraded" ? 1 : 2)
+        // Biggest fall at the top of the downgrades, biggest climb at the top of the
+        // upgrades, and the weakest first among the rows that did not move.
+        .ThenBy(x => x.Direction == "Upgraded" ? -x.Swing : x.Swing)
+        .ThenBy(x => x.Rank).ThenBy(x => x.Name).ToList();
+
+        using var workbook = new XLWorkbook();
+        var sheet = workbook.Worksheets.Add("RFM Movement");
+        // The two snapshot columns carry their month, so the file reads on its own once it
+        // has been mailed on and the screen that made it is forgotten.
+        var headers = new[] { "Retailer ID", "Retailer Name", "Number", "Dealer Name", "State", "Dealer City",
+            $"Previous ({previousStart:MMM-yy})", $"Current ({currentStart:MMM-yy})",
+            "R Change", "F Change", "M Change", "Movement", "Reason" };
+        for (var i = 0; i < headers.Length; i++) sheet.Cell(1, i + 1).Value = headers[i];
+        var rowNumber = 2;
+        foreach (var item in rows)
+            WriteRow(sheet, rowNumber++, new object?[] { item.Id, item.Name, item.Mobile, item.Dealer, item.State, item.DealerCity,
+                item.Previous, item.Current, item.R, item.F, item.M, item.Direction, item.Reason });
+        StyleSimpleExport(sheet, headers.Length, rowNumber - 1, "D9E1F2");
+        WriteRfmMovementLogicSheet(workbook, previousStart, currentStart, currentEnd, rows.Count,
+            previous.Count, current.Count);
+        using var stream = new MemoryStream(); workbook.SaveAs(stream);
+        return File(stream.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            $"RFM_Movement_{currentStart:MMM-yyyy}_vs_{previousStart:MMM-yyyy}_{DateTime.Now:yyyy-MM-dd_HHmmss}.xlsx");
+    }
+
+
+    /// <summary>
+    /// RFM Activation, ASR wise: how much of each ASR's book has been activated by the end
+    /// of the chosen month, and how many of those were activated during it.
+    ///
+    /// Read the same way as the Movement sheet - from the beginning, not month by month. A
+    /// retailer counts as active once it has placed an order, and stays active after that.
+    /// </summary>
+    [HttpGet("rfm/activation-asr-export")]
+    [RequirePermission("rfm_report.export")]
+    public Task<IActionResult> ExportRfmActivationAsrWise([FromQuery] RfmMovementFilter filter, CancellationToken ct)
+        => ExportRfmActivation(filter, byDealer: false, ct);
+
+    /// <summary>The same count read against the dealer each retailer is mapped to.</summary>
+    [HttpGet("rfm/activation-dealer-export")]
+    [RequirePermission("rfm_report.export")]
+    public Task<IActionResult> ExportRfmActivationDealerWise([FromQuery] RfmMovementFilter filter, CancellationToken ct)
+        => ExportRfmActivation(filter, byDealer: true, ct);
+
+    private async Task<IActionResult> ExportRfmActivation(RfmMovementFilter filter, bool byDealer, CancellationToken ct)
+    {
+        if (filter.Year is null or < 2000 or > 2100) return BadRequest(new { status = false, message = "Please select a year." });
+        if (filter.Month is null or < 1 or > 12) return BadRequest(new { status = false, message = "Please select a month." });
+
+        var currentStart = new DateTime(filter.Year.Value, filter.Month.Value, 1);
+        var currentEnd = currentStart.AddMonths(1);
+        var previousStart = currentStart.AddMonths(-1);
+
+        var retailers = await RfmFilteredRetailersAsync(filter, ct);
+        // Everyone who had ordered by the end of the chosen month, and everyone who had
+        // ordered by the end of the month before it. The difference is who was won during it.
+        var activatedByNow = await BuyersUpToAsync(currentEnd, ct);
+        var activatedBefore = await BuyersUpToAsync(currentStart, ct);
+
+        // Whose book the retailer sits on: the employee it is assigned to, or the dealer the
+        // customer master maps it to.
+        var employees = (await _db.Users.AsNoTracking().Where(x => x.DeletedAt == null)
+            .Select(x => new { x.Id, x.Name, x.Active }).ToListAsync(ct))
+            .ToDictionary(x => x.Id);
+        // A switched-off ASR keeps the retailers still filed under them, so the row stays and
+        // says so - the same rule the ASR and rating reports follow.
+        var employeeStatus = Domain.Services.EmployeeStatus.Read(filter.EmployeeStatus);
+        var dealers = (await _db.Customers.AsNoTracking().Where(x => x.CustomerType == 1 && x.DeletedAt == null)
+            .Select(x => new { x.Id, x.Name, x.CustomerCode, x.CustomFields }).ToListAsync(ct))
+            .ToDictionary(x => x.Id);
+        var states = byDealer ? await _db.States.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.StateName, ct) : [];
+        var cities = byDealer ? await _db.Cities.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.CityName, ct) : [];
+
+        (ulong? Id, string Name, string Status, string State, string City) Owner(Domain.Entities.Customer customer)
+        {
+            if (byDealer)
+            {
+                var dealerId = JsonULong(customer.CustomFields, "distributor_name");
+                if (!dealerId.HasValue || !dealers.TryGetValue(dealerId.Value, out var dealer)) return (null, string.Empty, string.Empty, string.Empty, string.Empty);
+                return (dealerId,
+                    FirstFilled(JsonString(dealer.CustomFields, "legal_name"), JsonString(dealer.CustomFields, "shop_name"), dealer.Name),
+                    string.Empty,
+                    // Read the way the customer master reads them - the billing pair only as a fallback.
+                    Name(states, JsonULong(dealer.CustomFields, "state_id") ?? JsonULong(dealer.CustomFields, "billing_state")),
+                    Name(cities, JsonULong(dealer.CustomFields, "city_id") ?? JsonULong(dealer.CustomFields, "billing_city")));
+            }
+            var employeeId = AssignedEmployee(customer);
+            if (!employeeId.HasValue || !employees.TryGetValue(employeeId.Value, out var employee)) return (null, string.Empty, string.Empty, string.Empty, string.Empty);
+            if (!Domain.Services.EmployeeStatus.Matches(employeeStatus, employee.Active)) return (null, string.Empty, string.Empty, string.Empty, string.Empty);
+            return (employeeId, employee.Name, Domain.Services.EmployeeStatus.Of(employee.Active), string.Empty, string.Empty);
+        }
+
+        var rows = retailers
+            .Select(customer => new { Customer = customer, Owner = Owner(customer) })
+            .Where(x => x.Owner.Id.HasValue)
+            .GroupBy(x => x.Owner.Id!.Value)
+            .Select(group =>
+            {
+                var total = group.Count();
+                var active = group.Count(x => activatedByNow.Contains(x.Customer.Id));
+                var newlyActivated = group.Count(x => activatedByNow.Contains(x.Customer.Id) && !activatedBefore.Contains(x.Customer.Id));
+                return new
+                {
+                    Name = group.First().Owner.Name,
+                    Status = group.First().Owner.Status,
+                    group.First().Owner.State,
+                    group.First().Owner.City,
+                    Total = total,
+                    Active = active,
+                    Inactive = total - active,
+                    NewActivated = newlyActivated,
+                    // Written as a fraction and shown as a percentage by the cell format, so
+                    // the column can be sorted and averaged rather than only read.
+                    Activation = total == 0 ? 0m : (decimal)active / total,
+                };
+            })
+            .OrderByDescending(x => x.Total).ThenBy(x => x.Name).ToList();
+
+        using var workbook = new XLWorkbook();
+        var sheet = workbook.Worksheets.Add(byDealer ? "Activation Dealer Wise" : "Activation ASR Wise");
+        var headers = byDealer
+            ? new[] { "Dealer", "State", "City", "Total Retailers", $"Active ({currentStart:MMM-yy})", $"Inactive ({currentStart:MMM-yy})", $"New Activated ({currentStart:MMM-yy})", "Activation %" }
+            : new[] { "ASR", "Employee Status", "Total Retailers", $"Active ({currentStart:MMM-yy})", $"Inactive ({currentStart:MMM-yy})", $"New Activated ({currentStart:MMM-yy})", "Activation %" };
+        for (var i = 0; i < headers.Length; i++) sheet.Cell(1, i + 1).Value = headers[i];
+        var rowNumber = 2;
+        foreach (var item in rows)
+            WriteRow(sheet, rowNumber++, byDealer
+                ? new object?[] { item.Name, item.State, item.City, item.Total, item.Active, item.Inactive, item.NewActivated, item.Activation }
+                : new object?[] { item.Name, item.Status, item.Total, item.Active, item.Inactive, item.NewActivated, item.Activation });
+        StyleSimpleExport(sheet, headers.Length, rowNumber - 1, "D9E1F2");
+        if (rowNumber > 2) sheet.Range(2, headers.Length, rowNumber - 1, headers.Length).Style.NumberFormat.Format = "0.0%";
+        WriteRfmActivationLogicSheet(workbook, byDealer, previousStart, currentStart, currentEnd, rows.Count,
+            rows.Sum(x => x.Total), rows.Sum(x => x.Active), rows.Sum(x => x.NewActivated));
+        using var stream = new MemoryStream(); workbook.SaveAs(stream);
+        var who = byDealer ? "Dealer" : "ASR";
+        return File(stream.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            $"RFM_Activation_{who}_Wise_{currentStart:MMM-yyyy}_{DateTime.Now:yyyy-MM-dd_HHmmss}.xlsx");
+    }
+
+
+    /// <summary>The Logic sheet the activation report carries.</summary>
+    private static void WriteRfmActivationLogicSheet(XLWorkbook workbook, bool byDealer, DateTime previousStart,
+        DateTime currentStart, DateTime currentEnd, int rowCount, int totalRetailers, int activeRetailers, int newlyActivated)
+    {
+        var sheet = workbook.Worksheets.Add("Logic");
+        var row = 1;
+        void Title(string text)
+        {
+            sheet.Cell(row, 1).Value = text;
+            sheet.Range(row, 1, row, 2).Merge().Style.Font.SetBold().Font.SetFontSize(14);
+            row++;
+        }
+        void Section(string text)
+        {
+            row++;
+            sheet.Cell(row, 1).Value = text;
+            var range = sheet.Range(row, 1, row, 2).Merge();
+            range.Style.Font.SetBold().Fill.SetBackgroundColor(XLColor.FromHtml("D9E1F2"));
+            row++;
+        }
+        void Line(string label, string text)
+        {
+            sheet.Cell(row, 1).Value = label;
+            sheet.Cell(row, 1).Style.Font.SetBold().Alignment.SetVertical(XLAlignmentVerticalValues.Top);
+            sheet.Cell(row, 2).Value = text;
+            sheet.Cell(row, 2).Style.Alignment.SetWrapText(true).Alignment.SetVertical(XLAlignmentVerticalValues.Top);
+            row++;
+        }
+
+        var owner = byDealer ? "dealer" : "ASR";
+        var current = currentStart.ToString("MMMM yyyy", CultureInfo.InvariantCulture);
+        var previous = previousStart.ToString("MMMM yyyy", CultureInfo.InvariantCulture);
+
+        Title("RFM Activation - how this file is built");
+        Line("Sheet", byDealer ? "Dealer Wise - one row per dealer." : "ASR Wise - one row per ASR.");
+        Line("Counted up to", $"The end of {current}. New Activated compares that with the end of {previous}.");
+        Line("Downloaded", DateTime.Now.ToString("dd MMM yyyy, HH:mm", CultureInfo.InvariantCulture));
+
+        Section("1. Whose book each row is");
+        Line(byDealer ? "Dealer" : "ASR", byDealer
+            ? "The dealer the retailer is mapped to in the customer master. A retailer that names no dealer cannot be attributed to one and is left out of this sheet."
+            : "The employee the retailer is assigned to. A retailer with nobody assigned is left out of this sheet.");
+        if (byDealer)
+            Line("State, City", "The dealer's own state and city, read from its record in the customer master. A dealer that still carries an old billing city is shown by the city on its record, which is what the CRM screen shows.");
+        Line("Filters", "If a Zone, Branch, State or District was chosen on the screen, only the matching retailers are counted - in every column.");
+        if (!byDealer)
+            Line("Employee Status", "Y for an ASR still switched on, N for one switched off. A switched-off ASR keeps the retailers still filed under them, so the row stays and says so - otherwise a book of 255 retailers would quietly vanish from the report. The Employee Status filter on the screen narrows to one or the other; it shows all by default.");
+        Line("Who may see what", "The file only ever contains the customers the person downloading it is allowed to see: an admin sees all, a branch manager their branch, everyone else their own reporting line.");
+
+        Section("2. What each column counts");
+        Line("Total Retailers", $"Every retailer on this {owner}'s book that got through the filters - switched off ones and ones that have never ordered included. This is the book, not the working part of it.");
+        Line("Active", $"How many of them had placed at least one order by the end of {current} - counted from the beginning, not from the start of the month. Once a retailer orders it stays active. This is not the switch on the customer master.");
+        Line("Inactive", $"The rest: Total Retailers minus Active. They are on the book and have never placed an order. The two always add back to Total.");
+        Line("New Activated", $"Of the Active ones, how many were still at nil at the end of {previous}. In other words, retailers whose very first order landed in {current}.");
+        Line("Activation %", "Active out of Total Retailers. 92 of 120 reads 76.7%.");
+
+        Section("3. Reading it");
+        Line("A high Activation %", $"Most of the {owner}'s book has been opened. A low one with a large book is where the work is - those retailers were registered and never bought anything.");
+        Line("New Activated on its own", "How many first-time buyers the month brought in. Activation % can only climb over time; New Activated says whether it climbed this month.");
+        Line("Row order", "Largest book first. Sort the sheet on any column in Excel to read it another way.");
+
+        Section("4. This file in numbers");
+        Line(byDealer ? "Dealers listed" : "ASRs listed", rowCount.ToString("N0", CultureInfo.InvariantCulture));
+        Line("Retailers on their books", totalRetailers.ToString("N0", CultureInfo.InvariantCulture));
+        Line($"Activated by end of {current}", activeRetailers.ToString("N0", CultureInfo.InvariantCulture));
+        Line($"Of those, first ordered in {current}", newlyActivated.ToString("N0", CultureInfo.InvariantCulture));
+        Line("Overall activation", totalRetailers == 0 ? "-" : $"{(decimal)activeRetailers * 100 / totalRetailers:0.0}%");
+
+        sheet.Column(1).Width = 26;
+        sheet.Column(2).Width = 105;
+        sheet.Rows().AdjustToContents();
+    }
+
+    /// <summary>Every retailer that had placed an order by <paramref name="upTo"/>.</summary>
+    private async Task<HashSet<ulong>> BuyersUpToAsync(DateTime upTo, CancellationToken ct) =>
+        (await _db.Orders.AsNoTracking()
+            .Where(x => x.DeletedAt == null && x.BuyerId.HasValue && x.OrderDate.HasValue && x.OrderDate < upTo)
+            .Select(x => x.BuyerId!.Value).Distinct().ToListAsync(ct))
+        .ToHashSet();
+
+    private const string NoOrder = "No Order Yet";
+
+    /// <summary>The Logic sheet the movement report carries: what the two months are, how a
+    /// month is scored on its own, and what each of the change columns is saying.</summary>
+    private static void WriteRfmMovementLogicSheet(XLWorkbook workbook, DateTime previousStart,
+        DateTime currentStart, DateTime currentEnd, int rowCount, int previousCount, int currentCount)
+    {
+        var sheet = workbook.Worksheets.Add("Logic");
+        var row = 1;
+        void Title(string text)
+        {
+            sheet.Cell(row, 1).Value = text;
+            sheet.Range(row, 1, row, 2).Merge().Style.Font.SetBold().Font.SetFontSize(14);
+            row++;
+        }
+        void Section(string text)
+        {
+            row++;
+            sheet.Cell(row, 1).Value = text;
+            var range = sheet.Range(row, 1, row, 2).Merge();
+            range.Style.Font.SetBold().Fill.SetBackgroundColor(XLColor.FromHtml("D9E1F2"));
+            row++;
+        }
+        void Line(string label, string text)
+        {
+            sheet.Cell(row, 1).Value = label;
+            sheet.Cell(row, 1).Style.Font.SetBold().Alignment.SetVertical(XLAlignmentVerticalValues.Top);
+            sheet.Cell(row, 2).Value = text;
+            sheet.Cell(row, 2).Style.Alignment.SetWrapText(true).Alignment.SetVertical(XLAlignmentVerticalValues.Top);
+            row++;
+        }
+
+        var current = currentStart.ToString("MMMM yyyy", CultureInfo.InvariantCulture);
+        var previous = previousStart.ToString("MMMM yyyy", CultureInfo.InvariantCulture);
+
+        Title("RFM Movement - how this file is built");
+        Line("Comparing", $"Where each retailer stood at the end of {current} against where it stood at the end of {previous}.");
+        Line("Downloaded", DateTime.Now.ToString("dd MMM yyyy, HH:mm", CultureInfo.InvariantCulture));
+
+        Section("1. The two snapshots");
+        Line("Current", $"Every order placed up to {currentEnd.AddDays(-1):dd MMM yyyy} - the end of {current}. Counted from the very first order the system holds, not from the start of the month.");
+        Line("Previous", $"Every order placed up to {currentStart.AddDays(-1):dd MMM yyyy} - the end of {previous}, read the same way.");
+        Line("Why from the beginning", $"The question is where the retailer stands, not what it did in one month. So {current} is scored against the whole history behind it and compared with where the same retailer stood a month earlier.");
+        Line("Filters", "If a Zone, Branch, State or District was chosen on the screen, both snapshots are narrowed the same way, and the ratings are worked out inside that smaller group.");
+
+        Section("2. Who gets a row");
+        Line("Has ordered before", "The retailer is scored in both snapshots and the two are compared.");
+        Line("First order this month", $"It still gets a row, reading \"{NoOrder}\" on the earlier side - there was nothing to score it on yet.");
+        Line("Never ordered", "Not in this file at all - there is nothing to compare.");
+
+        Section("3. How a snapshot is scored");
+        Line("The three figures", "Up to that date: how long since the retailer's last order, how many orders it has placed in all, and what they have come to in all.");
+        Line("Rating 1 to 5", "Every retailer in the snapshot is lined up on each figure, best first, and cut into five equal groups of 20%. The leading fifth scores 5, the last fifth 1.");
+        Line("A rating is a place, not a total", "This is the part worth understanding. A running total never falls - nobody's order count or value goes down. What falls is the retailer's place in the line. Keep ordering at the same pace while the market speeds up and the rating slides anyway, and that is a real warning.");
+        Line("Category", $"Total Rating is R x {RecencyWeight:0.00} + F x {FrequencyWeight:0.00} + M x {MonetaryWeight:0.00} out of {RfmMaxRating:0.0}, turned into a percentage: 80 and above Platinum, 60 to 79 Diamond, 40 to 59 Gold, 20 to 39 Silver, below that Bronze. The same ladder the other two RFM sheets use.");
+
+        Section("4. What the change columns say");
+        Line("R Change, F Change, M Change", "Up, Down or Same - which way that one rating moved between the two snapshots. Down means the retailer lost ground against the others on that figure, not that its total fell. A dash means it had nothing to be scored on a month ago.");
+        Line("Movement", "Where the category went: Upgraded, Downgraded or No Change. It follows the category, not the decimals, so a retailer can slip a little inside Gold and still read No Change.");
+        Line("Reason", "Only the parts that actually moved, in plain words - so a row that reads \"Order frequency dropped\" moved for that reason and not for the other two.");
+
+        Section("5. Row order");
+        Line("Worst news first", "Downgraded rows first, then Upgraded, then No Change; inside each, the weakest category first. The retailers needing a call are at the top.");
+
+        Section("6. This file in numbers");
+        Line("Rows", rowCount.ToString("N0", CultureInfo.InvariantCulture));
+        Line($"Scored at end of {current}", currentCount.ToString("N0", CultureInfo.InvariantCulture));
+        Line($"Scored at end of {previous}", previousCount.ToString("N0", CultureInfo.InvariantCulture));
+
+        sheet.Column(1).Width = 26;
+        sheet.Column(2).Width = 105;
+        sheet.Rows().AdjustToContents();
+    }
+
+    /// <summary>Every order up to <paramref name="upTo"/>, scored - the retailers as they
+    /// stood on that date.</summary>
+    private async Task<Dictionary<ulong, RfmScore<RfmRow>>> RfmSnapshotAsync(RfmFilter filter, DateTime upTo, CancellationToken ct)
+    {
+        var (rows, _) = await RfmRetailersAsync(filter, ct, null, upTo);
+        return ScoreRfm(rows, x => x.CustomerId, x => x.RecencyDays, x => x.Frequency, x => x.Monetary)
+            .ToDictionary(x => x.Row.CustomerId);
+    }
+
+    /// <summary>Which way one of the three ratings went. A month the retailer sat out has no
+    /// rating to compare, so it reads as a dash rather than as a fall to nothing.</summary>
+    private static string Movement(int? before, int? now) =>
+        before is null || now is null ? "-" : now > before ? "Up" : now < before ? "Down" : "Same";
+
+    private static int CategoryRank(string category) => category switch
+    {
+        "Platinum" => 5, "Diamond" => 4, "Gold" => 3, "Silver" => 2, "Bronze" => 1, _ => 0
+    };
+
+    private static string CategoryMovement(string before, string now)
+    {
+        var (from, to) = (CategoryRank(before), CategoryRank(now));
+        return to > from ? "Upgraded" : to < from ? "Downgraded" : "No Change";
+    }
+
+    /// <summary>Why the row moved, in the words a field manager would use. Only the parts
+    /// that actually changed are named, so the reason reads as the cause and not as a
+    /// restatement of the three columns beside it.</summary>
+    private static string MovementReason(RfmScore<RfmRow>? before, RfmScore<RfmRow>? now)
+    {
+        if (before is null) return "First order ever came in this month - nothing to compare against";
+        if (now is null) return "No order yet";
+
+        var fell = new List<string>();
+        var rose = new List<string>();
+        void Note(int was, int isNow, string down, string up)
+        {
+            if (isNow < was) fell.Add(down);
+            else if (isNow > was) rose.Add(up);
+        }
+        // A running total never falls, so a falling rating means the market moved and this
+        // retailer did not. The wording says that rather than claiming the figure dropped.
+        Note(before.R, now.R, "gone longer without ordering", "ordered more recently");
+        Note(before.F, now.F, "order frequency slipped behind others", "gained ground on order frequency");
+        Note(before.M, now.M, "order value slipped behind others", "gained ground on order value");
+
+        if (fell.Count == 0 && rose.Count == 0) return "No change in any of the three";
+        var parts = new List<string>();
+        if (fell.Count > 0) parts.Add(Join(fell));
+        if (rose.Count > 0) parts.Add(Join(rose));
+        var sentence = string.Join(", but ", parts);
+        return char.ToUpperInvariant(sentence[0]) + sentence[1..];
+
+        static string Join(IReadOnlyList<string> items) => items.Count switch
+        {
+            1 => items[0],
+            2 => $"{items[0]} and {items[1]}",
+            _ => $"{string.Join(", ", items.Take(items.Count - 1))} and {items[^1]}"
+        };
+    }
+
+    /// <summary>
+    /// Every retailer the screen's filters and the caller's own scope leave standing -
+    /// switched off ones and ones that have never ordered included. What each report does
+    /// with them after that is its own business: the RFM sheets narrow to the ones that
+    /// order, the activation sheet counts the whole book against them.
+    /// </summary>
+    private async Task<List<Domain.Entities.Customer>> RfmFilteredRetailersAsync(RfmFilter filter, CancellationToken ct)
+    {
+        var actor = CurrentUserId();
+        var retailers = await _db.Customers.AsNoTracking()
+            .Where(x => x.CustomerType == 2 && x.DeletedAt == null)
+            .ToListAsync(ct);
+
+        // The same scope the Customers screen applies - admin everything, a branch manager
+        // their branch, everyone else their own downline - read through the one method that
+        // owns that rule rather than restated here.
+        var visible = (await _customers.FilterVisibleCustomerIdsAsync(actor, retailers.Select(x => x.Id).ToArray(), ct)).ToHashSet();
+        retailers = retailers.Where(x => visible.Contains(x.Id)).ToList();
+
+        if (filter.ZoneId.HasValue || filter.BranchId.HasValue)
+        {
+            var employees = (await _db.Users.AsNoTracking().Where(x => x.DeletedAt == null)
+                .Select(x => new { x.Id, x.DivisionId, x.PrimaryBranchId, x.BranchId }).ToListAsync(ct))
+                .ToDictionary(x => x.Id);
+            retailers = retailers.Where(customer =>
+            {
+                var employeeId = AssignedEmployee(customer);
+                if (!employeeId.HasValue || !employees.TryGetValue(employeeId.Value, out var employee)) return false;
+                if (filter.ZoneId.HasValue && employee.DivisionId != filter.ZoneId) return false;
+                return !filter.BranchId.HasValue || EmployeeBranchIds(employee.PrimaryBranchId, employee.BranchId).Contains(filter.BranchId.Value);
+            }).ToList();
+        }
+
+        if (filter.StateId.HasValue || filter.DistrictId.HasValue)
+        {
+            var places = await AddressPlacesAsync(ct);
+            ulong? StateOf(Domain.Entities.Customer customer) => JsonULong(customer.CustomFields, "state_id")
+                ?? JsonULong(customer.CustomFields, "billing_state")
+                ?? (places.TryGetValue(customer.Id, out var place) ? place.StateId : null);
+            ulong? DistrictOf(Domain.Entities.Customer customer) => JsonULong(customer.CustomFields, "district_id")
+                ?? JsonULong(customer.CustomFields, "billing_district")
+                ?? (places.TryGetValue(customer.Id, out var place) ? place.DistrictId : null);
+            if (filter.StateId.HasValue) retailers = retailers.Where(x => StateOf(x) == filter.StateId).ToList();
+            if (filter.DistrictId.HasValue) retailers = retailers.Where(x => DistrictOf(x) == filter.DistrictId).ToList();
+        }
+
+        return retailers;
+    }
+
+    /// <param name="from">Start of the window to measure, or null for every order ever.</param>
+    /// <param name="to">One past the end of that window.</param>
+    private async Task<(List<RfmRow> Rows, Dictionary<ulong, int> Registered)> RfmRetailersAsync(
+        RfmFilter filter, CancellationToken ct, DateTime? from = null, DateTime? to = null)
+    {
+        var actor = CurrentUserId();
+
+        // Aggregated in the database in one pass: on live this is the whole orders table.
+        var orderStats = (await _db.Orders.AsNoTracking()
+            .Where(x => x.DeletedAt == null && x.BuyerId.HasValue && x.OrderDate.HasValue
+                && (from == null || x.OrderDate >= from) && (to == null || x.OrderDate < to))
+            .GroupBy(x => x.BuyerId!.Value)
+            .Select(g => new { BuyerId = g.Key, Orders = g.Count(), LastOrder = g.Max(x => x.OrderDate!.Value), Value = g.Sum(x => x.GrandTotal) })
+            .ToListAsync(ct))
+            .ToDictionary(x => x.BuyerId);
+
+        var retailers = await RfmFilteredRetailersAsync(filter, ct);
+
+        var states = await _db.States.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.StateName, ct);
+        var cities = await _db.Cities.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.CityName, ct);
+        // The dealer's code and name are read from the customer master - the dealer this
+        // retailer is mapped to - exactly as the customer export reads them.
+        var dealers = (await _db.Customers.AsNoTracking().Where(x => x.CustomerType == 1 && x.DeletedAt == null)
+            .Select(x => new { x.Id, x.Name, x.CustomerCode, x.CustomFields }).ToListAsync(ct))
+            .ToDictionary(x => x.Id);
+
+        static ulong? DealerOf(Domain.Entities.Customer customer) => JsonULong(customer.CustomFields, "distributor_name");
+        var registered = retailers
+            .Select(DealerOf)
+            .Where(id => id.HasValue && dealers.ContainsKey(id.Value))
+            .GroupBy(id => id!.Value)
+            .ToDictionary(group => group.Key, group => group.Count());
+
+        // The report itself is only the switched-on retailers that have actually ordered.
+        retailers = retailers.Where(x => x.Active == "Y" && orderStats.ContainsKey(x.Id)).ToList();
+
+        // The retailer's own state, for its column - read the same way the state filter
+        // reads it, custom fields first and the saved address behind them.
+        var places = await AddressPlacesAsync(ct);
+        ulong? StateOf(Domain.Entities.Customer customer) => JsonULong(customer.CustomFields, "state_id")
+            ?? JsonULong(customer.CustomFields, "billing_state")
+            ?? (places.TryGetValue(customer.Id, out var place) ? place.StateId : null);
+
+        // Recency is counted back from the end of the window being read: for a past month
+        // that is the last day of that month, never today, or every row in it would read as
+        // months stale.
+        var today = DateTime.Today;
+        var asOf = to.HasValue && to.Value.AddDays(-1) < today ? to.Value.AddDays(-1) : today;
+        var rows = retailers.Select(customer =>
+        {
+            var stats = orderStats[customer.Id];
+            var dealerId = JsonULong(customer.CustomFields, "distributor_name");
+            var hasDealer = dealerId.HasValue && dealers.TryGetValue(dealerId.Value, out _);
+            dealers.TryGetValue(dealerId ?? 0, out var dealer);
+            return new RfmRow(
+                customer.Id,
+                FirstFilled(customer.Name, JsonString(customer.CustomFields, "shop_name")),
+                FirstFilled(customer.Mobile, customer.ContactNumber),
+                hasDealer ? dealerId : null,
+                dealer is null ? string.Empty : FirstFilled(dealer.CustomerCode, JsonString(dealer.CustomFields, "distributor_code")),
+                dealer is null ? string.Empty : FirstFilled(JsonString(dealer.CustomFields, "legal_name"), JsonString(dealer.CustomFields, "shop_name"), dealer.Name),
+                // The dealer's own state and city, read the way the customer master reads
+                // them - state_id and city_id first, the billing pair only as a fallback.
+                // Some dealers carry a stale billing_city: Balia Traders holds Nalanda there
+                // and Patna in city_id, and Patna is what its record shows.
+                dealer is null ? string.Empty : Name(states, JsonULong(dealer.CustomFields, "state_id") ?? JsonULong(dealer.CustomFields, "billing_state")),
+                dealer is null ? string.Empty : Name(cities, JsonULong(dealer.CustomFields, "city_id") ?? JsonULong(dealer.CustomFields, "billing_city")),
+                Name(states, StateOf(customer)),
+                Math.Max(0, (int)(asOf - stats.LastOrder.Date).TotalDays),
+                stats.Orders,
+                stats.Value);
+        }).ToList();
+        return (rows, registered);
+    }
+
+    /// <summary>What each of the three is worth in the Total Rating. Monetary value counts
+    /// for half, frequency for a third and recency for a fifth, so two retailers on the same
+    /// 1-to-5 ratings are separated by where those ratings sit.</summary>
+    private const decimal RecencyWeight = 0.20m, FrequencyWeight = 0.30m, MonetaryWeight = 0.50m;
+
+    /// <summary>The best anything can score: a 5 on all three, weighted - 5x0.2 + 5x0.3 +
+    /// 5x0.5. Rating % is what a Total Rating is worth out of this.</summary>
+    private const decimal RfmMaxRating = 5m;
+
+    /// <summary>
+    /// The "Logic" sheet both downloads carry.
+    ///
+    /// Written for whoever opens the file rather than for a developer: it says who is in
+    /// the report, what each figure measures, how a 1 to 5 rating is arrived at and how
+    /// that becomes a category - so a row can be checked without asking anyone. The last
+    /// section counts this particular file, so the explanation and the numbers cannot
+    /// drift apart.
+    /// </summary>
+    private static void WriteRfmLogicSheet<T>(XLWorkbook workbook, bool dealerWise, IReadOnlyList<RfmScore<T>> scored, int dealerCount = 0)
+    {
+        var sheet = workbook.Worksheets.Add("Logic");
+        // Both sheets are scored over retailers; the dealer sheet only groups them.
+        const string subject = "retailer";
+        const string subjects = "retailers";
+        var row = 1;
+
+        void Title(string text)
+        {
+            sheet.Cell(row, 1).Value = text;
+            sheet.Range(row, 1, row, 2).Merge().Style.Font.SetBold().Font.SetFontSize(14);
+            row++;
+        }
+        void Section(string text)
+        {
+            row++;
+            sheet.Cell(row, 1).Value = text;
+            var range = sheet.Range(row, 1, row, 2).Merge();
+            range.Style.Font.SetBold().Fill.SetBackgroundColor(XLColor.FromHtml("D9E1F2"));
+            range.Style.Alignment.SetVertical(XLAlignmentVerticalValues.Center);
+            row++;
+        }
+        void Line(string label, string text)
+        {
+            sheet.Cell(row, 1).Value = label;
+            sheet.Cell(row, 1).Style.Font.SetBold().Alignment.SetVertical(XLAlignmentVerticalValues.Top);
+            sheet.Cell(row, 2).Value = text;
+            sheet.Cell(row, 2).Style.Alignment.SetWrapText(true).Alignment.SetVertical(XLAlignmentVerticalValues.Top);
+            row++;
+        }
+
+        Title("RFM Report - how this file is built");
+        Line("Sheet", dealerWise ? "Dealer Wise - one row per dealer, counting how its retailers scored." : "Retailer Wise - one row per retailer.");
+        Line("Downloaded", DateTime.Now.ToString("dd MMM yyyy, HH:mm", CultureInfo.InvariantCulture));
+
+        Section("1. Who is in this report");
+        Line("Retailers counted", "Every retailer that is switched on in the customer master, has not been deleted, and has placed at least one order. A retailer with no order has no recency, no frequency and no value to measure, so it is not listed at all.");
+        if (dealerWise)
+            Line("Dealers listed", "Every dealer that has at least one such retailer mapped to it. A dealer whose retailers have all gone quiet does not appear. A retailer whose customer master names no dealer cannot be attributed to one, so it is left out of this sheet - it is still on the Retailer Wise sheet.");
+        Line("Filters", "If a Zone, Branch, State or District was chosen on the screen, only the matching retailers are in the file, and every rating below is worked out inside that smaller group - not against the whole country.");
+        Line("Who may see what", "The file only ever contains the customers the person downloading it is allowed to see: an admin sees all, a branch manager their branch, everyone else their own reporting line.");
+
+        Section("2. The three figures");
+        Line("Measured per retailer", dealerWise
+            ? "Even on this sheet the three figures belong to the retailer. Nothing is rated at dealer level - the dealer's row only counts how its retailers came out."
+            : "Each row's three figures are that retailer's own.");
+        Line("Recency (Days)", "Days between today and the retailer's most recent order. Fewer days is better.");
+        Line("Frequency (Orders)", "How many orders the retailer has placed. More is better.");
+        Line("Monetary Value", "The total value of those orders in rupees. More is better.");
+        Line("Period covered", "Every order ever placed counts - the report is not tied to a month or a year. Cancelled and deleted orders are not counted.");
+
+        Section("3. How a rating of 1 to 5 is given");
+        Line("The method", $"Take all {subjects} in this file and stand them in a line on one figure, best first. Cut that line into five equal groups of 20%. The first group scores 5, the next 4, and so on down to 1 for the last group. This is done three times - once for Recency, once for Frequency, once for Monetary Value.");
+        Line("What a 5 means", $"A 5 is a position, not a target. It means this {subject} is in the leading fifth of the {subjects} in this file on that figure. Change the filters and the same {subject} can score differently, because it is being compared with a different set.");
+        Line("Rows on a cut line", "Because the five groups are kept equal in size, two rows with exactly the same figure can occasionally fall either side of a cut and differ by one rating point. This happens only at the four cut lines, nowhere else.");
+
+        Section("4. Total Rating and Rating %");
+        Line("The three do not count equally", $"Money counts for half, how often for a third, how recent for a fifth: R is worth {RecencyWeight * 100:0}%, F {FrequencyWeight * 100:0}% and M {MonetaryWeight * 100:0}%. Two rows on the same three ratings therefore land in the same place, but a strong M lifts a row further than a strong R does.");
+        Line("What each is worth", $"A rating of 5 is worth {5 * RecencyWeight:0.0} on R, {5 * FrequencyWeight:0.0} on F and {5 * MonetaryWeight:0.0} on M. A rating of 1 is worth {RecencyWeight:0.0#}, {FrequencyWeight:0.0#} and {MonetaryWeight:0.0#}. These parts are not shown as columns on the sheet - only the total they add up to.");
+        Line("Total Rating", $"Those three added up: R x {RecencyWeight:0.00} + F x {FrequencyWeight:0.00} + M x {MonetaryWeight:0.00}. The lowest possible is {1 * RecencyWeight + 1 * FrequencyWeight + 1 * MonetaryWeight:0.0} (a 1 on each) and the highest is {RfmMaxRating:0.0} (a 5 on each).");
+        Line("Rating %", $"Total Rating out of the {RfmMaxRating:0.0} on offer, rounded to a whole number. A Total Rating of 4.8 reads {(int)Math.Round(4.8m * 100m / RfmMaxRating, MidpointRounding.AwayFromZero)}%, a 4.6 reads {(int)Math.Round(4.6m * 100m / RfmMaxRating, MidpointRounding.AwayFromZero)}%.");
+        Line("Worked example", $"R 3, F 5, M 5 becomes {3 * RecencyWeight:0.0} + {5 * FrequencyWeight:0.0} + {5 * MonetaryWeight:0.0} = {3 * RecencyWeight + 5 * FrequencyWeight + 5 * MonetaryWeight:0.0}, which is {(int)Math.Round((3 * RecencyWeight + 5 * FrequencyWeight + 5 * MonetaryWeight) * 100m / RfmMaxRating, MidpointRounding.AwayFromZero)}% - {RfmCategory((int)Math.Round((3 * RecencyWeight + 5 * FrequencyWeight + 5 * MonetaryWeight) * 100m / RfmMaxRating, MidpointRounding.AwayFromZero))}.");
+
+        Section("5. How the Category is decided");
+        Line("Rating %", "Category");
+        sheet.Cell(row - 1, 2).Style.Font.SetBold();
+        foreach (var (band, name) in new[] { ("80 to 100", "Platinum"), ("60 to 79", "Diamond"), ("40 to 59", "Gold"), ("20 to 39", "Silver"), ("1 to 19", "Bronze") })
+        {
+            sheet.Cell(row, 1).Value = band;
+            sheet.Cell(row, 2).Value = name;
+            row++;
+        }
+        Line("Worth knowing", $"The lowest Rating % anything can reach is {(int)Math.Round((1 * RecencyWeight + 1 * FrequencyWeight + 1 * MonetaryWeight) * 100m / RfmMaxRating, MidpointRounding.AwayFromZero)}% - a 1 on each of the three figures - so nothing falls into Bronze while the ratings are scored this way. The weakest {subjects} sit in Silver.");
+
+        Section("6. Where the other columns come from");
+        if (dealerWise)
+        {
+            Line("Dealer Code, Dealer Name", "From the dealer's own record in the customer master.");
+            Line("State, City", "The dealer's own state and city - its billing address first, its plain address where no billing one is set. Not the retailers'.");
+            Line("Total Registered Retailers", "Every retailer on this dealer's book: switched off ones and ones that have never ordered are counted too. Only the screen's filters and what the person downloading may see narrow it.");
+            Line("Active Retailers", "How many of those retailers this report actually scores - switched on, not deleted, and with at least one order.");
+            Line("Order Value (Lac)", "The order value of those active retailers added together, shown in lakhs - rupees divided by 1,00,000. The registered-but-quiet ones contribute nothing.");
+            Line("Platinum to Bronze", "How many of the dealer's active retailers landed in each category on the Retailer Wise sheet. These five always add up to Active Retailers - a dealer with 20 in Platinum and 2 in Silver has a strong book; the other way round does not.");
+            Line("Row order", "Highest Order Value first.");
+        }
+        else
+        {
+            Line("Dealer Code, Dealer Name", "The dealer this retailer is mapped to in the customer master. It is not read from who sold the order.");
+            Line("State", "The retailer's own address.");
+            Line("Dealer City", "The city on the dealer's own record in the customer master - its billing city, or its city where no billing city is set. It is the dealer's city, not the retailer's.");
+            Line("Number", "The retailer's mobile number from the customer master.");
+        }
+        Line("Zone and Branch filters", "Read from the employee the retailer is assigned to - their zone, and their branch.");
+
+        Section("7. This file in numbers");
+        if (dealerWise) Line("Dealers listed", dealerCount.ToString("N0", CultureInfo.InvariantCulture));
+        Line(dealerWise ? "Retailers behind them" : "Retailers listed", scored.Count.ToString("N0", CultureInfo.InvariantCulture));
+        Line("R Rating spread", Spread(scored.Select(x => x.R)));
+        Line("F Rating spread", Spread(scored.Select(x => x.F)));
+        Line("M Rating spread", Spread(scored.Select(x => x.M)));
+        Line("Category spread", string.Join(", ", new[] { "Platinum", "Diamond", "Gold", "Silver", "Bronze" }
+            .Select(name => new { name, count = scored.Count(x => RfmCategory(x.Percent) == name) })
+            .Where(x => x.count > 0)
+            .Select(x => $"{x.name} {x.count:N0}")));
+
+        sheet.Column(1).Width = 26;
+        sheet.Column(2).Width = 105;
+        sheet.Rows().AdjustToContents();
+    }
+
+    private static string Spread(IEnumerable<int> ratings)
+    {
+        var counted = ratings.GroupBy(x => x).ToDictionary(x => x.Key, x => x.Count());
+        return string.Join(", ", Enumerable.Range(1, 5).Reverse().Select(rating => $"{rating} = {counted.GetValueOrDefault(rating):N0}"));
+    }
+
+    /// <summary>What a Rating % is called. The lowest anything on this report can score is
+    /// 20% - a 1 on each of the three - so Bronze only appears if the rating scale itself
+    /// changes.</summary>
+    private static string RfmCategory(int percent) => percent switch
+    {
+        >= 80 => "Platinum",
+        >= 60 => "Diamond",
+        >= 40 => "Gold",
+        >= 20 => "Silver",
+        _ => "Bronze"
+    };
+
+    /// <summary>R, F and M scored over whatever the sheet counts - retailers on one,
+    /// dealers on the other - and the three put together into a code, a total and a
+    /// percentage. Rows come back best first.</summary>
+    private static List<RfmScore<T>> ScoreRfm<T>(IReadOnlyList<T> rows, Func<T, ulong> key,
+        Func<T, int> recencyDays, Func<T, int> frequency, Func<T, decimal> monetary)
+    {
+        var recency = RfmQuintiles(rows.OrderBy(recencyDays).ThenBy(key).Select(key).ToList());
+        var orders = RfmQuintiles(rows.OrderByDescending(frequency).ThenBy(key).Select(key).ToList());
+        var value = RfmQuintiles(rows.OrderByDescending(monetary).ThenBy(key).Select(key).ToList());
+        return rows.Select(row =>
+        {
+            var id = key(row);
+            var (r, f, m) = (recency[id], orders[id], value[id]);
+            var (rWeighted, fWeighted, mWeighted) = (r * RecencyWeight, f * FrequencyWeight, m * MonetaryWeight);
+            var total = rWeighted + fWeighted + mWeighted;
+            // Out of the 5 on offer, so a 4.8 reads 96%.
+            return new RfmScore<T>(row, r, f, m, rWeighted, fWeighted, mWeighted, total,
+                (int)Math.Round(total * 100m / RfmMaxRating, MidpointRounding.AwayFromZero));
+        }).OrderByDescending(x => x.Total).ThenByDescending(x => monetary(x.Row)).ToList();
+    }
+
+    /// <summary>1 to 5 over keys already ordered best first: the leading fifth scores 5,
+    /// the trailing fifth 1. Ties can fall either side of a 20% line - the groups are equal
+    /// in size, which is what an RFM quintile is.</summary>
+    private static Dictionary<ulong, int> RfmQuintiles(IReadOnlyList<ulong> ordered)
+    {
+        var scores = new Dictionary<ulong, int>(ordered.Count);
+        for (var i = 0; i < ordered.Count; i++) scores[ordered[i]] = 5 - (int)((long)i * 5 / ordered.Count);
+        return scores;
+    }
+
+    /// <summary>Who a customer is assigned to, read from the indexed computed columns: the
+    /// employee named in custom_fields, then the sales executive, then executive_id.</summary>
+    private static ulong? AssignedEmployee(Domain.Entities.Customer customer) =>
+        customer.AssignedEmployeeId ?? customer.AssignedSalesExecutiveId ?? customer.AssignedFallbackEmployeeId ?? customer.ExecutiveId;
+
+    private static IEnumerable<ulong> EmployeeBranchIds(ulong? primaryBranchId, string? branchId)
+    {
+        if (primaryBranchId.HasValue) return [primaryBranchId.Value];
+        return (branchId ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(x => ulong.TryParse(x, out var id) ? id : 0).Where(x => x > 0);
+    }
+
+    /// <summary>State and district from the customer's first saved address, for the
+    /// retailers whose custom_fields carry neither.</summary>
+    private async Task<Dictionary<ulong, (ulong? StateId, ulong? DistrictId)>> AddressPlacesAsync(CancellationToken ct)
+    {
+        var rows = await Query(@"SELECT a.customer_id, a.state_id, a.district_id
+FROM addresses a
+INNER JOIN (SELECT customer_id, MIN(id) AS id FROM addresses WHERE deleted_at IS NULL AND customer_id IS NOT NULL GROUP BY customer_id) first
+        ON first.id = a.id", ct);
+        return rows.ToDictionary(
+            row => ULong(row, "customer_id"),
+            row => (Obj(row, "state_id") is null ? (ulong?)null : ULong(row, "state_id"),
+                    Obj(row, "district_id") is null ? (ulong?)null : ULong(row, "district_id")));
+    }
+
+    private static string FirstFilled(params string?[] values) =>
+        values.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x))?.Trim() ?? string.Empty;
 
     [HttpGet("dealer-performance/export")]
     [RequirePermission("dealer_performance_report.export")]
@@ -732,8 +1618,10 @@ assigned_at, unassigned_at FROM (
     private static string? ValidateRatingReportFilter(RatingReportFilter filter)
     {
         var isWeekly = string.Equals(filter.Period, "weekly", StringComparison.OrdinalIgnoreCase);
+        var isFinancialYear = string.Equals(filter.Period, "fy", StringComparison.OrdinalIgnoreCase);
         if (!filter.DesignationId.HasValue) return "Designation is required.";
-        if (!string.IsNullOrWhiteSpace(filter.Period) && !isWeekly) return "A valid period is required.";
+        if (!string.IsNullOrWhiteSpace(filter.Period) && !isWeekly && !isFinancialYear) return "A valid period is required.";
+        if (isFinancialYear && filter.Month.HasValue) return "A financial year covers every month, so a month cannot be chosen with it.";
         if (!isWeekly && (!filter.Year.HasValue || filter.Year is < 2000 or > 2100)) return "A valid year is required.";
         if (filter.Month.HasValue && filter.Month is < 1 or > 12) return "A valid month is required.";
         return null;
@@ -762,14 +1650,23 @@ assigned_at, unassigned_at FROM (
             .ThenBy(x => BranchName(x, branches)).ThenBy(x => x.Name).ToList();
 
         var indiaToday = DateTime.UtcNow.AddHours(5).AddMinutes(30).Date;
+        // Two ways to read a whole year: the calendar one, January to December, and the
+        // financial one, April of the chosen year to the following March.
+        var isFinancialYear = string.Equals(filter.Period, "fy", StringComparison.OrdinalIgnoreCase);
         var isYtd = !isWeekly && !filter.Month.HasValue;
-        var start = isWeekly ? indiaToday.AddDays(-7) : new DateTime(filter.Year!.Value, filter.Month ?? 1, 1);
+        var yearStart = isFinancialYear
+            ? new DateTime(filter.Year!.Value, 4, 1)
+            : new DateTime(filter.Year!.Value, 1, 1);
+        var yearEnd = yearStart.AddYears(1);
+        var start = isWeekly ? indiaToday.AddDays(-7) : (filter.Month.HasValue ? new DateTime(filter.Year!.Value, filter.Month.Value, 1) : yearStart);
         // A month that has not finished yet ends today, so it is scored on the days that
-        // have actually happened rather than on a whole month the employee has not had.
+        // have actually happened rather than on a whole month the employee has not had. A
+        // year still running is read the same way, up to today; a year already over is read whole.
         var monthEndsToday = filter.Month.HasValue && filter.Year == indiaToday.Year && filter.Month == indiaToday.Month;
+        var yearIsRunning = indiaToday >= yearStart && indiaToday < yearEnd;
         var end = isWeekly ? indiaToday
             : filter.Month.HasValue ? (monthEndsToday ? indiaToday.AddDays(1) : start.AddMonths(1))
-            : filter.Year == indiaToday.Year ? indiaToday.AddDays(1) : new DateTime(filter.Year!.Value + 1, 1, 1);
+            : yearIsRunning ? indiaToday.AddDays(1) : yearEnd;
         var retailerAssignmentPeriods = await RetailerAssignmentPeriods(userIds, end, ct);
 
         const decimal marketWeight = 5m, visitWeight = 30m, salesWeight = 40m, promoWeight = 10m, retailerWeight = 15m;
@@ -1231,6 +2128,32 @@ WHERE customertype = 1 AND deleted_at IS NULL AND executive_id IN ({string.Join(
         var range = sheet.Range(row, 1, row, 19); range.Style.Fill.BackgroundColor = color; range.Style.Font.Bold = true;
         if (color != XLColor.Yellow) range.Style.Font.FontColor = XLColor.White;
     }
+}
+
+/// <summary>One retailer on the RFM report, before its three figures are scored.</summary>
+public sealed record RfmRow(ulong CustomerId, string Name, string Mobile, ulong? DealerId, string DealerCode,
+    string DealerName, string DealerState, string DealerCity, string State, int RecencyDays, int Frequency, decimal Monetary);
+
+/// <summary>A report row with its three ratings and what they add up to.</summary>
+public sealed record RfmScore<T>(T Row, int R, int F, int M,
+    decimal RWeighted, decimal FWeighted, decimal MWeighted, decimal Total, int Percent);
+
+public class RfmFilter
+{
+    [FromQuery(Name = "zone_id")] public ulong? ZoneId { get; set; }
+    [FromQuery(Name = "branch_id")] public ulong? BranchId { get; set; }
+    [FromQuery(Name = "state_id")] public ulong? StateId { get; set; }
+    [FromQuery(Name = "district_id")] public ulong? DistrictId { get; set; }
+}
+
+/// <summary>The movement report needs a month to stand on as well; both are required.</summary>
+public sealed class RfmMovementFilter : RfmFilter
+{
+    [FromQuery(Name = "year")] public int? Year { get; set; }
+    [FromQuery(Name = "month")] public int? Month { get; set; }
+    /// <summary>"Y", "N" or nothing at all - see Domain.Services.EmployeeStatus. Only the
+    /// ASR-wise activation sheet lists employees, so only that one reads it.</summary>
+    [FromQuery(Name = "employee_status")] public string? EmployeeStatus { get; set; }
 }
 
 public sealed record LoyaltyReportRow(string Branch, string? DealerName, string AsrName, string EmployeeStatus, string ReportingManager, decimal SecondarySales, decimal TotalInvoiceAmount, decimal ApprovedInvoiceValue, int ActiveRetailers, int KycPending);

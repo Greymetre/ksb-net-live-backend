@@ -152,7 +152,21 @@ public sealed class PromotionalActivitiesController : ControllerBase
     public async Task<IActionResult> Get(long id, CancellationToken ct)
     {
         var item=await _db.PromotionalActivities.AsNoTracking().Include(x=>x.Participants).Include(x=>x.Expenses).Include(x=>x.Photos).FirstOrDefaultAsync(x=>x.Id==id&&x.DeletedAt==null,ct);
-        return item==null ? NotFound(new {status="error",message="Activity not found."}) : Ok(new {status="success",data=item});
+        if(item==null) return NotFound(new {status="error",message="Activity not found."});
+        // The names the activity was recorded under. Only ids are stored, and the app used
+        // to fall back to whoever was signed in - so every activity read back as the
+        // reader's own. Resolved here so the record describes itself.
+        var names=await _db.Users.AsNoTracking()
+            .Where(x=>x.Id==(ulong)item.UserId||(item.ReportingManagerId!=null&&x.Id==(ulong)item.ReportingManagerId.Value))
+            .Select(x=>new{x.Id,x.Name}).ToListAsync(ct);
+        return Ok(new {status="success",data=new {
+            item.Id,item.CreatedAt,item.UpdatedAt,item.ActivityCode,item.ActivityType,item.ActivityName,item.ActivityDate,
+            item.UserId,item.CreatedById,item.BranchId,item.Zone,item.ReportingManagerId,item.DistributorId,item.DistributorName,
+            item.DealerName,item.HotelName,item.LocationLat,item.LocationLng,item.LocationText,item.GiftCount,item.TotalExpense,
+            item.DealerShareAmount,item.Feedback,item.Status,item.Participants,item.Expenses,item.Photos,
+            user_name=names.FirstOrDefault(x=>x.Id==(ulong)item.UserId)?.Name,
+            reporting_manager_name=item.ReportingManagerId==null?null:names.FirstOrDefault(x=>x.Id==(ulong)item.ReportingManagerId.Value)?.Name
+        }});
     }
 
     [HttpPost]

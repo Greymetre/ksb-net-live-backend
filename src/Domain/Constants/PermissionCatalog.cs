@@ -311,6 +311,8 @@ public static class PermissionCatalog
         new("retailer_performance_report.export", "Export", "retailer_performance_report", "Retailer Performance", "reports", "Reports Management", "export", 2200, ["retailer_productivity_report"], []),
         // Dealer Performance
         new("dealer_performance_report.export", "Export", "dealer_performance_report", "Dealer Performance", "reports", "Reports Management", "export", 2210, [], ["retailer_productivity_report"]),
+        // RFM Report
+        new("rfm_report.export", "Export", "rfm_report", "RFM Report", "reports", "Reports Management", "export", 2215, [], ["retailer_productivity_report"]),
         // Market Intelligence
         new("market_intelligence_report.view", "View Report", "market_intelligence_report", "Market Intelligence", "reports", "Reports Management", "view", 2220, ["market_intelligence_access"], []),
         new("market_intelligence_report.export", "Export", "market_intelligence_report", "Market Intelligence", "reports", "Reports Management", "export", 2230, ["market_intelligence_report_download"], []),
