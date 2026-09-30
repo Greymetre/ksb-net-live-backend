@@ -25,6 +25,7 @@ public sealed class FieldKonnectCustomerRestController : ControllerBase
     private readonly ICustomerRepository _customerRepository;
     private readonly IHrRepository _hrRepository;
     private readonly Infrastructure.Caching.CustomerKycIndex _kycIndex;
+    private readonly Infrastructure.Caching.RfmCategoryIndex _rfmCategories;
 
     public FieldKonnectCustomerRestController(
         AppDbContext dbContext,
@@ -32,9 +33,11 @@ public sealed class FieldKonnectCustomerRestController : ControllerBase
         ICustomerService customerService,
         ICustomerRepository customerRepository,
         IHrRepository hrRepository,
-        Infrastructure.Caching.CustomerKycIndex kycIndex)
+        Infrastructure.Caching.CustomerKycIndex kycIndex,
+        Infrastructure.Caching.RfmCategoryIndex rfmCategories)
     {
         _kycIndex = kycIndex;
+        _rfmCategories = rfmCategories;
         _dbContext = dbContext;
         _environment = environment;
         _customerService = customerService;
@@ -105,7 +108,18 @@ public sealed class FieldKonnectCustomerRestController : ControllerBase
 
             var page = Page();
             var perPage = PerPage(10);
-            var (rows, total) = await SqlServerSecondaryCustomers(type.ToUpperInvariant(), page, perPage, cancellationToken);
+            // The RFM category is a position among the retailers of the same state, so it
+            // cannot be worked out in SQL per row - it comes from the index, and narrowing
+            // by it means handing the query the ids that hold that category.
+            var categories = (await _rfmCategories.GetAsync(cancellationToken)).Categories;
+            var wanted = Request.Query["category"].ToString();
+            IReadOnlyCollection<ulong>? categoryIds = null;
+            if (!string.IsNullOrWhiteSpace(wanted))
+            {
+                categoryIds = categories.Where(x => string.Equals(x.Value, wanted.Trim(), StringComparison.OrdinalIgnoreCase))
+                    .Select(x => x.Key).ToArray();
+            }
+            var (rows, total) = await SqlServerSecondaryCustomers(type.ToUpperInvariant(), page, perPage, cancellationToken, categoryIds: categoryIds);
             var kycStages = await Api.Services.KycStages.StageMapAsync(_kycIndex, cancellationToken);
 
             return Ok(new
@@ -118,6 +132,7 @@ public sealed class FieldKonnectCustomerRestController : ControllerBase
                     var stage = Api.Services.KycStages.StageOf(kycStages, ULong(row, "id"));
                     cleaned["kyc_stage"] = stage;
                     cleaned["kyc_stage_label"] = Api.Services.KycStages.Label(stage);
+                    cleaned["rfm_category"] = Infrastructure.Caching.RfmCategoryIndex.Of(categories, ULong(row, "id"));
                     return cleaned;
                 }).ToList(), page, perPage, total)
             });
@@ -162,12 +177,19 @@ public sealed class FieldKonnectCustomerRestController : ControllerBase
     private string SecondaryFilterJoins()
     {
         var needsCityFilter = !string.IsNullOrWhiteSpace(Request.Query["city_name"].ToString());
+        var needsStateFilter = !string.IsNullOrWhiteSpace(Request.Query["state_name"].ToString());
         var needsStatusFilter = !string.IsNullOrWhiteSpace(Request.Query["status"].ToString());
+        // The address is only joined when a filter actually needs it - the count runs over
+        // every customer, and this listing is the field app's busiest screen.
+        var needsAddress = needsCityFilter || needsStateFilter;
         return @"FROM customers c
 LEFT JOIN customer_types ctype ON ctype.id = c.customertype AND ctype.deleted_at IS NULL"
+            + (needsAddress ? @"
+OUTER APPLY (SELECT TOP (1) candidate.city_id, candidate.state_id FROM addresses candidate WHERE candidate.customer_id = c.id AND candidate.deleted_at IS NULL ORDER BY candidate.id DESC) filter_address" : string.Empty)
             + (needsCityFilter ? @"
-OUTER APPLY (SELECT TOP (1) candidate.city_id FROM addresses candidate WHERE candidate.customer_id = c.id AND candidate.deleted_at IS NULL ORDER BY candidate.id DESC) filter_address
 LEFT JOIN cities city ON city.id = COALESCE(filter_address.city_id, TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.city_id'), '')), TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.billing_city'), '')))" : string.Empty)
+            + (needsStateFilter ? @"
+LEFT JOIN states s ON s.id = COALESCE(filter_address.state_id, TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.state_id'), '')), TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.billing_state'), '')))" : string.Empty)
             + (needsStatusFilter ? @"
 OUTER APPLY (SELECT TOP (1) candidate.visit_status FROM customer_details candidate WHERE candidate.customer_id = c.id AND candidate.deleted_at IS NULL ORDER BY candidate.id DESC) cd" : string.Empty);
     }
@@ -185,7 +207,7 @@ OUTER APPLY (SELECT TOP (1) candidate.visit_status FROM customer_details candida
             CASE WHEN CHARINDEX(',', {raw}) > 0 THEN LEFT({raw}, CHARINDEX(',', {raw}) - 1) ELSE {raw} END)), ''))";
     }
 
-    private async Task<(IReadOnlyList<Dictionary<string, object?>> Rows, long Total)> SqlServerSecondaryCustomers(string type, int page, int perPage, CancellationToken cancellationToken, ulong? requestedId = null)
+    private async Task<(IReadOnlyList<Dictionary<string, object?>> Rows, long Total)> SqlServerSecondaryCustomers(string type, int page, int perPage, CancellationToken cancellationToken, ulong? requestedId = null, IReadOnlyCollection<ulong>? categoryIds = null)
     {
         var offset = (page - 1) * perPage;
         var (where, parameters) = await CustomerSecondaryWhere(type, cancellationToken);
@@ -193,6 +215,16 @@ OUTER APPLY (SELECT TOP (1) candidate.visit_status FROM customer_details candida
         {
             where += " AND c.id = @requested_id";
             parameters.Add(("@requested_id", requestedId.Value));
+        }
+        if (categoryIds is not null)
+        {
+            // Handed over as one JSON parameter rather than a literal IN list: a category can
+            // hold thousands of retailers, and OPENJSON keeps that a single small parameter.
+            where += categoryIds.Count == 0
+                ? " AND 1 = 0"
+                : " AND c.id IN (SELECT TRY_CONVERT(decimal(20,0), value) FROM OPENJSON(@category_ids))";
+            if (categoryIds.Count > 0)
+                parameters.Add(("@category_ids", System.Text.Json.JsonSerializer.Serialize(categoryIds)));
         }
         var filterJoins = SecondaryFilterJoins();
 
@@ -705,7 +737,9 @@ AND NOT EXISTS (
         var fallbackScope = access.AllAccess
             ? string.Empty
             : $" AND ed.user_id IN ({string.Join(',', access.UserIds)})";
-        var rows = access.UserIds.Count == 0 && !access.AllAccess ? [] : await QueryRows($@"SELECT DISTINCT city.id, city.city_name
+        // Each city carries its state, so a screen filtered on a state can offer only that
+        // state's cities without asking the server again.
+        var rows = access.UserIds.Count == 0 && !access.AllAccess ? [] : await QueryRows($@"SELECT DISTINCT city.id, city.city_name, city.state_id
 FROM cities city
 INNER JOIN addresses a ON a.city_id = city.id AND a.deleted_at IS NULL
 INNER JOIN customers c ON c.id = a.customer_id AND c.deleted_at IS NULL AND c.active = 'Y'
@@ -716,6 +750,31 @@ AND (ctype.customertype_name LIKE '%Retailer%' OR ctype.type_name LIKE '%Retaile
 {fallbackScope}
 ORDER BY city.city_name ASC", cancellationToken);
         return Ok(new { status = "success", message = "Cities retrieved successfully", data = rows.Select(CleanRow).ToList() });
+    }
+
+    /// <summary>The states the caller's own retailers actually sit in - the same scope and
+    /// the same customer-type rule the city list uses, so the two dropdowns agree.</summary>
+    [HttpGet("secondary-customer/states")]
+    public async Task<IActionResult> SecondaryCustomerStates(CancellationToken cancellationToken)
+    {
+        var access = await SecondaryCustomerAccess(CurrentUserId(), cancellationToken);
+        var fallbackScope = access.AllAccess
+            ? string.Empty
+            : $" AND ed.user_id IN ({string.Join(',', access.UserIds)})";
+        var rows = access.UserIds.Count == 0 && !access.AllAccess ? [] : await QueryRows($@"SELECT DISTINCT s.id, s.state_name
+FROM states s
+INNER JOIN customers c ON c.deleted_at IS NULL AND c.active = 'Y'
+    AND s.id = COALESCE(
+        (SELECT TOP (1) a.state_id FROM addresses a WHERE a.customer_id = c.id AND a.deleted_at IS NULL AND a.state_id IS NOT NULL ORDER BY a.id DESC),
+        TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.state_id'), '')),
+        TRY_CONVERT(decimal(20,0), NULLIF(JSON_VALUE(c.custom_fields, '$.billing_state'), '')))
+LEFT JOIN customer_types ctype ON ctype.id = c.customertype AND ctype.deleted_at IS NULL
+LEFT JOIN employee_details ed ON ed.customer_id = c.id AND ed.deleted_at IS NULL
+WHERE s.deleted_at IS NULL
+AND (ctype.customertype_name LIKE '%Retailer%' OR ctype.type_name LIKE '%Retailer%' OR (c.customertype NOT IN (1,3) AND COALESCE(ctype.customertype_name, '') NOT LIKE '%Distributor%' AND COALESCE(ctype.type_name, '') NOT LIKE '%Distributor%'))
+{fallbackScope}
+ORDER BY s.state_name ASC", cancellationToken);
+        return Ok(new { status = "success", message = "States retrieved successfully", data = rows.Select(CleanRow).ToList() });
     }
 
     private async Task<IActionResult> UpsertMasterDistributor(ulong? id, CancellationToken cancellationToken)
@@ -1440,6 +1499,15 @@ WHERE {where}", cancellationToken, parameters.ToArray())).FirstOrDefault();
         {
             where.Add("city.city_name LIKE @city_name");
             parameters.Add(("@city_name", "%" + cityName.Trim() + "%"));
+        }
+
+        // The state join already falls back from the saved address to the custom fields, so
+        // matching on its name here narrows the listing the same way the dropdown was built.
+        var stateName = Request.Query["state_name"].ToString();
+        if (!string.IsNullOrWhiteSpace(stateName))
+        {
+            where.Add("s.state_name = @state_name");
+            parameters.Add(("@state_name", stateName.Trim()));
         }
 
         var status = Request.Query["status"].ToString();
