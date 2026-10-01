@@ -289,13 +289,28 @@ public static class PermissionCatalog
         new("beat.create", "Create", "beat", "Beats", "beats", "Beats Management", "create", 2050, ["beat_create"], []),
         new("beat.edit", "Edit", "beat", "Beats", "beats", "Beats Management", "edit", 2060, ["beat_edit"], []),
         new("beat.delete", "Delete", "beat", "Beats", "beats", "Beats Management", "delete", 2070, ["beat_delete"], []),
+        // Taking the listing out of the screen. Copy, PDF and Print work on the rows on
+        // screen rather than the whole table, but each is still a way of removing data from
+        // the CRM, so each carries its own permission.
+        new("beat.export", "Export to Excel", "beat", "Beats", "beats", "Beats Management", "export", 2071, [], ["beat_access"]),
+        new("beat.import", "Import", "beat", "Beats", "beats", "Beats Management", "import", 2072, [], []),
+        new("beat.copy", "Copy", "beat", "Beats", "beats", "Beats Management", "copy", 2073, [], ["beat_access"]),
+        new("beat.pdf", "Download PDF", "beat", "Beats", "beats", "Beats Management", "pdf", 2074, [], ["beat_access"]),
+        new("beat.print", "Print", "beat", "Beats", "beats", "Beats Management", "print", 2075, [], ["beat_access"]),
         // Beat Detail
         new("beat_detail.view", "View Listing", "beat_detail", "Beat Detail", "beats", "Beats Management", "view", 2080, ["beatdetail_access"], []),
+        new("beat_detail.export", "Export to Excel", "beat_detail", "Beat Detail", "beats", "Beats Management", "export", 2081, [], ["beatdetail_access"]),
+        new("beat_detail.copy", "Copy", "beat_detail", "Beat Detail", "beats", "Beats Management", "copy", 2082, [], ["beatdetail_access"]),
+        new("beat_detail.pdf", "Download PDF", "beat_detail", "Beat Detail", "beats", "Beats Management", "pdf", 2083, [], ["beatdetail_access"]),
+        new("beat_detail.print", "Print", "beat_detail", "Beat Detail", "beats", "Beats Management", "print", 2084, [], ["beatdetail_access"]),
         // Checkin-Checkout
         new("checkin.view", "View Listing", "checkin", "Checkin-Checkout", "beats", "Beats Management", "view", 2090, ["checkin_access"], []),
         new("checkin.export", "Export", "checkin", "Checkin-Checkout", "beats", "Beats Management", "export", 2100, ["checkin_download"], []),
         // Check In & Check Out Report
         new("visit_report.view", "View Report", "visit_report", "Check In & Check Out Report", "beats", "Beats Management", "view", 2110, ["visit_report"], []),
+        // Beats > Route Optimized
+        new("beat_route_optimizer.view", "View Screen", "beat_route_optimizer", "Route Optimized", "beats", "Beats Management", "view", 2112, [], ["beat_access"]),
+        new("beat_route_optimizer.build", "Build Route", "beat_route_optimizer", "Route Optimized", "beats", "Beats Management", "build", 2114, [], ["beat_access"]),
         // ---------- Reports Management ----------
         // ASR Performance
         new("asr_performance_report.export", "Export", "asr_performance_report", "ASR Performance", "reports", "Reports Management", "export", 2120, ["ASR_report_Download"], []),
@@ -311,8 +326,20 @@ public static class PermissionCatalog
         new("retailer_performance_report.export", "Export", "retailer_performance_report", "Retailer Performance", "reports", "Reports Management", "export", 2200, ["retailer_productivity_report"], []),
         // Dealer Performance
         new("dealer_performance_report.export", "Export", "dealer_performance_report", "Dealer Performance", "reports", "Reports Management", "export", 2210, [], ["retailer_productivity_report"]),
-        // RFM Report
-        new("rfm_report.export", "Export", "rfm_report", "RFM Report", "reports", "Reports Management", "export", 2215, [], ["retailer_productivity_report"]),
+        // RFM Report - a permission per screen and one per download, the way the other
+        // report modules are split. V9.8 shipped the three screens behind a single
+        // rfm_report.export; that row is adopted by the view below and the rest are
+        // back-filled onto whichever roles held it, so the split takes nothing away.
+        new("rfm_report.view", "View Report", "rfm_report", "RFM Report", "reports", "Reports Management", "view", 2211, ["rfm_report.export"], []),
+        new("rfm_report.export_retailer", "Retailer Wise Export", "rfm_report", "RFM Report", "reports", "Reports Management", "export_retailer", 2212, [], ["rfm_report.export"]),
+        new("rfm_report.export_dealer", "Dealer Wise Export", "rfm_report", "RFM Report", "reports", "Reports Management", "export_dealer", 2213, [], ["rfm_report.export"]),
+        // RFM Movement
+        new("rfm_movement_report.view", "View Report", "rfm_movement_report", "RFM Movement", "reports", "Reports Management", "view", 2214, [], ["rfm_report.export"]),
+        new("rfm_movement_report.export", "Export", "rfm_movement_report", "RFM Movement", "reports", "Reports Management", "export", 2215, [], ["rfm_report.export"]),
+        // RFM Activation
+        new("rfm_activation_report.view", "View Report", "rfm_activation_report", "RFM Activation", "reports", "Reports Management", "view", 2216, [], ["rfm_report.export"]),
+        new("rfm_activation_report.export_asr", "ASR Wise Export", "rfm_activation_report", "RFM Activation", "reports", "Reports Management", "export_asr", 2217, [], ["rfm_report.export"]),
+        new("rfm_activation_report.export_dealer", "Dealer Wise Export", "rfm_activation_report", "RFM Activation", "reports", "Reports Management", "export_dealer", 2218, [], ["rfm_report.export"]),
         // Market Intelligence
         new("market_intelligence_report.view", "View Report", "market_intelligence_report", "Market Intelligence", "reports", "Reports Management", "view", 2220, ["market_intelligence_access"], []),
         new("market_intelligence_report.export", "Export", "market_intelligence_report", "Market Intelligence", "reports", "Reports Management", "export", 2230, ["market_intelligence_report_download"], []),

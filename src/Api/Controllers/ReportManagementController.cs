@@ -451,7 +451,7 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
     /// mapped to, never the seller on an order.
     /// </summary>
     [HttpGet("rfm/retailer-export")]
-    [RequirePermission("rfm_report.export")]
+    [RequirePermission("rfm_report.export_retailer")]
     public async Task<IActionResult> ExportRfmRetailerWise([FromQuery] RfmFilter filter, CancellationToken ct)
     {
         var (rows, _) = await RfmRetailersAsync(filter, ct);
@@ -494,7 +494,7 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
     /// is left out of this sheet; it is still on the retailer-wise one.
     /// </summary>
     [HttpGet("rfm/dealer-export")]
-    [RequirePermission("rfm_report.export")]
+    [RequirePermission("rfm_report.export_dealer")]
     public async Task<IActionResult> ExportRfmDealerWise([FromQuery] RfmFilter filter, CancellationToken ct)
     {
         var (retailers, registered) = await RfmRetailersAsync(filter, ct);
@@ -568,7 +568,7 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
     /// the earlier side. One that has never ordered at all is not in the file.
     /// </summary>
     [HttpGet("rfm/movement-export")]
-    [RequirePermission("rfm_report.export")]
+    [RequirePermission("rfm_movement_report.export")]
     public async Task<IActionResult> ExportRfmMovement([FromQuery] RfmMovementFilter filter, CancellationToken ct)
     {
         if (filter.Year is null or < 2000 or > 2100) return BadRequest(new { status = false, message = "Please select a year." });
@@ -642,13 +642,13 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
     /// retailer counts as active once it has placed an order, and stays active after that.
     /// </summary>
     [HttpGet("rfm/activation-asr-export")]
-    [RequirePermission("rfm_report.export")]
+    [RequirePermission("rfm_activation_report.export_asr")]
     public Task<IActionResult> ExportRfmActivationAsrWise([FromQuery] RfmMovementFilter filter, CancellationToken ct)
         => ExportRfmActivation(filter, byDealer: false, ct);
 
     /// <summary>The same count read against the dealer each retailer is mapped to.</summary>
     [HttpGet("rfm/activation-dealer-export")]
-    [RequirePermission("rfm_report.export")]
+    [RequirePermission("rfm_activation_report.export_dealer")]
     public Task<IActionResult> ExportRfmActivationDealerWise([FromQuery] RfmMovementFilter filter, CancellationToken ct)
         => ExportRfmActivation(filter, byDealer: true, ct);
 
