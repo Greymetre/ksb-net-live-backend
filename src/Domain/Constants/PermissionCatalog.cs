@@ -292,25 +292,25 @@ public static class PermissionCatalog
         // Taking the listing out of the screen. Copy, PDF and Print work on the rows on
         // screen rather than the whole table, but each is still a way of removing data from
         // the CRM, so each carries its own permission.
-        new("beat.export", "Export to Excel", "beat", "Beats", "beats", "Beats Management", "export", 2071, [], ["beat_access"]),
+        new("beat.export", "Export to Excel", "beat", "Beats", "beats", "Beats Management", "export", 2071, [], ["beat.view", "beat_access"]),
         new("beat.import", "Import", "beat", "Beats", "beats", "Beats Management", "import", 2072, [], []),
-        new("beat.copy", "Copy", "beat", "Beats", "beats", "Beats Management", "copy", 2073, [], ["beat_access"]),
-        new("beat.pdf", "Download PDF", "beat", "Beats", "beats", "Beats Management", "pdf", 2074, [], ["beat_access"]),
-        new("beat.print", "Print", "beat", "Beats", "beats", "Beats Management", "print", 2075, [], ["beat_access"]),
+        new("beat.copy", "Copy", "beat", "Beats", "beats", "Beats Management", "copy", 2073, [], ["beat.view", "beat_access"]),
+        new("beat.pdf", "Download PDF", "beat", "Beats", "beats", "Beats Management", "pdf", 2074, [], ["beat.view", "beat_access"]),
+        new("beat.print", "Print", "beat", "Beats", "beats", "Beats Management", "print", 2075, [], ["beat.view", "beat_access"]),
         // Beat Detail
         new("beat_detail.view", "View Listing", "beat_detail", "Beat Detail", "beats", "Beats Management", "view", 2080, ["beatdetail_access"], []),
-        new("beat_detail.export", "Export to Excel", "beat_detail", "Beat Detail", "beats", "Beats Management", "export", 2081, [], ["beatdetail_access"]),
-        new("beat_detail.copy", "Copy", "beat_detail", "Beat Detail", "beats", "Beats Management", "copy", 2082, [], ["beatdetail_access"]),
-        new("beat_detail.pdf", "Download PDF", "beat_detail", "Beat Detail", "beats", "Beats Management", "pdf", 2083, [], ["beatdetail_access"]),
-        new("beat_detail.print", "Print", "beat_detail", "Beat Detail", "beats", "Beats Management", "print", 2084, [], ["beatdetail_access"]),
+        new("beat_detail.export", "Export to Excel", "beat_detail", "Beat Detail", "beats", "Beats Management", "export", 2081, [], ["beat_detail.view", "beatdetail_access"]),
+        new("beat_detail.copy", "Copy", "beat_detail", "Beat Detail", "beats", "Beats Management", "copy", 2082, [], ["beat_detail.view", "beatdetail_access"]),
+        new("beat_detail.pdf", "Download PDF", "beat_detail", "Beat Detail", "beats", "Beats Management", "pdf", 2083, [], ["beat_detail.view", "beatdetail_access"]),
+        new("beat_detail.print", "Print", "beat_detail", "Beat Detail", "beats", "Beats Management", "print", 2084, [], ["beat_detail.view", "beatdetail_access"]),
         // Checkin-Checkout
         new("checkin.view", "View Listing", "checkin", "Checkin-Checkout", "beats", "Beats Management", "view", 2090, ["checkin_access"], []),
         new("checkin.export", "Export", "checkin", "Checkin-Checkout", "beats", "Beats Management", "export", 2100, ["checkin_download"], []),
         // Check In & Check Out Report
         new("visit_report.view", "View Report", "visit_report", "Check In & Check Out Report", "beats", "Beats Management", "view", 2110, ["visit_report"], []),
         // Beats > Route Optimized
-        new("beat_route_optimizer.view", "View Screen", "beat_route_optimizer", "Route Optimized", "beats", "Beats Management", "view", 2112, [], ["beat_access"]),
-        new("beat_route_optimizer.build", "Build Route", "beat_route_optimizer", "Route Optimized", "beats", "Beats Management", "build", 2114, [], ["beat_access"]),
+        new("beat_route_optimizer.view", "View Screen", "beat_route_optimizer", "Route Optimized", "beats", "Beats Management", "view", 2112, [], ["beat.view", "beat_access"]),
+        new("beat_route_optimizer.build", "Build Route", "beat_route_optimizer", "Route Optimized", "beats", "Beats Management", "build", 2114, [], ["beat.view", "beat_access"]),
         // ---------- Reports Management ----------
         // ASR Performance
         new("asr_performance_report.export", "Export", "asr_performance_report", "ASR Performance", "reports", "Reports Management", "export", 2120, ["ASR_report_Download"], []),
