@@ -347,10 +347,7 @@ FROM attendances WHERE deleted_at IS NULL AND user_id = {userId} AND CAST(punchi
   AND punchin_latitude IS NOT NULL AND punchin_longitude IS NOT NULL ORDER BY id DESC", ct)).FirstOrDefault();
         if (punch is not null)
         {
-            // The app writes these the wrong way round: punchin_latitude holds the longitude.
-            // Measured on live data - 5,898 of 5,899 values in that column are longitudes.
-            // Reading them as named would start every route in the wrong country.
-            var (latitude, longitude) = ParsePair(Str(punch, "punchin_longitude"), Str(punch, "punchin_latitude"));
+            var (latitude, longitude) = ResolvePair(Str(punch, "punchin_latitude"), Str(punch, "punchin_longitude"));
             if (latitude.HasValue)
                 return new RouteStart("Punch in", latitude, longitude, TimeText(Obj(punch, "punchin_time")), Str(punch, "punchin_address"));
         }
@@ -360,7 +357,7 @@ FROM user_live_locations WHERE deleted_at IS NULL AND userid = {userId} AND CAST
 ORDER BY [time] ASC", ct)).FirstOrDefault();
         if (ping is not null)
         {
-            var (latitude, longitude) = ParsePair(Str(ping, "latitude"), Str(ping, "longitude"));
+            var (latitude, longitude) = ResolvePair(Str(ping, "latitude"), Str(ping, "longitude"));
             if (latitude.HasValue)
                 return new RouteStart("First location", latitude, longitude, TimeText(Obj(ping, "time")), Str(ping, "address"));
         }
@@ -413,8 +410,37 @@ ORDER BY [time] ASC", ct)).FirstOrDefault();
     private static (double? Latitude, double? Longitude) SplitGps(string? value)
     {
         var parts = (value ?? string.Empty).Split(',', StringSplitOptions.TrimEntries);
-        return parts.Length == 2 ? ParsePair(parts[0], parts[1]) : (null, null);
+        return parts.Length == 2 ? ResolvePair(parts[0], parts[1]) : (null, null);
     }
+
+    /// <summary>
+    /// A latitude and a longitude, whichever way round they were stored.
+    ///
+    /// Most of this data is written the way it is named, but not all of it: some rows hold
+    /// the longitude in the latitude column, and reading those as named starts a route in
+    /// the Arctic. The column names are therefore a hint, not the answer - the numbers
+    /// themselves settle it. Anything past 90 cannot be a latitude at all, and between the
+    /// two readings the one that lands in India wins. A pair that reads sensibly as named
+    /// is left exactly as it is, so coordinates outside India are not rearranged.
+    /// </summary>
+    private static (double? Latitude, double? Longitude) ResolvePair(string? latitude, string? longitude)
+    {
+        var (first, second) = ParsePair(latitude, longitude);
+        if (!first.HasValue || !second.HasValue) return (null, null);
+
+        var asNamedIsImpossible = Math.Abs(first.Value) > 90;
+        var reversedIsImpossible = Math.Abs(second.Value) > 90;
+        if (asNamedIsImpossible && !reversedIsImpossible) return (second, first);
+        if (reversedIsImpossible) return (first, second);
+
+        var asNamedIsIndian = InIndia(first.Value, second.Value);
+        var reversedIsIndian = InIndia(second.Value, first.Value);
+        return !asNamedIsIndian && reversedIsIndian ? (second, first) : (first, second);
+    }
+
+    /// <summary>The box the whole country sits in, generously drawn.</summary>
+    private static bool InIndia(double latitude, double longitude) =>
+        latitude is >= 6 and <= 38 && longitude is >= 68 and <= 98;
 
     private static (double? Latitude, double? Longitude) ParsePair(string? latitude, string? longitude)
     {
