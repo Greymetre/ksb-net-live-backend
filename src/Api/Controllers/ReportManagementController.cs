@@ -460,20 +460,21 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
         using var workbook = new XLWorkbook();
         var sheet = workbook.Worksheets.Add("RFM Retailer Wise");
         var headers = new[] { "Retailer ID", "Retailer Name", "Number", "Dealer Code", "Dealer Name", "State", "Dealer City",
-            "Recency (Days)", "R Rating", "Frequency (Orders)", "F Rating", "Monetary Value", "M Rating",
+            "ASR / DSR", "Recency (Days)", "R Rating", "Frequency (Orders)", "F Rating", "Monetary Value", "M Rating",
             "Total Rating", "Rating %", "Category" };
         for (var i = 0; i < headers.Length; i++) sheet.Cell(1, i + 1).Value = headers[i];
         var rowNumber = 2;
         foreach (var item in scored)
             WriteRow(sheet, rowNumber++, new object?[] { item.Row.CustomerId, item.Row.Name, item.Row.Mobile, item.Row.DealerCode,
-                item.Row.DealerName, item.Row.State, item.Row.DealerCity, item.Row.RecencyDays, item.R, item.Row.Frequency, item.F,
-                item.Row.Monetary, item.M, item.Total, item.Percent, RfmCategory(item.Percent) });
-        StyleSimpleExport(sheet, headers.Length, rowNumber - 1, "D9E1F2");
-        if (rowNumber > 2)
-        {
-            sheet.Range(2, 12, rowNumber - 1, 12).Style.NumberFormat.Format = "0.00";   // Monetary Value
-            sheet.Range(2, 14, rowNumber - 1, 14).Style.NumberFormat.Format = "0.0";    // Total Rating
-        }
+                item.Row.DealerName, item.Row.State, item.Row.DealerCity, item.Row.AsrDsr, item.Row.RecencyDays, item.R,
+                item.Row.Frequency, item.F, item.Row.Monetary, item.M, item.Total, item.Percent, RfmCategory(item.Percent) });
+        // Orders and rupees add up; a rating, a percentage and a category do not.
+        var totalRow = rowNumber;
+        WriteTotalRow(sheet, totalRow, headers.Length, new object?[] { "TOTAL", $"{scored.Count:N0} retailers", "", "", "", "", "", "",
+            "", "", scored.Sum(x => x.Row.Frequency), "", scored.Sum(x => x.Row.Monetary), "", "", "", "" });
+        StyleSimpleExport(sheet, headers.Length, totalRow, "D9E1F2");
+        sheet.Range(2, 13, totalRow, 13).Style.NumberFormat.Format = "0.00";   // Monetary Value
+        if (rowNumber > 2) sheet.Range(2, 15, rowNumber - 1, 15).Style.NumberFormat.Format = "0.0";    // Total Rating
         WriteRfmLogicSheet(workbook, dealerWise: false, scored);
         using var stream = new MemoryStream(); workbook.SaveAs(stream);
         return File(stream.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", $"RFM_Report_Retailer_Wise_{DateTime.Now:yyyy-MM-dd_HHmmss}.xlsx");
@@ -513,6 +514,7 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
                     Name = first.DealerName,
                     first.DealerState,
                     first.DealerCity,
+                    AsrDsr = first.DealerAsrDsr,
                     Registered = registered.GetValueOrDefault(group.Key),
                     Active = group.Count(),
                     OrderValue = group.Sum(x => x.Row.Monetary),
@@ -527,16 +529,22 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
 
         using var workbook = new XLWorkbook();
         var sheet = workbook.Worksheets.Add("RFM Dealer Wise");
-        var headers = new[] { "Dealer Code", "Dealer Name", "State", "City", "Total Registered Retailers",
+        var headers = new[] { "Dealer Code", "Dealer Name", "State", "City", "ASR / DSR", "Total Registered Retailers",
             "Active Retailers", "Order Value (Lac)", "Platinum", "Diamond", "Gold", "Silver", "Bronze" };
         for (var i = 0; i < headers.Length; i++) sheet.Cell(1, i + 1).Value = headers[i];
         var rowNumber = 2;
         foreach (var item in rows)
             WriteRow(sheet, rowNumber++, new object?[] { item.DealerCode, item.Name, item.DealerState, item.DealerCity,
-                item.Registered, item.Active, ToLakh(item.OrderValue),
+                item.AsrDsr, item.Registered, item.Active, ToLakh(item.OrderValue),
                 item.Platinum, item.Diamond, item.Gold, item.Silver, item.Bronze });
-        StyleSimpleExport(sheet, headers.Length, rowNumber - 1, "D9E1F2");
-        if (rowNumber > 2) sheet.Range(2, 7, rowNumber - 1, 7).Style.NumberFormat.Format = "0.00";   // Order Value, in lakhs
+        // Every column here is a count or a value, so the whole row adds up. The order
+        // value is totalled in rupees and converted once, not summed from rounded lakhs.
+        var totalRow = rowNumber;
+        WriteTotalRow(sheet, totalRow, headers.Length, new object?[] { "TOTAL", $"{rows.Count:N0} dealers", "", "", "",
+            rows.Sum(x => x.Registered), rows.Sum(x => x.Active), ToLakh(rows.Sum(x => x.OrderValue)),
+            rows.Sum(x => x.Platinum), rows.Sum(x => x.Diamond), rows.Sum(x => x.Gold), rows.Sum(x => x.Silver), rows.Sum(x => x.Bronze) });
+        StyleSimpleExport(sheet, headers.Length, totalRow, "D9E1F2");
+        sheet.Range(2, 8, totalRow, 8).Style.NumberFormat.Format = "0.00";   // Order Value, in lakhs
         WriteRfmLogicSheet(workbook, dealerWise: true, scored, rows.Count);
         using var stream = new MemoryStream(); workbook.SaveAs(stream);
         return File(stream.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", $"RFM_Report_Dealer_Wise_{DateTime.Now:yyyy-MM-dd_HHmmss}.xlsx");
@@ -592,11 +600,12 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
             var dealer = now?.Row.DealerName ?? before!.Row.DealerName;
             var state = now?.Row.State ?? before!.Row.State;
             var dealerCity = now?.Row.DealerCity ?? before!.Row.DealerCity;
+            var asrDsr = FirstFilled(now?.Row.AsrDsr, before?.Row.AsrDsr);
             var beforeCategory = before is null ? NoOrder : RfmCategory(before.Percent);
             var nowCategory = now is null ? NoOrder : RfmCategory(now.Percent);
             return new
             {
-                Id = id, Name = name, Mobile = mobile, Dealer = dealer, State = state, DealerCity = dealerCity,
+                Id = id, Name = name, Mobile = mobile, Dealer = dealer, State = state, DealerCity = dealerCity, AsrDsr = asrDsr,
                 Previous = beforeCategory, Current = nowCategory,
                 R = Movement(before?.R, now?.R), F = Movement(before?.F, now?.F), M = Movement(before?.M, now?.M),
                 Direction = CategoryMovement(beforeCategory, nowCategory),
@@ -617,15 +626,22 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
         var sheet = workbook.Worksheets.Add("RFM Movement");
         // The two snapshot columns carry their month, so the file reads on its own once it
         // has been mailed on and the screen that made it is forgotten.
-        var headers = new[] { "Retailer ID", "Retailer Name", "Number", "Dealer Name", "State", "Dealer City",
+        var headers = new[] { "Retailer ID", "Retailer Name", "Number", "Dealer Name", "State", "Dealer City", "ASR / DSR",
             $"Previous ({previousStart:MMM-yy})", $"Current ({currentStart:MMM-yy})",
             "R Change", "F Change", "M Change", "Movement", "Reason" };
         for (var i = 0; i < headers.Length; i++) sheet.Cell(1, i + 1).Value = headers[i];
         var rowNumber = 2;
         foreach (var item in rows)
             WriteRow(sheet, rowNumber++, new object?[] { item.Id, item.Name, item.Mobile, item.Dealer, item.State, item.DealerCity,
-                item.Previous, item.Current, item.R, item.F, item.M, item.Direction, item.Reason });
-        StyleSimpleExport(sheet, headers.Length, rowNumber - 1, "D9E1F2");
+                item.AsrDsr, item.Previous, item.Current, item.R, item.F, item.M, item.Direction, item.Reason });
+        // Nothing on this sheet is a quantity, so the total row counts instead of summing:
+        // how many retailers are in the file, and how the month went for them.
+        var upgraded = rows.Count(x => x.Direction == "Upgraded");
+        var downgraded = rows.Count(x => x.Direction == "Downgraded");
+        var totalRow = rowNumber;
+        WriteTotalRow(sheet, totalRow, headers.Length, new object?[] { "TOTAL", $"{rows.Count:N0} retailers", "", "", "", "", "",
+            "", "", "", "", "", $"{upgraded:N0} upgraded, {downgraded:N0} downgraded, {rows.Count - upgraded - downgraded:N0} no change", "" });
+        StyleSimpleExport(sheet, headers.Length, totalRow, "D9E1F2");
         WriteRfmMovementLogicSheet(workbook, previousStart, currentStart, currentEnd, rows.Count,
             previous.Count, current.Count);
         using var stream = new MemoryStream(); workbook.SaveAs(stream);
@@ -676,28 +692,34 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
         // says so - the same rule the ASR and rating reports follow.
         var employeeStatus = Domain.Services.EmployeeStatus.Read(filter.EmployeeStatus);
         var dealers = (await _db.Customers.AsNoTracking().Where(x => x.CustomerType == 1 && x.DeletedAt == null)
-            .Select(x => new { x.Id, x.Name, x.CustomerCode, x.CustomFields }).ToListAsync(ct))
+            .Select(x => new { x.Id, x.Name, x.CustomerCode, x.CustomFields, x.ExecutiveId }).ToListAsync(ct))
             .ToDictionary(x => x.Id);
         var states = byDealer ? await _db.States.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.StateName, ct) : [];
         var cities = byDealer ? await _db.Cities.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.CityName, ct) : [];
+        // The dealer sheet names the field person each dealer sits under; the ASR sheet is
+        // already keyed by one, so it needs none.
+        var dealerFieldNames = byDealer
+            ? await AsrOrDsrNamesAsync(dealers.Values.Select(x => (x.Id, x.CustomFields, x.ExecutiveId)), ct)
+            : [];
 
-        (ulong? Id, string Name, string Status, string State, string City) Owner(Domain.Entities.Customer customer)
+        (ulong? Id, string Name, string Status, string State, string City, string AsrDsr) Owner(Domain.Entities.Customer customer)
         {
             if (byDealer)
             {
                 var dealerId = JsonULong(customer.CustomFields, "distributor_name");
-                if (!dealerId.HasValue || !dealers.TryGetValue(dealerId.Value, out var dealer)) return (null, string.Empty, string.Empty, string.Empty, string.Empty);
+                if (!dealerId.HasValue || !dealers.TryGetValue(dealerId.Value, out var dealer)) return (null, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty);
                 return (dealerId,
                     FirstFilled(JsonString(dealer.CustomFields, "legal_name"), JsonString(dealer.CustomFields, "shop_name"), dealer.Name),
                     string.Empty,
                     // Read the way the customer master reads them - the billing pair only as a fallback.
                     Name(states, JsonULong(dealer.CustomFields, "state_id") ?? JsonULong(dealer.CustomFields, "billing_state")),
-                    Name(cities, JsonULong(dealer.CustomFields, "city_id") ?? JsonULong(dealer.CustomFields, "billing_city")));
+                    Name(cities, JsonULong(dealer.CustomFields, "city_id") ?? JsonULong(dealer.CustomFields, "billing_city")),
+                    dealerFieldNames.GetValueOrDefault(dealerId.Value, string.Empty));
             }
             var employeeId = AssignedEmployee(customer);
-            if (!employeeId.HasValue || !employees.TryGetValue(employeeId.Value, out var employee)) return (null, string.Empty, string.Empty, string.Empty, string.Empty);
-            if (!Domain.Services.EmployeeStatus.Matches(employeeStatus, employee.Active)) return (null, string.Empty, string.Empty, string.Empty, string.Empty);
-            return (employeeId, employee.Name, Domain.Services.EmployeeStatus.Of(employee.Active), string.Empty, string.Empty);
+            if (!employeeId.HasValue || !employees.TryGetValue(employeeId.Value, out var employee)) return (null, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty);
+            if (!Domain.Services.EmployeeStatus.Matches(employeeStatus, employee.Active)) return (null, string.Empty, string.Empty, string.Empty, string.Empty, string.Empty);
+            return (employeeId, employee.Name, Domain.Services.EmployeeStatus.Of(employee.Active), string.Empty, string.Empty, string.Empty);
         }
 
         var rows = retailers
@@ -715,6 +737,7 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
                     Status = group.First().Owner.Status,
                     group.First().Owner.State,
                     group.First().Owner.City,
+                    group.First().Owner.AsrDsr,
                     Total = total,
                     Active = active,
                     Inactive = total - active,
@@ -729,16 +752,28 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
         using var workbook = new XLWorkbook();
         var sheet = workbook.Worksheets.Add(byDealer ? "Activation Dealer Wise" : "Activation ASR Wise");
         var headers = byDealer
-            ? new[] { "Dealer", "State", "City", "Total Retailers", $"Active ({currentStart:MMM-yy})", $"Inactive ({currentStart:MMM-yy})", $"New Activated ({currentStart:MMM-yy})", "Activation %" }
+            ? new[] { "Dealer", "State", "City", "ASR / DSR", "Total Retailers", $"Active ({currentStart:MMM-yy})", $"Inactive ({currentStart:MMM-yy})", $"New Activated ({currentStart:MMM-yy})", "Activation %" }
             : new[] { "ASR", "Employee Status", "Total Retailers", $"Active ({currentStart:MMM-yy})", $"Inactive ({currentStart:MMM-yy})", $"New Activated ({currentStart:MMM-yy})", "Activation %" };
         for (var i = 0; i < headers.Length; i++) sheet.Cell(1, i + 1).Value = headers[i];
         var rowNumber = 2;
         foreach (var item in rows)
             WriteRow(sheet, rowNumber++, byDealer
-                ? new object?[] { item.Name, item.State, item.City, item.Total, item.Active, item.Inactive, item.NewActivated, item.Activation }
+                ? new object?[] { item.Name, item.State, item.City, item.AsrDsr, item.Total, item.Active, item.Inactive, item.NewActivated, item.Activation }
                 : new object?[] { item.Name, item.Status, item.Total, item.Active, item.Inactive, item.NewActivated, item.Activation });
-        StyleSimpleExport(sheet, headers.Length, rowNumber - 1, "D9E1F2");
-        if (rowNumber > 2) sheet.Range(2, headers.Length, rowNumber - 1, headers.Length).Style.NumberFormat.Format = "0.0%";
+
+        // The counts add up; the percentage does not. The total line is the whole book's
+        // activation - every active retailer over every retailer - not the average of the
+        // rows above it, which would weigh a book of five the same as a book of five
+        // hundred.
+        var totalRetailers = rows.Sum(x => x.Total);
+        var totalActive = rows.Sum(x => x.Active);
+        var overall = totalRetailers == 0 ? 0m : (decimal)totalActive / totalRetailers;
+        var totalRow = rowNumber;
+        WriteTotalRow(sheet, totalRow, headers.Length, byDealer
+            ? new object?[] { "TOTAL", $"{rows.Count:N0} dealers", "", "", totalRetailers, totalActive, rows.Sum(x => x.Inactive), rows.Sum(x => x.NewActivated), overall }
+            : new object?[] { "TOTAL", $"{rows.Count:N0} ASRs", totalRetailers, totalActive, rows.Sum(x => x.Inactive), rows.Sum(x => x.NewActivated), overall });
+        StyleSimpleExport(sheet, headers.Length, totalRow, "D9E1F2");
+        sheet.Range(2, headers.Length, totalRow, headers.Length).Style.NumberFormat.Format = "0.0%";
         WriteRfmActivationLogicSheet(workbook, byDealer, previousStart, currentStart, currentEnd, rows.Count,
             rows.Sum(x => x.Total), rows.Sum(x => x.Active), rows.Sum(x => x.NewActivated));
         using var stream = new MemoryStream(); workbook.SaveAs(stream);
@@ -803,6 +838,8 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
         Line("Inactive", $"The rest: Total Retailers minus Active. They are on the book and have never placed an order. The two always add back to Total.");
         Line("New Activated", $"Of the Active ones, how many were still at nil at the end of {previous}. In other words, retailers whose very first order landed in {current}.");
         Line("Activation %", "Active out of Total Retailers. 92 of 120 reads 76.7%.");
+        if (byDealer) Line("ASR / DSR", "The field person the dealer is assigned to in the customer master. An assignment is a list, not one name, so a dealer can carry an ASR and a manager at once: the ASR is the one shown. Where there is no ASR on the list the DSR is shown instead, and a dealer assigned to neither is left blank rather than filled with whoever happens to be first.");
+        Line("TOTAL row", "The last row of the sheet. The four counts add up straight down. The Activation % on that row is the whole book's - every active retailer over every retailer - not the average of the rows above it, which would weigh a book of five the same as a book of five hundred.");
 
         Section("3. Reading it");
         Line("A high Activation %", $"Most of the {owner}'s book has been opened. A low one with a large book is where the work is - those retailers were registered and never bought anything.");
@@ -886,8 +923,10 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
 
         Section("4. What the change columns say");
         Line("R Change, F Change, M Change", "Up, Down or Same - which way that one rating moved between the two snapshots. Down means the retailer lost ground against the others on that figure, not that its total fell. A dash means it had nothing to be scored on a month ago.");
+        Line("ASR / DSR", "The field person the retailer is assigned to in the customer master. An assignment is a list, not one name, so a retailer can carry an ASR and a manager at once: the ASR is the one shown. Where there is no ASR on the list the DSR is shown instead, and a retailer assigned to neither is left blank rather than filled with whoever happens to be first.");
         Line("Movement", "Where the category went: Upgraded, Downgraded or No Change. It follows the category, not the decimals, so a retailer can slip a little inside Gold and still read No Change.");
         Line("Reason", "Only the parts that actually moved, in plain words - so a row that reads \"Order frequency dropped\" moved for that reason and not for the other two.");
+        Line("TOTAL row", "The last row of the sheet. Nothing on this sheet is a quantity, so it counts rather than adds: how many retailers are in the file, and how many of them were upgraded, downgraded or stood still over the month.");
 
         Section("5. Row order");
         Line("Worst news first", "Downgraded rows first, then Upgraded, then No Change; inside each, the weakest category first. The retailers needing a call are at the top.");
@@ -1035,7 +1074,7 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
         // The dealer's code and name are read from the customer master - the dealer this
         // retailer is mapped to - exactly as the customer export reads them.
         var dealers = (await _db.Customers.AsNoTracking().Where(x => x.CustomerType == 1 && x.DeletedAt == null)
-            .Select(x => new { x.Id, x.Name, x.CustomerCode, x.CustomFields }).ToListAsync(ct))
+            .Select(x => new { x.Id, x.Name, x.CustomerCode, x.CustomFields, x.ExecutiveId }).ToListAsync(ct))
             .ToDictionary(x => x.Id);
 
         static ulong? DealerOf(Domain.Entities.Customer customer) => JsonULong(customer.CustomFields, "distributor_name");
@@ -1054,6 +1093,12 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
         ulong? StateOf(Domain.Entities.Customer customer) => JsonULong(customer.CustomFields, "state_id")
             ?? JsonULong(customer.CustomFields, "billing_state")
             ?? (places.TryGetValue(customer.Id, out var place) ? place.StateId : null);
+
+        // Who each row is reported under. Both sides are needed: the retailer-wise sheet
+        // names the retailer's own ASR, the dealer-wise sheet names the dealer's.
+        var fieldNames = await AsrOrDsrNamesAsync(
+            retailers.Select(x => (x.Id, x.CustomFields, x.ExecutiveId))
+                .Concat(dealers.Values.Select(x => (x.Id, x.CustomFields, x.ExecutiveId))), ct);
 
         // Recency is counted back from the end of the window being read: for a past month
         // that is the last day of that month, never today, or every row in it would read as
@@ -1082,7 +1127,9 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
                 Name(states, StateOf(customer)),
                 Math.Max(0, (int)(asOf - stats.LastOrder.Date).TotalDays),
                 stats.Orders,
-                stats.Value);
+                stats.Value,
+                fieldNames.GetValueOrDefault(customer.Id, string.Empty),
+                dealer is null ? string.Empty : fieldNames.GetValueOrDefault(dealer.Id, string.Empty));
         }).ToList();
         return (rows, registered);
     }
@@ -1189,6 +1236,8 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
             Line("Active Retailers", "How many of those retailers this report actually scores - switched on, not deleted, and with at least one order.");
             Line("Order Value (Lac)", "The order value of those active retailers added together, shown in lakhs - rupees divided by 1,00,000. The registered-but-quiet ones contribute nothing.");
             Line("Platinum to Bronze", "How many of the dealer's active retailers landed in each category on the Retailer Wise sheet. These five always add up to Active Retailers - a dealer with 20 in Platinum and 2 in Silver has a strong book; the other way round does not.");
+            Line("ASR / DSR", "The field person the dealer is assigned to in the customer master. An assignment is a list, not one name, so a dealer can carry an ASR and a manager at once: the ASR is the one shown. Where there is no ASR on the list the DSR is shown instead, and a dealer assigned to neither is left blank rather than filled with whoever happens to be first.");
+            Line("TOTAL row", "The last row of the sheet. Every column on this sheet is a count or a value, so all of them add up; the order value is totalled in rupees and converted to lakhs once, so it will not drift from the column above it the way adding rounded lakhs would.");
             Line("Row order", "Highest Order Value first.");
         }
         else
@@ -1197,6 +1246,8 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
             Line("State", "The retailer's own address.");
             Line("Dealer City", "The city on the dealer's own record in the customer master - its billing city, or its city where no billing city is set. It is the dealer's city, not the retailer's.");
             Line("Number", "The retailer's mobile number from the customer master.");
+            Line("ASR / DSR", "The field person the retailer is assigned to in the customer master. An assignment is a list, not one name, so a retailer can carry an ASR and a manager at once: the ASR is the one shown. Where there is no ASR on the list the DSR is shown instead, and a retailer assigned to neither is left blank rather than filled with whoever happens to be first.");
+            Line("TOTAL row", "The last row of the sheet: how many retailers are in the file, their orders added up and their order value added up. A rating, a Rating % and a category cannot be added down a column, so those cells are left empty rather than carrying a figure that would be read as meaning something.");
         }
         Line("Zone and Branch filters", "Read from the employee the retailer is assigned to - their zone, and their branch.");
 
@@ -1267,6 +1318,74 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
 
     /// <summary>Who a customer is assigned to, read from the indexed computed columns: the
     /// employee named in custom_fields, then the sales executive, then executive_id.</summary>
+    /// <summary>
+    /// The field person a customer is reported under: its ASR, and where it has none, its DSR.
+    ///
+    /// An assignment is a list, not one name - custom_fields.employee_id holds the whole
+    /// chain, so a retailer can carry an ASR and a TM at once, and a few carry a DSR
+    /// instead. The ASR is who the field is read by, so it wins wherever both are present.
+    /// The DSR stands in only where there is no ASR, and a customer with neither is left
+    /// blank rather than filled with whoever happens to be first on the list - on the
+    /// current book that is 46 retailers out of 16,079 and 73 dealers out of 482.
+    /// </summary>
+    private async Task<Dictionary<ulong, string>> AsrOrDsrNamesAsync(
+        IEnumerable<(ulong Id, string? CustomFields, ulong? ExecutiveId)> customers, CancellationToken ct)
+    {
+        var assigned = new Dictionary<ulong, List<ulong>>();
+        foreach (var customer in customers)
+        {
+            if (assigned.ContainsKey(customer.Id)) continue;
+            var fields = CustomFieldsJson.Read(customer.CustomFields);
+            var ids = ReadIdList(fields.GetValueOrDefault("employee_id"))
+                .Concat(ReadIdList(fields.GetValueOrDefault("sales_executive_id")))
+                .Distinct().ToList();
+            // executive_id is the fallback the customer master itself falls back to, and
+            // only when custom_fields names nobody at all.
+            if (ids.Count == 0 && customer.ExecutiveId is > 0) ids.Add(customer.ExecutiveId.Value);
+            assigned[customer.Id] = ids;
+        }
+
+        var listed = assigned.Values.SelectMany(x => x).Distinct().ToArray();
+        if (listed.Length == 0) return assigned.ToDictionary(x => x.Key, _ => string.Empty);
+
+        var designations = await _db.Designations.AsNoTracking()
+            .Select(x => new { x.Id, x.DesignationName }).ToListAsync(ct);
+        static bool Named(string? value, string title) => string.Equals(value?.Trim(), title, StringComparison.OrdinalIgnoreCase);
+        var asrDesignations = designations.Where(x => Named(x.DesignationName, "ASR")).Select(x => x.Id).ToHashSet();
+        var dsrDesignations = designations.Where(x => Named(x.DesignationName, "DSR")).Select(x => x.Id).ToHashSet();
+
+        var users = (await _db.Users.AsNoTracking().Where(x => listed.Contains(x.Id))
+            .Select(x => new { x.Id, x.Name, x.DesignationId }).ToListAsync(ct))
+            .ToDictionary(x => x.Id);
+
+        string FirstWith(List<ulong> ids, IReadOnlySet<ulong> wanted) => ids
+            .Select(id => users.GetValueOrDefault(id))
+            .Where(user => user?.DesignationId is not null && wanted.Contains(user.DesignationId.Value))
+            .Select(user => user!.Name)
+            .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name)) ?? string.Empty;
+
+        return assigned.ToDictionary(
+            x => x.Key,
+            x => FirstFilled(FirstWith(x.Value, asrDesignations), FirstWith(x.Value, dsrDesignations)));
+    }
+
+    /// <summary>
+    /// The bold row that closes a report sheet.
+    ///
+    /// Only the columns that genuinely add up carry a number. A rating, a percentage or a
+    /// category cannot be summed down a column, so those cells are left empty rather than
+    /// filled with a figure that would be read as meaning something.
+    /// </summary>
+    private static void WriteTotalRow(IXLWorksheet sheet, int row, int columns, IReadOnlyList<object?> values)
+    {
+        WriteRow(sheet, row, values);
+        var range = sheet.Range(row, 1, row, columns);
+        range.Style.Fill.BackgroundColor = XLColor.FromHtml("FFF2CC");
+        range.Style.Font.Bold = true;
+        range.Style.Border.InsideBorder = XLBorderStyleValues.Thin;
+        range.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
+    }
+
     private static ulong? AssignedEmployee(Domain.Entities.Customer customer) =>
         customer.AssignedEmployeeId ?? customer.AssignedSalesExecutiveId ?? customer.AssignedFallbackEmployeeId ?? customer.ExecutiveId;
 
@@ -2132,7 +2251,11 @@ WHERE customertype = 1 AND deleted_at IS NULL AND executive_id IN ({string.Join(
 
 /// <summary>One retailer on the RFM report, before its three figures are scored.</summary>
 public sealed record RfmRow(ulong CustomerId, string Name, string Mobile, ulong? DealerId, string DealerCode,
-    string DealerName, string DealerState, string DealerCity, string State, int RecencyDays, int Frequency, decimal Monetary);
+    string DealerName, string DealerState, string DealerCity, string State, int RecencyDays, int Frequency, decimal Monetary,
+    /// <summary>The retailer's own ASR, or its DSR where it has no ASR.</summary>
+    string AsrDsr = "",
+    /// <summary>The same, read for the dealer this retailer is mapped to.</summary>
+    string DealerAsrDsr = "");
 
 /// <summary>A report row with its three ratings and what they add up to.</summary>
 public sealed record RfmScore<T>(T Row, int R, int F, int M,
