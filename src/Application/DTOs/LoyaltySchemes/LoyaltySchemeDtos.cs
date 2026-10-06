@@ -43,6 +43,28 @@ public sealed class LoyaltySchemeDto
     public string? CreatedByName { get; set; }
     public DateTime? CreatedAt { get; set; }
     public List<LoyaltySchemeSlabDto> Slabs { get; set; } = [];
+    /// <summary>The goods a Product or Quantity scheme covers. Empty on an Invoice scheme.</summary>
+    public List<LoyaltySchemeProductDto> Products { get; set; } = [];
+}
+
+/// <summary>
+/// One line of a Product or Quantity scheme: the goods it covers and what they earn.
+/// The names travel with the ids so a screen, an export and a printed sheet can all be
+/// read without another lookup.
+/// </summary>
+public sealed class LoyaltySchemeProductDto
+{
+    public ulong Id { get; set; }
+    public ulong[] SegmentIds { get; set; } = [];
+    public string[] SegmentNames { get; set; } = [];
+    public ulong[] FamilyIds { get; set; } = [];
+    public string[] FamilyNames { get; set; } = [];
+    public ulong[] ProductIds { get; set; } = [];
+    public string[] ProductNames { get; set; } = [];
+    public decimal RewardValue { get; set; }
+    /// <summary>Only meaningful on a mixed scheme; blank elsewhere.</summary>
+    public string? RewardType { get; set; }
+    public int SortOrder { get; set; }
 }
 
 /// <summary>
@@ -96,6 +118,17 @@ public sealed class LoyaltySchemeRequestDto
     public bool RedemptionEnabled { get; set; }
     public string? Status { get; set; }
     public List<LoyaltySchemeSlabRequestDto> Slabs { get; set; } = [];
+    public List<LoyaltySchemeProductRequestDto> Products { get; set; } = [];
+}
+
+public sealed class LoyaltySchemeProductRequestDto
+{
+    public ulong[]? SegmentIds { get; set; }
+    public ulong[]? FamilyIds { get; set; }
+    public ulong[]? ProductIds { get; set; }
+    public decimal? RewardValue { get; set; }
+    /// <summary>Read only when the scheme itself is mixed.</summary>
+    public string? RewardType { get; set; }
 }
 
 public sealed class LoyaltySchemeSlabRequestDto
@@ -134,4 +167,28 @@ public sealed class LoyaltySchemeOptionDto
 {
     public ulong Id { get; set; }
     public string Name { get; set; } = string.Empty;
+}
+
+/// <summary>The ids a scheme line may name, as the product master currently holds them.</summary>
+public sealed class ProductMasterIdsDto
+{
+    public HashSet<ulong> Segments { get; init; } = [];
+    public HashSet<ulong> Families { get; init; } = [];
+    public HashSet<ulong> Products { get; init; } = [];
+}
+
+public sealed class ProductNameMapsDto
+{
+    public Dictionary<ulong, string> Segments { get; init; } = [];
+    public Dictionary<ulong, string> Families { get; init; } = [];
+    public Dictionary<ulong, string> Products { get; init; } = [];
+}
+
+/// <summary>One row of the template's reference tab.</summary>
+public sealed class ProductReferenceDto
+{
+    public ulong Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    /// <summary>For a family, the segment it sits under; blank for a segment.</summary>
+    public string ParentName { get; set; } = string.Empty;
 }

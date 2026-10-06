@@ -48,6 +48,7 @@ public sealed class LoyaltySchemeConfiguration : IEntityTypeConfiguration<Loyalt
         builder.HasIndex(x => x.SchemeName);
         builder.HasIndex(x => x.Status);
         builder.HasMany(x => x.Slabs).WithOne(x => x.LoyaltyScheme).HasForeignKey(x => x.LoyaltySchemeId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasMany(x => x.Products).WithOne(x => x.LoyaltyScheme).HasForeignKey(x => x.LoyaltySchemeId).OnDelete(DeleteBehavior.Cascade);
     }
 }
 
@@ -62,6 +63,29 @@ public sealed class LoyaltySchemeSlabConfiguration : IEntityTypeConfiguration<Lo
         builder.Property(x => x.TierName).HasColumnName("tier_name").HasMaxLength(150);
         builder.Property(x => x.ValueFrom).HasColumnName("value_from").HasPrecision(15, 2);
         builder.Property(x => x.ValueTo).HasColumnName("value_to").HasPrecision(15, 2);
+        builder.Property(x => x.RewardValue).HasColumnName("reward_value").HasPrecision(15, 2);
+        builder.Property(x => x.RewardType).HasColumnName("reward_type").HasMaxLength(50);
+        builder.Property(x => x.SortOrder).HasColumnName("sort_order");
+        builder.Property(x => x.CreatedAt).HasColumnName("created_at");
+        builder.Property(x => x.UpdatedAt).HasColumnName("updated_at");
+        builder.Property(x => x.DeletedAt).HasColumnName("deleted_at");
+
+        builder.HasIndex(x => x.LoyaltySchemeId);
+        builder.HasQueryFilter(x => x.DeletedAt == null);
+    }
+}
+
+public sealed class LoyaltySchemeProductConfiguration : IEntityTypeConfiguration<LoyaltySchemeProduct>
+{
+    public void Configure(EntityTypeBuilder<LoyaltySchemeProduct> builder)
+    {
+        builder.ToTable("loyalty_scheme_products");
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.LoyaltySchemeId).HasColumnName("loyalty_scheme_id");
+        builder.Property(x => x.SegmentIds).HasColumnName("segment_ids").HasColumnType("nvarchar(max)");
+        builder.Property(x => x.FamilyIds).HasColumnName("family_ids").HasColumnType("nvarchar(max)");
+        builder.Property(x => x.ProductIds).HasColumnName("product_ids").HasColumnType("nvarchar(max)");
         builder.Property(x => x.RewardValue).HasColumnName("reward_value").HasPrecision(15, 2);
         builder.Property(x => x.RewardType).HasColumnName("reward_type").HasMaxLength(50);
         builder.Property(x => x.SortOrder).HasColumnName("sort_order");

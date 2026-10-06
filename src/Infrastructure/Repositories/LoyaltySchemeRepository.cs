@@ -50,6 +50,7 @@ public sealed class LoyaltySchemeRepository : ILoyaltySchemeRepository
 
         var schemes = await query
             .Include(x => x.Slabs)
+            .Include(x => x.Products)
             .OrderByDescending(x => x.CreatedAt)
             .ThenByDescending(x => x.Id)
             .Take(MaxRows)
@@ -68,8 +69,45 @@ public sealed class LoyaltySchemeRepository : ILoyaltySchemeRepository
         }
 
         var creators = await LoadCreatorsAsync(schemes.SelectMany(SchemePeopleIds), cancellationToken);
-        return schemes.Select(x => ToDto(x, creators)).ToList();
+        var names = await LoadProductNamesAsync(schemes, cancellationToken);
+        return schemes.Select(x => ToDto(x, creators, names)).ToList();
     }
+
+    /// <summary>
+    /// Segment, family and product names for the lines on screen.
+    ///
+    /// Loaded only when a scheme actually carries lines - an Invoice scheme needs none, and
+    /// the product master is three thousand rows that nobody should pay for by default.
+    /// </summary>
+    private async Task<ProductNameMaps> LoadProductNamesAsync(IEnumerable<LoyaltyScheme> schemes, CancellationToken cancellationToken)
+    {
+        if (!schemes.Any(scheme => scheme.Products.Any(line => line.DeletedAt == null))) return ProductNameMaps.Empty;
+
+        return new ProductNameMaps(
+            await _dbContext.ProductCategories.AsNoTracking().Where(x => x.DeletedAt == null)
+                .ToDictionaryAsync(x => x.Id, x => x.CategoryName, cancellationToken),
+            await _dbContext.ProductFamilies.AsNoTracking().Where(x => x.DeletedAt == null)
+                .ToDictionaryAsync(x => x.Id, x => x.SubcategoryName, cancellationToken),
+            await _dbContext.Products.AsNoTracking().Where(x => x.DeletedAt == null)
+                .ToDictionaryAsync(x => x.Id, x => x.ProductName, cancellationToken));
+    }
+
+    private sealed record ProductNameMaps(
+        IReadOnlyDictionary<ulong, string> Segments,
+        IReadOnlyDictionary<ulong, string> Families,
+        IReadOnlyDictionary<ulong, string> Products)
+    {
+        public static readonly ProductNameMaps Empty = new(
+            new Dictionary<ulong, string>(), new Dictionary<ulong, string>(), new Dictionary<ulong, string>());
+    }
+
+    /// <summary>Ids out of a comma separated column, in the order they were saved.</summary>
+    private static ulong[] SplitIds(string? value) =>
+        (value ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(part => ulong.TryParse(part, out var id) ? id : 0).Where(id => id > 0).ToArray();
+
+    private static string[] NamesOf(ulong[] ids, IReadOnlyDictionary<ulong, string> names) =>
+        ids.Select(id => names.GetValueOrDefault(id, string.Empty)).Where(name => name.Length > 0).ToArray();
 
     /// <summary>The customer a dealer login belongs to, or null for an internal user.</summary>
     private async Task<ulong?> DealerCustomerIdAsync(ulong? actorUserId, CancellationToken cancellationToken)
@@ -87,16 +125,19 @@ public sealed class LoyaltySchemeRepository : ILoyaltySchemeRepository
     {
         var scheme = await BaseQuery()
             .Include(x => x.Slabs)
+            .Include(x => x.Products)
             .FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
 
         if (scheme is null) return null;
         var creators = await LoadCreatorsAsync(SchemePeopleIds(scheme), cancellationToken);
-        return ToDto(scheme, creators);
+        var names = await LoadProductNamesAsync([scheme], cancellationToken);
+        return ToDto(scheme, creators, names);
     }
 
     public async Task<LoyaltyScheme?> FindSchemeEntityAsync(ulong id, CancellationToken cancellationToken) =>
         await _dbContext.LoyaltySchemes
             .Include(x => x.Slabs)
+            .Include(x => x.Products)
             .FirstOrDefaultAsync(x => x.Id == id && x.DeletedAt == null, cancellationToken);
 
     public async Task<bool> SchemeCodeExistsAsync(string code, ulong? exceptId, CancellationToken cancellationToken) =>
@@ -108,9 +149,9 @@ public sealed class LoyaltySchemeRepository : ILoyaltySchemeRepository
     {
         var likePrefix = prefix + "-%";
         var codes = await _dbContext.LoyaltySchemes.AsNoTracking()
-            .Where(x => x.DeletedAt == null
-                && x.SchemeType == "Invoice"
-                && EF.Functions.Like(x.SchemeCode, likePrefix))
+            // The prefix already says which type the code belongs to, so the three
+            // sequences stay apart without filtering on the column.
+            .Where(x => x.DeletedAt == null && EF.Functions.Like(x.SchemeCode, likePrefix))
             .Select(x => x.SchemeCode)
             .ToListAsync(cancellationToken);
 
@@ -145,6 +186,11 @@ public sealed class LoyaltySchemeRepository : ILoyaltySchemeRepository
         {
             slab.DeletedAt = now;
             slab.UpdatedAt = now;
+        }
+        foreach (var line in scheme.Products)
+        {
+            line.DeletedAt = now;
+            line.UpdatedAt = now;
         }
 
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -190,6 +236,45 @@ public sealed class LoyaltySchemeRepository : ILoyaltySchemeRepository
         };
     }
 
+    public async Task<ProductMasterIdsDto> GetProductMasterIdsAsync(CancellationToken cancellationToken) => new()
+    {
+        Segments = (await _dbContext.ProductCategories.AsNoTracking()
+            .Where(x => x.DeletedAt == null).Select(x => x.Id).ToListAsync(cancellationToken)).ToHashSet(),
+        Families = (await _dbContext.ProductFamilies.AsNoTracking()
+            .Where(x => x.DeletedAt == null).Select(x => x.Id).ToListAsync(cancellationToken)).ToHashSet(),
+        Products = (await _dbContext.Products.AsNoTracking()
+            .Where(x => x.DeletedAt == null).Select(x => x.Id).ToListAsync(cancellationToken)).ToHashSet(),
+    };
+
+    public async Task<ProductNameMapsDto> GetProductNamesAsync(CancellationToken cancellationToken) => new()
+    {
+        Segments = await _dbContext.ProductCategories.AsNoTracking().Where(x => x.DeletedAt == null)
+            .ToDictionaryAsync(x => x.Id, x => x.CategoryName, cancellationToken),
+        Families = await _dbContext.ProductFamilies.AsNoTracking().Where(x => x.DeletedAt == null)
+            .ToDictionaryAsync(x => x.Id, x => x.SubcategoryName, cancellationToken),
+        Products = await _dbContext.Products.AsNoTracking().Where(x => x.DeletedAt == null)
+            .ToDictionaryAsync(x => x.Id, x => x.ProductName, cancellationToken),
+    };
+
+    public async Task<IReadOnlyCollection<ProductReferenceDto>> GetProductSegmentsAsync(CancellationToken cancellationToken) =>
+        await _dbContext.ProductCategories.AsNoTracking().Where(x => x.DeletedAt == null && x.Active == "Y")
+            .OrderBy(x => x.CategoryName)
+            .Select(x => new ProductReferenceDto { Id = x.Id, Name = x.CategoryName })
+            .ToListAsync(cancellationToken);
+
+    public async Task<IReadOnlyCollection<ProductReferenceDto>> GetProductFamiliesAsync(CancellationToken cancellationToken) =>
+        await (from family in _dbContext.ProductFamilies.AsNoTracking()
+               where family.DeletedAt == null && family.Active == "Y"
+               join category in _dbContext.ProductCategories.AsNoTracking() on family.CategoryId equals category.Id into segments
+               from segment in segments.DefaultIfEmpty()
+               orderby family.SubcategoryName
+               select new ProductReferenceDto
+               {
+                   Id = family.Id,
+                   Name = family.SubcategoryName,
+                   ParentName = segment != null ? segment.CategoryName : string.Empty
+               }).ToListAsync(cancellationToken);
+
     private IQueryable<LoyaltyScheme> BaseQuery() =>
         _dbContext.LoyaltySchemes.AsNoTracking().Where(x => x.DeletedAt == null);
 
@@ -214,7 +299,7 @@ public sealed class LoyaltySchemeRepository : ILoyaltySchemeRepository
     private static string? PersonName(ulong? id, IReadOnlyDictionary<ulong, string> people) =>
         id.HasValue && people.TryGetValue(id.Value, out var name) ? name : null;
 
-    private static LoyaltySchemeDto ToDto(LoyaltyScheme scheme, IReadOnlyDictionary<ulong, string> creators)
+    private static LoyaltySchemeDto ToDto(LoyaltyScheme scheme, IReadOnlyDictionary<ulong, string> creators, ProductNameMaps names)
     {
         var areaValues = ReadAreaValues(scheme.AreaValues);
         return new LoyaltySchemeDto
@@ -269,6 +354,30 @@ public sealed class LoyaltySchemeRepository : ILoyaltySchemeRepository
                     RewardValue = x.RewardValue,
                     RewardType = x.RewardType,
                     SortOrder = x.SortOrder
+                })
+                .ToList(),
+            Products = scheme.Products
+                .Where(x => x.DeletedAt == null)
+                .OrderBy(x => x.SortOrder)
+                .ThenBy(x => x.Id)
+                .Select(x =>
+                {
+                    var segments = SplitIds(x.SegmentIds);
+                    var families = SplitIds(x.FamilyIds);
+                    var products = SplitIds(x.ProductIds);
+                    return new LoyaltySchemeProductDto
+                    {
+                        Id = x.Id,
+                        SegmentIds = segments,
+                        SegmentNames = NamesOf(segments, names.Segments),
+                        FamilyIds = families,
+                        FamilyNames = NamesOf(families, names.Families),
+                        ProductIds = products,
+                        ProductNames = NamesOf(products, names.Products),
+                        RewardValue = x.RewardValue,
+                        RewardType = x.RewardType,
+                        SortOrder = x.SortOrder
+                    };
                 })
                 .ToList()
         };

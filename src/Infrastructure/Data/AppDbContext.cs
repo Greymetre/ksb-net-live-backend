@@ -39,6 +39,7 @@ public sealed class AppDbContext : DbContext
     public DbSet<ProductDetail> ProductDetails => Set<ProductDetail>();
     public DbSet<LoyaltyScheme> LoyaltySchemes => Set<LoyaltyScheme>();
     public DbSet<LoyaltySchemeSlab> LoyaltySchemeSlabs => Set<LoyaltySchemeSlab>();
+    public DbSet<LoyaltySchemeProduct> LoyaltySchemeProducts => Set<LoyaltySchemeProduct>();
     public DbSet<LoyaltyRedemption> LoyaltyRedemptions => Set<LoyaltyRedemption>();
     public DbSet<Holiday> Holidays => Set<Holiday>();
     public DbSet<Leave> Leaves => Set<Leave>();

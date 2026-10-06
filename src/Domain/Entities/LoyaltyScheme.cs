@@ -39,4 +39,7 @@ public sealed class LoyaltyScheme : BaseEntity
     public ulong? CreatedBy { get; set; }
     public ulong? UpdatedBy { get; set; }
     public ICollection<LoyaltySchemeSlab> Slabs { get; set; } = [];
+    /// <summary>The goods a Product or Quantity scheme covers. An Invoice scheme has none -
+    /// it is read on the whole bill - and uses <see cref="Slabs"/> instead.</summary>
+    public ICollection<LoyaltySchemeProduct> Products { get; set; } = [];
 }

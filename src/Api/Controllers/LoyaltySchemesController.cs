@@ -39,6 +39,41 @@ public sealed class LoyaltySchemesController : ControllerBase
         return File(file.Content, file.ContentType, file.FileName);
     }
 
+    /// <summary>The blank sheet for a Product or Quantity scheme's lines. Available to
+    /// anyone who may open the scheme form, because that is where it is used.</summary>
+    [RequirePermission("scheme.create", "scheme.edit")]
+    [HttpGet("product-lines/template")]
+    public async Task<IActionResult> ProductLineTemplate(CancellationToken cancellationToken)
+    {
+        var file = await _loyaltySchemeService.ProductLineTemplateAsync(cancellationToken);
+        return File(file.Content, file.ContentType, file.FileName);
+    }
+
+    /// <summary>One scheme's lines, in the columns the import reads back.</summary>
+    [RequirePermission("scheme.detail", "scheme.edit", "scheme.export")]
+    [HttpGet("{id}/product-lines/export")]
+    public async Task<IActionResult> ExportProductLines(ulong id, CancellationToken cancellationToken)
+    {
+        var file = await _loyaltySchemeService.ExportProductLinesAsync(id, cancellationToken);
+        return File(file.Content, file.ContentType, file.FileName);
+    }
+
+    /// <summary>Reads an edited sheet back for the form. Nothing is saved until the scheme
+    /// itself is saved, which is what lets this serve a scheme that does not exist yet.</summary>
+    [RequirePermission("scheme.create", "scheme.edit")]
+    [HttpPost("product-lines/import")]
+    public async Task<IActionResult> ImportProductLines(CancellationToken cancellationToken)
+    {
+        var file = Request.HasFormContentType ? Request.Form.Files.FirstOrDefault() : null;
+        if (file is null || file.Length == 0) return BadRequest(new { message = "Please choose a file to import." });
+
+        using var stream = new MemoryStream();
+        await file.CopyToAsync(stream, cancellationToken);
+        stream.Position = 0;
+        var response = await _loyaltySchemeService.ImportProductLinesAsync(stream, cancellationToken);
+        return Ok(response);
+    }
+
     /// <summary>Every dealer, for the scheme form's dealer picker. Authentication only, like
     /// the other dropdown routes - a user who may open the scheme form needs its options.</summary>
     [HttpGet("dealer-options")]
@@ -61,9 +96,10 @@ public sealed class LoyaltySchemesController : ControllerBase
         [FromQuery(Name = "scheme_name")] string? schemeName,
         [FromQuery(Name = "scheme_tag")] string? schemeTag,
         [FromQuery(Name = "based_on")] string? basedOn,
+        [FromQuery(Name = "scheme_type")] string? schemeType,
         CancellationToken cancellationToken)
     {
-        var response = await _loyaltySchemeService.GenerateSchemeCodeAsync(schemeName, schemeTag, basedOn, cancellationToken);
+        var response = await _loyaltySchemeService.GenerateSchemeCodeAsync(schemeName, schemeTag, basedOn, schemeType, cancellationToken);
         return Ok(response);
     }
 
