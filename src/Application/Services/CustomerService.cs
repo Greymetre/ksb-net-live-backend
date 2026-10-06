@@ -556,7 +556,15 @@ public sealed class CustomerService : ICustomerService
         var isOverall = column == KycOverallStatusColumn;
         if (!isOverall && !KycStatusColumnDocument.ContainsKey(column)) return null;
         if (!kyc.TryGetValue(customer.Id, out var state)) return string.Empty;
-        if (!isOverall) return state.DocumentStatus.GetValueOrDefault(KycStatusColumnDocument[column], "Not Started");
+        if (!isOverall)
+        {
+            // A rejection is only useful with the reason beside it, so the remark the
+            // reviewer typed is carried in brackets: "Rejected (photo is unreadable)".
+            var documentKey = KycStatusColumnDocument[column];
+            var status = state.DocumentStatus.GetValueOrDefault(documentKey, "Not Started");
+            var remark = state.DocumentRemark.GetValueOrDefault(documentKey, string.Empty);
+            return status == "Rejected" && remark.Length > 0 ? $"{status} ({remark})" : status;
+        }
 
         // "Awaiting Review - 2 Approved, 2 Pending": the stage the KYC screen shows, then how its
         // documents stand.

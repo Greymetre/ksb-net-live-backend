@@ -71,6 +71,15 @@ public sealed class SchemeAudienceService
             .ToDictionaryAsync(x => x.Id, x => x.StateName, cancellationToken);
         var employeeById = employees.ToDictionary(x => x.Id);
 
+        // The dealers these customers are mapped to, so a Customer-scope scheme naming a
+        // dealer reaches it and its retailers - the dealer's own card as well as each
+        // retailer's.
+        var dealerIds = customers.Select(SchemeEligibility.ReadDealerId)
+            .Where(x => x.HasValue).Select(x => x!.Value).Distinct().ToArray();
+        var dealersById = dealerIds.Length == 0 ? [] : await _db.Customers.AsNoTracking()
+            .Where(x => dealerIds.Contains(x.Id)).Select(x => new { x.Id, x.CustomerCode, x.Name })
+            .ToDictionaryAsync(x => x.Id, x => (x.CustomerCode, x.Name), cancellationToken);
+
         return customers.Select(customer =>
         {
             string? branchName = null;
@@ -85,8 +94,10 @@ public sealed class SchemeAudienceService
 
             var stateId = SchemeEligibility.ReadStateId(customer);
             var stateName = stateId.HasValue ? states.GetValueOrDefault(stateId.Value) : null;
+            var dealerId = SchemeEligibility.ReadDealerId(customer);
+            var dealer = dealerId.HasValue && dealersById.TryGetValue(dealerId.Value, out var found) ? found : (CustomerCode: (string?)null, Name: (string?)null);
             return new SchemeAudience(customer.CustomerType, customer.Name, customer.CustomerCode, branchName, zoneName, stateName,
-                SchemeEligibility.ReadDealerId(customer));
+                dealerId, dealer.CustomerCode, dealer.Name);
         }).ToList();
     }
 

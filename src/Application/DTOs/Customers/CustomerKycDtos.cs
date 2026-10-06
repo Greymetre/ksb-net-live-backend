@@ -120,4 +120,8 @@ public sealed class CustomerKycExportStateDto
 {
     public string Stage { get; init; } = "none";
     public IReadOnlyDictionary<string, string> DocumentStatus { get; init; } = new Dictionary<string, string>();
+    /// <summary>Why a document was rejected, by document key. Kept apart from the status so
+    /// the overall column can still count the four labels; the status column puts the two
+    /// together itself.</summary>
+    public IReadOnlyDictionary<string, string> DocumentRemark { get; init; } = new Dictionary<string, string>();
 }

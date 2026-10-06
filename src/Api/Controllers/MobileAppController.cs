@@ -2934,8 +2934,16 @@ VALUES ('Y', {0}, {1}, {2}, {3}, {4}, {5}, {6}, SYSUTCDATETIME(), SYSUTCDATETIME
             ? await _dbContext.States.AsNoTracking().Where(x => x.Id == stateId.Value).Select(x => x.StateName).FirstOrDefaultAsync(cancellationToken)
             : null;
 
+        // The dealer this customer is mapped to, so a Customer-scope scheme naming the
+        // dealer shows on the retailer's dashboard too.
+        var dealerId = SchemeEligibility.ReadDealerId(customer);
+        var dealer = dealerId.HasValue
+            ? await _dbContext.Customers.AsNoTracking().Where(x => x.Id == dealerId.Value)
+                .Select(x => new { x.CustomerCode, x.Name }).FirstOrDefaultAsync(cancellationToken)
+            : null;
+
         return new SchemeAudience(customer.CustomerType, customer.Name, customer.CustomerCode, branchName, zoneName, stateName,
-            SchemeEligibility.ReadDealerId(customer));
+            dealerId, dealer?.CustomerCode, dealer?.Name);
     }
 
     private static ulong? FirstAssignedId(string? value)

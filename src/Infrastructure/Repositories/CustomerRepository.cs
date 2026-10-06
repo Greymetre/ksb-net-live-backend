@@ -227,7 +227,12 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
                             : document.Status == CustomerKycEntry.StatusRejected ? "Rejected"
                             : document.Uploaded || document.DetailsFilled ? "Pending"
                             : "Not Started",
-                        StringComparer.OrdinalIgnoreCase)
+                        StringComparer.OrdinalIgnoreCase),
+                    DocumentRemark = entry.Documents
+                        .Where(document => document.Status == CustomerKycEntry.StatusRejected
+                            && !string.IsNullOrWhiteSpace(document.Remark))
+                        .ToDictionary(document => document.Key, document => document.Remark!.Trim(),
+                            StringComparer.OrdinalIgnoreCase)
                 });
     }
 
@@ -1389,12 +1394,20 @@ WHERE customer_id IN ({customerIdCsv})
             var stateName = await LoadCustomerStateNameAsync(customer, cancellationToken);
             var assignedBranchName = await LoadAssignedBranchNameAsync(customer, cancellationToken);
 
+            // The dealer this customer is mapped to, so earned points agree with what the
+            // invoice dropdown offered: a scheme shown through the dealer must also pay.
+            var dealerId = SchemeEligibility.ReadDealerId(customer);
+            var dealer = dealerId.HasValue
+                ? await _dbContext.Customers.AsNoTracking().Where(x => x.Id == dealerId.Value)
+                    .Select(x => new { x.CustomerCode, x.Name }).FirstOrDefaultAsync(cancellationToken)
+                : null;
+
             foreach (var row in rows)
             {
                 var invoiceDate = DateOnly.FromDateTime(row.Invoice.InvoiceDate.Date);
                 var matchingSchemes = schemes.Where(scheme =>
                     row.Invoice.LoyaltySchemeId == scheme.Id
-                    && SchemeMatchesCustomer(scheme, invoiceDate, customer, assignedBranchName ?? row.Branch?.BranchName, zoneName, stateName));
+                    && SchemeMatchesCustomer(scheme, invoiceDate, customer, assignedBranchName ?? row.Branch?.BranchName, zoneName, stateName, dealer?.CustomerCode, dealer?.Name));
                 var isApproved = row.Invoice.ApprovalStatus == NewInvoice.StatusApprovedHo;
                 // Which invoices set the slab. An approved invoice is measured against the
                 // approved total only - the figure it was actually awarded on, unchanged by
@@ -1516,10 +1529,10 @@ WHERE customer_id IN ({customerIdCsv})
 
     // Delegates to the shared matcher so customer point totals cannot drift from
     // what the invoice screen and the mobile apps consider eligible.
-    private static bool SchemeMatchesCustomer(LoyaltyScheme scheme, DateOnly invoiceDate, Customer customer, string? branchName, string? zoneName, string? stateName) =>
+    private static bool SchemeMatchesCustomer(LoyaltyScheme scheme, DateOnly invoiceDate, Customer customer, string? branchName, string? zoneName, string? stateName, string? dealerCode, string? dealerName) =>
         SchemeEligibility.Matches(scheme, invoiceDate, new SchemeAudience(
             customer.CustomerType, customer.Name, customer.CustomerCode, branchName, zoneName, stateName,
-            SchemeEligibility.ReadDealerId(customer)));
+            SchemeEligibility.ReadDealerId(customer), dealerCode, dealerName));
 
     private static decimal PeriodAmount(
         ulong customerId,

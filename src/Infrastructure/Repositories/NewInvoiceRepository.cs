@@ -29,7 +29,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
     private const string BeltAreaJsonPath = "$.belt_area_market_name";
 
     private const string SuperAdminRoleName = "SUPERADMIN";
-    private const string AsrDesignationName = "ASR";
+    private const string DsrDesignationName = "DSR";
     private readonly AppDbContext _dbContext;
 
     public NewInvoiceRepository(AppDbContext dbContext)
@@ -383,6 +383,14 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
             .Where(x => stateIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.StateName, cancellationToken);
         var employeeById = employees.ToDictionary(x => x.Id);
 
+        // The dealers these customers are mapped to, so a Customer-scope scheme naming a
+        // dealer reaches its retailers. Loaded once for the batch.
+        var dealerIds = customers.Select(SchemeEligibility.ReadDealerId)
+            .Where(x => x.HasValue).Select(x => x!.Value).Distinct().ToArray();
+        var dealersById = dealerIds.Length == 0 ? [] : await _dbContext.Customers.AsNoTracking()
+            .Where(x => dealerIds.Contains(x.Id)).Select(x => new { x.Id, x.CustomerCode, x.Name })
+            .ToDictionaryAsync(x => x.Id, x => (x.CustomerCode, x.Name), cancellationToken);
+
         var audiences = new HashSet<SchemeAudience>();
         foreach (var customer in customers)
         {
@@ -405,9 +413,11 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
             // The area part of a scheme only ever looks at one of these, so retailers sharing
             // a branch, zone and state collapse into a single audience.
             var dealerId = SchemeEligibility.ReadDealerId(customer);
-            audiences.Add(new SchemeAudience(customer.CustomerType, null, null, branchName, zoneName, stateName, dealerId));
-            // A scheme aimed at named customers needs the retailer itself.
-            audiences.Add(new SchemeAudience(customer.CustomerType, customer.Name, customer.CustomerCode, branchName, zoneName, stateName, dealerId));
+            var dealer = dealerId.HasValue && dealersById.TryGetValue(dealerId.Value, out var found) ? found : (CustomerCode: (string?)null, Name: (string?)null);
+            audiences.Add(new SchemeAudience(customer.CustomerType, null, null, branchName, zoneName, stateName, dealerId, dealer.CustomerCode, dealer.Name));
+            // A scheme aimed at named customers needs the retailer itself - and, through its
+            // dealer, a Customer-scope scheme that named the dealer rather than the retailer.
+            audiences.Add(new SchemeAudience(customer.CustomerType, customer.Name, customer.CustomerCode, branchName, zoneName, stateName, dealerId, dealer.CustomerCode, dealer.Name));
         }
 
         return audiences.ToList();
@@ -473,6 +483,23 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         return await query.FirstOrDefaultAsync(cancellationToken);
     }
 
+    /// <summary>
+    /// The code and name of the dealer an audience is read against, so a Customer-scope
+    /// scheme that names a dealer can reach that dealer's retailers.
+    ///
+    /// A retailer takes the dealer it is mapped to; a dealer is its own. Returned blank
+    /// when no dealer is resolved, which simply means no dealer-based match is attempted.
+    /// </summary>
+    private async Task<(string? Code, string? Name)> DealerIdentityAsync(ulong? dealerId, CancellationToken cancellationToken)
+    {
+        if (!dealerId.HasValue) return (null, null);
+        var dealer = await _dbContext.Customers.AsNoTracking()
+            .Where(x => x.Id == dealerId.Value)
+            .Select(x => new { x.CustomerCode, x.Name })
+            .FirstOrDefaultAsync(cancellationToken);
+        return dealer is null ? (null, null) : (dealer.CustomerCode, dealer.Name);
+    }
+
     public async Task<IReadOnlyCollection<InvoiceSchemeOptionDto>> GetEligibleSchemeOptionsAsync(ulong customerId, DateTime invoiceDate, CancellationToken cancellationToken)
     {
         var date = DateOnly.FromDateTime(invoiceDate.Date);
@@ -506,6 +533,8 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         var zoneName = AssignedZoneName(customer, zones);
         var stateNames = await LoadStateNamesAsync([customer], cancellationToken);
 
+        var dealerId = SchemeEligibility.ReadDealerId(customer);
+        var (dealerCode, dealerName) = await DealerIdentityAsync(dealerId, cancellationToken);
         var audience = new SchemeAudience(
             customer.CustomerType,
             customer.Name,
@@ -513,7 +542,9 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
             branch?.BranchName,
             zoneName,
             stateNames.GetValueOrDefault(customer.Id),
-            SchemeEligibility.ReadDealerId(customer));
+            dealerId,
+            dealerCode,
+            dealerName);
 
         return schemes
             .Where(x => SchemeMatches(x, date, audience))
@@ -902,6 +933,18 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
     /// the same numbers, so a hard-coded id would quietly grant or deny the button on one
     /// of them. Every matching row is collected, so a duplicated or renamed-back row still
     /// counts.</summary>
+    /// <summary>
+    /// Who may raise a field invoice: everyone except a DSR.
+    ///
+    /// A DSR is the one designation kept out; every other field role, and a superadmin,
+    /// may add one. The retailer a user then picks is still bounded by the reporting scope
+    /// that the retailer list already applies, so widening who may create changes nothing
+    /// about whose retailers each person can reach - only a DSR loses the add button.
+    ///
+    /// A superadmin is allowed outright, without reading a designation, because an admin
+    /// account need not carry one. A user with no designation at all is not a DSR, so the
+    /// invoice flow is open to them as it is to every other non-DSR role.
+    /// </summary>
     public async Task<bool> CanCreateFieldInvoiceAsync(ulong? actorUserId, CancellationToken cancellationToken)
     {
         if (!actorUserId.HasValue) return false;
@@ -927,14 +970,15 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
             .Select(x => x.DesignationId)
             .FirstOrDefaultAsync(cancellationToken);
 
-        if (!designationId.HasValue) return false;
+        // No designation is not a DSR, so the user may create - the gate keeps only DSRs out.
+        if (!designationId.HasValue) return true;
 
-        var asrDesignationIds = await _dbContext.Designations.AsNoTracking()
-            .Where(x => x.DesignationName != null && x.DesignationName.Trim().ToUpper() == AsrDesignationName)
+        var dsrDesignationIds = await _dbContext.Designations.AsNoTracking()
+            .Where(x => x.DesignationName != null && x.DesignationName.Trim().ToUpper() == DsrDesignationName)
             .Select(x => x.Id)
             .ToListAsync(cancellationToken);
 
-        return asrDesignationIds.Contains(designationId.Value);
+        return !dsrDesignationIds.Contains(designationId.Value);
     }
 
     /// that dealer's own retailers rather than falling through to a reporting scope they have

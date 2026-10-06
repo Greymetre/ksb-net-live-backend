@@ -18,7 +18,16 @@ public sealed record SchemeAudience(
     /// <summary>The dealer this audience belongs to: a dealer's own id, or the dealer a
     /// retailer is mapped to. A scheme that excludes that dealer does not apply to either
     /// of them - see SchemeEligibility.Matches.</summary>
-    ulong? DealerId);
+    ulong? DealerId,
+    /// <summary>The code and name of that same dealer, when known.
+    ///
+    /// A Customer-scope scheme can name a dealer instead of a single customer. It then
+    /// reaches that dealer and every retailer mapped to it - so a retailer matches when its
+    /// dealer is the one named. The match is on the dealer's "code - name", the label the
+    /// scheme form writes, so these are carried for the comparison. Blank where the dealer
+    /// is not resolved, which simply means no dealer-based match is attempted there.</summary>
+    string? DealerCode = null,
+    string? DealerName = null);
 
 /// <summary>
 /// Single source of truth for deciding whether a loyalty scheme applies. Every
@@ -131,9 +140,14 @@ public static class SchemeEligibility
 
         return scope switch
         {
+            // Named directly (the audience's own identity), or named through its dealer -
+            // a scheme whose Customer value is a dealer reaches that dealer's retailers too.
             "Customer" => MatchesAny(values, audience.CustomerName)
                 || MatchesAny(values, audience.CustomerCode)
-                || MatchesAny(values, CustomerLabel(audience)),
+                || MatchesAny(values, CustomerLabel(audience))
+                || MatchesAny(values, audience.DealerName)
+                || MatchesAny(values, audience.DealerCode)
+                || MatchesAny(values, DealerLabel(audience)),
             "Branch" => MatchesAny(values, audience.BranchName),
             "Zone" => MatchesAny(values, audience.ZoneName),
             "State" => MatchesAny(values, audience.StateName),
@@ -162,6 +176,15 @@ public static class SchemeEligibility
         string.IsNullOrWhiteSpace(audience.CustomerCode)
             ? audience.CustomerName
             : $"{audience.CustomerCode} - {audience.CustomerName}";
+
+    /// <summary>The dealer's "code - name", the same shape the scheme form's Customer
+    /// picker writes, so a value chosen there matches it exactly.</summary>
+    private static string? DealerLabel(SchemeAudience audience) =>
+        string.IsNullOrWhiteSpace(audience.DealerName)
+            ? null
+            : string.IsNullOrWhiteSpace(audience.DealerCode)
+                ? audience.DealerName
+                : $"{audience.DealerCode} - {audience.DealerName}";
 
     private static bool MatchesAny(IReadOnlyCollection<string> values, string? candidate) =>
         !string.IsNullOrWhiteSpace(candidate)
