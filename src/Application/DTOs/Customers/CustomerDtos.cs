@@ -30,6 +30,10 @@ public sealed class CustomerDto
     public string? Pincode { get; set; }
     public ulong? CreatedBy { get; set; }
     public string? CreatedByName { get; set; }
+    /// <summary>Whether the current user may change this retailer's approval. False for the
+    /// creator or the assigned employee (a field user), so the screen can hide the buttons
+    /// the server would refuse anyway. Always true for an admin.</summary>
+    public bool CanReviewApproval { get; set; } = true;
     public DateTime? CreatedAt { get; set; }
     public DateTime? UpdatedAt { get; set; }
     public decimal TotalPoints { get; set; }

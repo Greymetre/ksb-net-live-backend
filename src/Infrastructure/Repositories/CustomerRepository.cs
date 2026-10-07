@@ -11,6 +11,7 @@ using Domain.Services;
 using Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Shared.Json;
+using Shared.Exceptions;
 
 namespace Infrastructure.Repositories;
 
@@ -188,7 +189,13 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
             })
             .ToListAsync(cancellationToken);
 
-        var customers = rows.Select(row => ToCustomerDto(row.Customer, row.CreatedByName, row.ParentName)).ToList();
+        var listActorUnrestricted = await ReportingVisibility.HasUnrestrictedDataScopeAsync(_dbContext, filter.ActorUserId, cancellationToken);
+        var customers = rows.Select(row =>
+        {
+            var dto = ToCustomerDto(row.Customer, row.CreatedByName, row.ParentName);
+            dto.CanReviewApproval = CanReviewApproval(row.Customer, filter.ActorUserId, listActorUnrestricted);
+            return dto;
+        }).ToList();
         await AttachAddressFallbackAsync(customers, cancellationToken);
         await AttachAddressNamesAsync(customers, cancellationToken);
         await AttachAssignmentFallbackAsync(customers, cancellationToken);
@@ -210,6 +217,41 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
     /// <summary>Read from the same index the KYC screen lists from, so the export can never
     /// disagree with it. A document with nothing uploaded or entered and no review reads Not
     /// Started; one submitted but not yet reviewed reads Pending - the screen's own wording.</summary>
+    /// <summary>
+    /// The scheme on each retailer's most recent invoice.
+    ///
+    /// "Most recent" is the latest invoice date, and the highest id where two share a date -
+    /// the last one raised. Its loyalty scheme's name is returned; a retailer with no
+    /// invoice, or whose last invoice carries no scheme, is simply left out, so the export
+    /// cell reads blank. new_invoices is not soft-deleted, so there is no deleted filter.
+    /// </summary>
+    public async Task<IReadOnlyDictionary<ulong, string>> GetLastInvoiceSchemeNamesAsync(IReadOnlyCollection<ulong> retailerIds, CancellationToken cancellationToken)
+    {
+        if (retailerIds.Count == 0) return new Dictionary<ulong, string>();
+        var ids = retailerIds.ToHashSet();
+
+        var invoices = await _dbContext.NewInvoices.AsNoTracking()
+            .Where(x => ids.Contains(x.SecondaryCustomerId))
+            .Select(x => new { x.SecondaryCustomerId, x.InvoiceDate, x.Id, x.LoyaltySchemeId })
+            .ToListAsync(cancellationToken);
+
+        var lastByRetailer = invoices
+            .GroupBy(x => x.SecondaryCustomerId)
+            .Select(group => group.OrderByDescending(x => x.InvoiceDate).ThenByDescending(x => x.Id).First())
+            .Where(x => x.LoyaltySchemeId.HasValue)
+            .ToList();
+        if (lastByRetailer.Count == 0) return new Dictionary<ulong, string>();
+
+        var schemeIds = lastByRetailer.Select(x => x.LoyaltySchemeId!.Value).Distinct().ToArray();
+        var schemeNames = await _dbContext.LoyaltySchemes.AsNoTracking()
+            .Where(x => schemeIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, x => x.SchemeName, cancellationToken);
+
+        return lastByRetailer
+            .Where(x => schemeNames.ContainsKey(x.LoyaltySchemeId!.Value))
+            .ToDictionary(x => x.SecondaryCustomerId, x => schemeNames[x.LoyaltySchemeId!.Value]);
+    }
+
     public async Task<IReadOnlyDictionary<ulong, CustomerKycExportStateDto>> GetKycExportStatesAsync(IReadOnlyCollection<ulong> customerIds, CancellationToken cancellationToken)
     {
         var wanted = customerIds.ToHashSet();
@@ -682,10 +724,39 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
         return dto;
     }
 
+    /// <summary>
+    /// Whether this actor may change the retailer's approval.
+    ///
+    /// An admin always may. A field user may not when they created the retailer or it is
+    /// assigned to them - both see it in their reporting-wise list, but the decision comes
+    /// from a reporting manager above them. The same rule gates the action and hides the
+    /// buttons, so the screen never offers what the server would refuse.
+    /// </summary>
+    private static bool CanReviewApproval(Customer customer, ulong? actorUserId, bool actorUnrestricted)
+    {
+        if (actorUnrestricted) return true;
+        if (!actorUserId.HasValue) return false;
+        var assignee = customer.AssignedEmployeeId
+            ?? customer.AssignedSalesExecutiveId
+            ?? customer.AssignedFallbackEmployeeId
+            ?? customer.ExecutiveId;
+        return customer.CreatedBy != actorUserId.Value && assignee != actorUserId.Value;
+    }
+
     public async Task<CustomerDto?> SetRetailerApprovalStatusAsync(ulong id, string status, string? remark, ulong actorUserId, CancellationToken cancellationToken)
     {
         var customer = await _dbContext.Customers.FirstOrDefaultAsync(x => x.Id == id && x.DeletedAt == null, cancellationToken);
         if (customer is null || !IsRetailerCustomer(customer)) return null;
+
+        // A retailer is reviewed by a reporting manager above it, not by the person who
+        // created it or the one it is assigned to - both see it in their reporting-wise
+        // list, but the decision has to come from higher up. Admins are exempt.
+        var actorUnrestricted = await ReportingVisibility.HasUnrestrictedDataScopeAsync(_dbContext, actorUserId, cancellationToken);
+        if (!CanReviewApproval(customer, actorUserId, actorUnrestricted))
+        {
+            throw new LaravelHttpException(LaravelStatusCodes.Forbidden,
+                "You cannot change the approval of a retailer you created or are assigned to - it is reviewed by a reporting manager above you.");
+        }
 
         var fields = DeserializeFields(customer.CustomFields);
         fields["status"] = status;

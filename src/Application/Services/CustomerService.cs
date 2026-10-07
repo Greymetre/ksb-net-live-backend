@@ -63,7 +63,8 @@ public sealed class CustomerService : ICustomerService
         ("bank_proof", "Bank Attachment"), (KycBankStatusColumn, "Bank Status"),
         ("bank_account_number", "Bank Account Number"), ("ifsc_code", "IFSC Code"), ("account_holder_name", "Account Holder Name"),
         ("bank_name", "Bank Name"), ("bank_account_type", "Bank Account Type"),
-        (KycOverallStatusColumn, "KYC Status"), ("zone", "Zone")
+        (KycOverallStatusColumn, "KYC Status"), ("zone", "Zone"),
+        (LastSchemeColumn, "Last Scheme"), (GstTreatmentColumn, "GST Treatment")
     ];
 
     // Filled from the KYC screen's own data, never from the sheet: an import must not be able to
@@ -73,6 +74,13 @@ public sealed class CustomerService : ICustomerService
     private const string KycAadharStatusColumn = "kyc_export_aadhar_status";
     private const string KycBankStatusColumn = "kyc_export_bank_status";
     private const string KycOverallStatusColumn = "kyc_export_status";
+    // The retailer sheet's last column: the scheme on the retailer's most recent invoice.
+    // Shown only, never read back - an import leaves it alone like the KYC status columns.
+    private const string LastSchemeColumn = "last_scheme_name";
+    // GST Treatment toggle: ON means the customer is NOT GST registered. The form writes
+    // it as a custom field; the retailer sheet shows it as Yes/No at the end and the import
+    // leaves it alone.
+    private const string GstTreatmentColumn = "gst_treatment";
 
     private static readonly Dictionary<string, string> KycStatusColumnDocument = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -81,7 +89,7 @@ public sealed class CustomerService : ICustomerService
 
     private static readonly string[] RetailerExportColumns = RetailerExportDefinition
         .Select(x => x.Key)
-        .Where(key => key != KycOverallStatusColumn && !KycStatusColumnDocument.ContainsKey(key))
+        .Where(key => key != KycOverallStatusColumn && key != LastSchemeColumn && key != GstTreatmentColumn && !KycStatusColumnDocument.ContainsKey(key))
         .ToArray();
 
     // owner_photo left the export sheet but an older file may still carry it, so import keeps reading it.
@@ -107,7 +115,8 @@ public sealed class CustomerService : ICustomerService
         "city_name", "beat_name", "billing_city_name", "billing_district_name", "billing_state_name",
         "billing_country_name", "billing_pincode_name", "created_at", "created_at_datetime",
         "updated_at_datetime", "created_by_name", "approve_reject_by_name", "zone",
-        KycGstStatusColumn, KycPanStatusColumn, KycAadharStatusColumn, KycBankStatusColumn, KycOverallStatusColumn
+        KycGstStatusColumn, KycPanStatusColumn, KycAadharStatusColumn, KycBankStatusColumn, KycOverallStatusColumn,
+        LastSchemeColumn, GstTreatmentColumn
     };
 
     private static readonly IReadOnlyDictionary<string, string> ExportHeadingKeys = BuildExportHeadingKeys();
@@ -274,12 +283,16 @@ public sealed class CustomerService : ICustomerService
         var rows = (await _repository.GetCustomersAsync(filter, cancellationToken)).Items;
         if (filter.CustomerType == 2)
         {
-            var kyc = await _repository.GetKycExportStatesAsync(rows.Select(x => x.Id).ToArray(), cancellationToken);
+            var retailerIds = rows.Select(x => x.Id).ToArray();
+            var kyc = await _repository.GetKycExportStatesAsync(retailerIds, cancellationToken);
+            var lastScheme = await _repository.GetLastInvoiceSchemeNamesAsync(retailerIds, cancellationToken);
             return CreateWorkbook(
                 "customers-retailer.xlsx",
                 RetailerExportDefinition.Select(x => x.Heading).ToArray(),
                 rows.Select(customer => RetailerExportDefinition
-                    .Select(column => RetailerKycExportValue(customer, column.Key, kyc) ?? ExportValue(customer, column.Key, baseUrl))
+                    .Select(column => column.Key == LastSchemeColumn
+                        ? lastScheme.GetValueOrDefault(customer.Id)
+                        : RetailerKycExportValue(customer, column.Key, kyc) ?? ExportValue(customer, column.Key, baseUrl))
                     .ToArray()),
                 preserveHeadings: true);
         }
@@ -631,6 +644,9 @@ public sealed class CustomerService : ICustomerService
             "distributor_name" => Field(customer, "distributor_name_name") ?? Field(customer, column),
             "agri_distributor" => Field(customer, "agri_distributor_name") ?? Field(customer, column),
             "employee_id" => Field(customer, "employee_id_name") ?? Field(customer, column),
+            // The toggle: Yes when it is on (the customer is not GST registered), No otherwise
+            // - and No for an older record that never set it.
+            "gst_treatment" => GstTreatmentYesNo(customer),
             // KYC fields carry older spellings on some records; read them the way the KYC screen does.
             "gst_attachment" => FirstNonBlank(Field(customer, "gst_attachment"), Field(customer, "gst_image")),
             "gst_number" => FirstNonBlank(Field(customer, "gst_number"), Field(customer, "gstin_no")),
@@ -663,6 +679,14 @@ public sealed class CustomerService : ICustomerService
         null => "All",
         _ => $"Type-{type}"
     };
+
+    /// <summary>The GST Treatment toggle as Yes/No. On (Yes) means the customer is not GST
+    /// registered; anything unset reads No.</summary>
+    private static string GstTreatmentYesNo(CustomerDto customer)
+    {
+        var value = Field(customer, "gst_treatment")?.Trim().ToLowerInvariant();
+        return value is "yes" or "true" or "1" or "on" or "y" ? "Yes" : "No";
+    }
 
     private static string? Field(CustomerDto customer, string key) =>
         customer.CustomFields.TryGetValue(key, out var value) ? value : null;
