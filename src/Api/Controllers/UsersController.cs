@@ -33,6 +33,7 @@ public sealed class UsersController : ControllerBase
         [FromQuery(Name = "division_id")] ulong? divisionId,
         [FromQuery(Name = "branch_id")] string? branchId,
         [FromQuery(Name = "department_id")] ulong? departmentId,
+        [FromQuery(Name = "designation_id")] ulong? designationId,
         CancellationToken cancellationToken)
     {
         var response = await _userService.GetUsersAsync(new UserListFiltersDto
@@ -43,7 +44,8 @@ public sealed class UsersController : ControllerBase
             Active = active,
             DivisionId = divisionId,
             BranchId = branchId,
-            DepartmentId = departmentId
+            DepartmentId = departmentId,
+            DesignationId = designationId
         }, cancellationToken);
         return Ok(response);
     }
@@ -185,7 +187,7 @@ public sealed class UsersController : ControllerBase
     [RequirePermission("user.export")]
     [HttpGet("users-download")]
     [HttpGet("users/export")]
-    public async Task<IActionResult> ExportUsers([FromQuery(Name = "user_type")] string? userType, [FromQuery] string? active, [FromQuery(Name = "division_id")] ulong? divisionId, [FromQuery(Name = "branch_id")] string? branchId, [FromQuery(Name = "department_id")] ulong? departmentId, CancellationToken cancellationToken)
+    public async Task<IActionResult> ExportUsers([FromQuery(Name = "user_type")] string? userType, [FromQuery] string? active, [FromQuery(Name = "division_id")] ulong? divisionId, [FromQuery(Name = "branch_id")] string? branchId, [FromQuery(Name = "department_id")] ulong? departmentId, [FromQuery(Name = "designation_id")] ulong? designationId, CancellationToken cancellationToken)
     {
         var file = await _userService.ExportUsersAsync(new UserExportFiltersDto
         {
@@ -194,7 +196,8 @@ public sealed class UsersController : ControllerBase
             Active = active,
             DivisionId = divisionId,
             BranchId = branchId,
-            DepartmentId = departmentId
+            DepartmentId = departmentId,
+            DesignationId = designationId
         }, cancellationToken);
         return File(file.Content, file.ContentType, file.FileName);
     }

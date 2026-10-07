@@ -13,6 +13,7 @@ public sealed class UserExportFiltersDto
     public ulong? DivisionId { get; set; }
     public string? BranchId { get; set; }
     public ulong? DepartmentId { get; set; }
+    public ulong? DesignationId { get; set; }
 }
 
 public sealed class UserListFiltersDto
@@ -25,6 +26,7 @@ public sealed class UserListFiltersDto
     public ulong? DivisionId { get; set; }
     public string? BranchId { get; set; }
     public ulong? DepartmentId { get; set; }
+    public ulong? DesignationId { get; set; }
 }
 
 public sealed class UserRoleDto

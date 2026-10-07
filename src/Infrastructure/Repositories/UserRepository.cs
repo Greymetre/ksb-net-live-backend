@@ -37,7 +37,8 @@ public sealed class UserRepository : IUserRepository
             Active = filters.Active,
             DivisionId = filters.DivisionId,
             BranchId = filters.BranchId,
-            DepartmentId = filters.DepartmentId
+            DepartmentId = filters.DepartmentId,
+            DesignationId = filters.DesignationId
         });
 
         if (!string.IsNullOrWhiteSpace(filters.Search))
@@ -336,6 +337,11 @@ public sealed class UserRepository : IUserRepository
         if (filters.DepartmentId.HasValue)
         {
             query = query.Where(x => x.DepartmentId == filters.DepartmentId);
+        }
+
+        if (filters.DesignationId.HasValue)
+        {
+            query = query.Where(x => x.DesignationId == filters.DesignationId);
         }
 
         return string.Equals(filters.UserType, "customer", StringComparison.OrdinalIgnoreCase)
