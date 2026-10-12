@@ -30,6 +30,7 @@ public static class DependencyInjection
         services.AddSingleton<Infrastructure.Caching.CustomerKycIndex>();
         services.AddSingleton<Infrastructure.Caching.RfmCategoryIndex>();
         services.AddScoped<ICustomerRepository, CustomerRepository>();
+        services.AddScoped<IDealerFeedbackRepository, DealerFeedbackRepository>();
         services.AddScoped<ILoyaltySchemeRepository, LoyaltySchemeRepository>();
         services.AddScoped<INewInvoiceRepository, NewInvoiceRepository>();
         services.AddScoped<IRedemptionRepository, RedemptionRepository>();

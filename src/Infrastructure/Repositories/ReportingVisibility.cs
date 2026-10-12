@@ -143,7 +143,7 @@ internal static class ReportingVisibility
             return internalUsers.Select(x => x.Id).ToArray();
         }
 
-        if (roles.Any(role => role.RoleId == RoleIds.BranchManager))
+        if (roles.Any(role => IsBranchManagerRole(role.Name)))
         {
             var actorBranches = SplitCsv(actor.BranchId).ToHashSet(StringComparer.OrdinalIgnoreCase);
             if (actorBranches.Count == 0) return [actor.Id];
@@ -254,6 +254,13 @@ WHERE user_id IN ({string.Join(',', visible)})
 
     private static bool IsAdminRole(string? roleName) =>
         roleName?.Contains("admin", StringComparison.OrdinalIgnoreCase) == true;
+
+    /// <summary>True when the role name contains "branch manager" (any case; the two words
+    /// with a single space). The branch scope is keyed off the name now instead of a fixed
+    /// role id - the same substring approach the admin roles use. Only the detection changes;
+    /// the branch flow below is untouched.</summary>
+    public static bool IsBranchManagerRole(string? roleName) =>
+        roleName?.Contains("branch manager", StringComparison.OrdinalIgnoreCase) == true;
 
     private static async Task<ulong?> ResolveLegacyDealerCustomerIdAsync(
         AppDbContext db,

@@ -140,7 +140,15 @@ public sealed class ActivityReportExportsController : ControllerBase
     private IActionResult Excel(XLWorkbook book, string name) { using var stream = new MemoryStream(); book.SaveAs(stream); return File(stream.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", name); }
 }
 
-public sealed class ActivityReportFilter { public DateTime? StartDate { get; set; } public DateTime? EndDate { get; set; } public ulong? ZoneId { get; set; } public ulong? BranchId { get; set; } public string? Meet { get; set; }
+public sealed class ActivityReportFilter {
+    // The screen sends snake_case names, so each must be mapped explicitly - otherwise only
+    // Meet (matched case-insensitively) bound and the date/zone/branch filters were ignored
+    // on both the preview and the exports.
+    [FromQuery(Name = "start_date")] public DateTime? StartDate { get; set; }
+    [FromQuery(Name = "end_date")] public DateTime? EndDate { get; set; }
+    [FromQuery(Name = "zone_id")] public ulong? ZoneId { get; set; }
+    [FromQuery(Name = "branch_id")] public ulong? BranchId { get; set; }
+    [FromQuery(Name = "meet")] public string? Meet { get; set; }
     /// <summary>"Y", "N" or nothing at all - see Domain.Services.EmployeeStatus.</summary>
     [FromQuery(Name = "employee_status")] public string? EmployeeStatus { get; set; } }
 public sealed record ActivityRawRow(long Id, ulong? DivisionId, string Zone, long? BranchId, string Branch, long? DistributorId, string DistributorName, ulong CreatorId, string CreatorName, ulong UserId, string UserName, string UserStatus, int Participants, int GiftCount, decimal TotalExpense);

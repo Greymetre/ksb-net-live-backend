@@ -151,9 +151,17 @@ public sealed class ReportManagementController : ControllerBase
         var targets = await _db.SalesTargetUsers.AsNoTracking().Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value)
             && x.Year.HasValue && targetYears.Contains(x.Year.Value) && x.Month != null && targetMonths.Contains(x.Month))
             .Select(x => new { UserId = x.UserId!.Value, x.Year, x.Month, x.Target }).ToListAsync(ct);
-        var orders = await _db.Orders.AsNoTracking().Where(x => x.CreatedBy.HasValue && userIds.Contains(x.CreatedBy.Value)
-            && x.OrderDate >= rangeStart && x.OrderDate < rangeEnd && x.DeletedAt == null)
-            .Select(x => new { UserId = x.CreatedBy!.Value, x.OrderDate, Value = x.GrandTotal }).ToListAsync(ct);
+        var orders = filter.SegmentId.HasValue
+            ? await (from o in _db.Orders.AsNoTracking()
+                     where o.CreatedBy.HasValue && userIds.Contains(o.CreatedBy.Value) && o.OrderDate >= rangeStart && o.OrderDate < rangeEnd && o.DeletedAt == null
+                     join d in _db.OrderDetails.AsNoTracking() on (ulong?)o.Id equals d.OrderId
+                     join p in _db.Products.IgnoreQueryFilters() on d.ProductId equals p.Id
+                     where p.CategoryId == filter.SegmentId.Value
+                     group d by new { o.Id, UserId = o.CreatedBy!.Value, o.OrderDate } into g
+                     select new { g.Key.UserId, g.Key.OrderDate, Value = g.Sum(x => x.LineTotal) }).ToListAsync(ct)
+            : await _db.Orders.AsNoTracking().Where(x => x.CreatedBy.HasValue && userIds.Contains(x.CreatedBy.Value)
+                && x.OrderDate >= rangeStart && x.OrderDate < rangeEnd && x.DeletedAt == null)
+                .Select(x => new { UserId = x.CreatedBy!.Value, x.OrderDate, Value = x.GrandTotal }).ToListAsync(ct);
 
         List<Dictionary<string, object?>> visitRows = userIds.Length == 0 ? [] : await Query($@"SELECT CAST(user_id AS bigint) user_id,
 YEAR(checkin_date) visit_year, MONTH(checkin_date) visit_month, COUNT_BIG(*) visit_count
@@ -165,7 +173,16 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
 
         var retailerAssignmentPeriods = await RetailerAssignmentPeriods(userIds, rangeEnd, ct);
         var assignedRetailerIds = retailerAssignmentPeriods.Select(x => x.CustomerId).Distinct().ToArray();
-        var retailerOrders = assignedRetailerIds.Length == 0 ? [] : await _db.Orders.AsNoTracking()
+        List<RetailerOrderActivity> retailerOrders;
+        if (assignedRetailerIds.Length == 0) retailerOrders = [];
+        else if (filter.SegmentId.HasValue)
+            retailerOrders = await (from o in _db.Orders.AsNoTracking()
+                where o.BuyerId.HasValue && assignedRetailerIds.Contains(o.BuyerId.Value) && o.OrderDate >= rangeStart && o.OrderDate < rangeEnd && o.DeletedAt == null
+                join d in _db.OrderDetails.AsNoTracking() on (ulong?)o.Id equals d.OrderId
+                join p in _db.Products.IgnoreQueryFilters() on d.ProductId equals p.Id
+                where p.CategoryId == filter.SegmentId.Value
+                select new RetailerOrderActivity(o.BuyerId!.Value, o.OrderDate!.Value)).Distinct().ToListAsync(ct);
+        else retailerOrders = await _db.Orders.AsNoTracking()
             .Where(x => x.BuyerId.HasValue && assignedRetailerIds.Contains(x.BuyerId.Value)
                 && x.OrderDate >= rangeStart && x.OrderDate < rangeEnd && x.DeletedAt == null)
             .Select(x => new RetailerOrderActivity(x.BuyerId!.Value, x.OrderDate!.Value)).ToListAsync(ct);
@@ -384,7 +401,11 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
         var retailerIds = retailers.Select(x => x.Id).ToArray();
         var year = filter.Year ?? DateTime.UtcNow.Year;
         var orders = await _db.Orders.AsNoTracking().Where(x => x.BuyerId.HasValue && retailerIds.Contains(x.BuyerId.Value) && x.OrderDate.HasValue && x.OrderDate.Value.Year == year && x.DeletedAt == null)
-            .Select(x => new PerformanceOrder(x.BuyerId, x.SellerId, x.ExecutiveId, x.CreatedBy, x.OrderDate, (long?)x.TotalQty ?? 0, (decimal?)x.GrandTotal ?? 0)).ToListAsync(ct);
+            .Select(x => new PerformanceOrder(x.Id, x.BuyerId, x.SellerId, x.ExecutiveId, x.CreatedBy, x.OrderDate, (long?)x.TotalQty ?? 0, (decimal?)x.GrandTotal ?? 0)).ToListAsync(ct);
+        // With a segment picked, Qty/Value read only that segment's lines (0 when the order has none).
+        var segmentTotals = filter.SegmentId.HasValue ? await SegmentOrderTotalsAsync(orders.Select(o => o.Id).ToArray(), filter.SegmentId.Value, ct) : null;
+        long QtyOf(PerformanceOrder o) => segmentTotals is null ? o.TotalQty : (segmentTotals.TryGetValue(o.Id, out var t) ? t.Qty : 0);
+        decimal ValOf(PerformanceOrder o) => segmentTotals is null ? o.GrandTotal : (segmentTotals.TryGetValue(o.Id, out var t) ? t.Value : 0);
         var cities = await _db.Cities.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.CityName, ct);
         var districts = await _db.Districts.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.DistrictName, ct);
         var states = await _db.States.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.StateName, ct);
@@ -402,8 +423,8 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
             var employeeId = customer.ExecutiveId ?? customer.CreatedBy; userMap.TryGetValue(employeeId ?? 0, out var employee);
             var customerOrders = orders.Where(x => x.BuyerId == customer.Id).ToList(); var dealerId = JsonULong(customer.CustomFields, "distributor_name");
             var values = new List<object?> { employee?.Name ?? "-", employee is null ? "-" : Domain.Services.EmployeeStatus.Of(employee.Active), customer.Name, Name(cities, JsonULong(customer.CustomFields, "city_id")), Name(districts, JsonULong(customer.CustomFields, "district_id")), Name(states, JsonULong(customer.CustomFields, "state_id")), Name(dealers, dealerId), Name(allUserNames, employee?.ReportingId) };
-            for (var month = 1; month <= 12; month++) { var monthOrders = customerOrders.Where(x => x.OrderDate!.Value.Month == month); values.Add(monthOrders.Sum(x => x.TotalQty)); values.Add(monthOrders.Sum(x => x.GrandTotal)); }
-            values.Add(customerOrders.Sum(x => x.TotalQty)); values.Add(customerOrders.Sum(x => x.GrandTotal)); values.Add(customer.Id); values.Add(employee?.EmployeeCodes ?? "-"); values.Add(dealerId ?? 0);
+            for (var month = 1; month <= 12; month++) { var monthOrders = customerOrders.Where(x => x.OrderDate!.Value.Month == month); values.Add(monthOrders.Sum(QtyOf)); values.Add(monthOrders.Sum(ValOf)); }
+            values.Add(customerOrders.Sum(QtyOf)); values.Add(customerOrders.Sum(ValOf)); values.Add(customer.Id); values.Add(employee?.EmployeeCodes ?? "-"); values.Add(dealerId ?? 0);
             WriteRow(sheet, rowNumber++, values);
         }
         StyleSimpleExport(sheet, headers.Count, rowNumber - 1, "D9E1F2");
@@ -680,8 +701,8 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
         var retailers = await RfmFilteredRetailersAsync(filter, ct);
         // Everyone who had ordered by the end of the chosen month, and everyone who had
         // ordered by the end of the month before it. The difference is who was won during it.
-        var activatedByNow = await BuyersUpToAsync(currentEnd, ct);
-        var activatedBefore = await BuyersUpToAsync(currentStart, ct);
+        var activatedByNow = await BuyersUpToAsync(currentEnd, filter.SegmentId, ct);
+        var activatedBefore = await BuyersUpToAsync(currentStart, filter.SegmentId, ct);
 
         // Whose book the retailer sits on: the employee it is assigned to, or the dealer the
         // customer master maps it to.
@@ -859,11 +880,23 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
     }
 
     /// <summary>Every retailer that had placed an order by <paramref name="upTo"/>.</summary>
-    private async Task<HashSet<ulong>> BuyersUpToAsync(DateTime upTo, CancellationToken ct) =>
-        (await _db.Orders.AsNoTracking()
+    private async Task<HashSet<ulong>> BuyersUpToAsync(DateTime upTo, ulong? segmentId, CancellationToken ct)
+    {
+        if (segmentId.HasValue)
+        {
+            // A retailer counts as active only if it ordered a line of the segment by then.
+            return (await (from o in _db.Orders.AsNoTracking()
+                where o.DeletedAt == null && o.BuyerId.HasValue && o.OrderDate.HasValue && o.OrderDate < upTo
+                join d in _db.OrderDetails.AsNoTracking() on (ulong?)o.Id equals d.OrderId
+                join p in _db.Products.IgnoreQueryFilters() on d.ProductId equals p.Id
+                where p.CategoryId == segmentId.Value
+                select o.BuyerId!.Value).Distinct().ToListAsync(ct)).ToHashSet();
+        }
+        return (await _db.Orders.AsNoTracking()
             .Where(x => x.DeletedAt == null && x.BuyerId.HasValue && x.OrderDate.HasValue && x.OrderDate < upTo)
             .Select(x => x.BuyerId!.Value).Distinct().ToListAsync(ct))
         .ToHashSet();
+    }
 
     private const string NoOrder = "No Order Yet";
 
@@ -1058,14 +1091,35 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
     {
         var actor = CurrentUserId();
 
-        // Aggregated in the database in one pass: on live this is the whole orders table.
-        var orderStats = (await _db.Orders.AsNoTracking()
-            .Where(x => x.DeletedAt == null && x.BuyerId.HasValue && x.OrderDate.HasValue
-                && (from == null || x.OrderDate >= from) && (to == null || x.OrderDate < to))
-            .GroupBy(x => x.BuyerId!.Value)
-            .Select(g => new { BuyerId = g.Key, Orders = g.Count(), LastOrder = g.Max(x => x.OrderDate!.Value), Value = g.Sum(x => x.GrandTotal) })
-            .ToListAsync(ct))
-            .ToDictionary(x => x.BuyerId);
+        // Per retailer: order count (frequency), last order (recency) and value (monetary).
+        // With a segment picked, only that segment's lines count - frequency becomes the number
+        // of orders that carried the segment, value its sale, recency its last such order.
+        Dictionary<ulong, RfmOrderStat> orderStats;
+        if (filter.SegmentId.HasValue)
+        {
+            var segmentId = filter.SegmentId.Value;
+            var fromDate = from; var toDate = to;
+            var lines = await (from o in _db.Orders.AsNoTracking()
+                where o.DeletedAt == null && o.BuyerId.HasValue && o.OrderDate.HasValue
+                    && (fromDate == null || o.OrderDate >= fromDate) && (toDate == null || o.OrderDate < toDate)
+                join d in _db.OrderDetails.AsNoTracking() on (ulong?)o.Id equals d.OrderId
+                join p in _db.Products.IgnoreQueryFilters() on d.ProductId equals p.Id
+                where p.CategoryId == segmentId
+                select new { BuyerId = o.BuyerId!.Value, OrderId = o.Id, OrderDate = o.OrderDate!.Value, d.LineTotal }).ToListAsync(ct);
+            orderStats = lines.GroupBy(x => x.BuyerId).ToDictionary(g => g.Key,
+                g => new RfmOrderStat(g.Key, g.Select(x => x.OrderId).Distinct().Count(), g.Max(x => x.OrderDate), g.Sum(x => x.LineTotal)));
+        }
+        else
+        {
+            // Aggregated in the database in one pass: on live this is the whole orders table.
+            orderStats = (await _db.Orders.AsNoTracking()
+                .Where(x => x.DeletedAt == null && x.BuyerId.HasValue && x.OrderDate.HasValue
+                    && (from == null || x.OrderDate >= from) && (to == null || x.OrderDate < to))
+                .GroupBy(x => x.BuyerId!.Value)
+                .Select(g => new { BuyerId = g.Key, Orders = g.Count(), LastOrder = g.Max(x => x.OrderDate!.Value), Value = g.Sum(x => x.GrandTotal) })
+                .ToListAsync(ct))
+                .ToDictionary(x => x.BuyerId, x => new RfmOrderStat(x.BuyerId, x.Orders, x.LastOrder, x.Value));
+        }
 
         var retailers = await RfmFilteredRetailersAsync(filter, ct);
 
@@ -1427,7 +1481,10 @@ INNER JOIN (SELECT customer_id, MIN(id) AS id FROM addresses WHERE deleted_at IS
         var dealers = await _db.Customers.AsNoTracking().Where(x => x.CustomerType == 1 && x.DeletedAt == null && x.Active == "Y" && dealerIds.Contains(x.Id) && (!filter.DealerId.HasValue || x.Id == filter.DealerId)).ToListAsync(ct);
         var year = filter.Year ?? DateTime.UtcNow.Year; var selectedDealerIds = dealers.Select(x => x.Id).ToArray();
         var orders = await _db.Orders.AsNoTracking().Where(x => x.SellerId.HasValue && selectedDealerIds.Contains(x.SellerId.Value) && x.OrderDate.HasValue && x.OrderDate.Value.Year == year && x.DeletedAt == null)
-            .Select(x => new PerformanceOrder(x.BuyerId, x.SellerId, x.ExecutiveId, x.CreatedBy, x.OrderDate, (long?)x.TotalQty ?? 0, (decimal?)x.GrandTotal ?? 0)).ToListAsync(ct);
+            .Select(x => new PerformanceOrder(x.Id, x.BuyerId, x.SellerId, x.ExecutiveId, x.CreatedBy, x.OrderDate, (long?)x.TotalQty ?? 0, (decimal?)x.GrandTotal ?? 0)).ToListAsync(ct);
+        // With a segment picked, the monthly value reads only that segment's lines.
+        var segmentTotals = filter.SegmentId.HasValue ? await SegmentOrderTotalsAsync(orders.Select(o => o.Id).ToArray(), filter.SegmentId.Value, ct) : null;
+        decimal ValOf(PerformanceOrder o) => segmentTotals is null ? o.GrandTotal : (segmentTotals.TryGetValue(o.Id, out var t) ? t.Value : 0);
         var branches = await _db.Branches.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.BranchName, ct); var divisions = await _db.Divisions.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.DivisionName, ct); var designations = await _db.Designations.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.DesignationName, ct); var allNames = await _db.Users.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.Name, ct); var cities = await _db.Cities.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.CityName, ct);
         var prepared = dealers.SelectMany(dealer => assignments.GetValueOrDefault(dealer.Id, [])
             .Where(userIds.Contains)
@@ -1439,7 +1496,7 @@ INNER JOIN (SELECT customer_id, MIN(id) AS id FROM addresses WHERE deleted_at IS
             {
                 var monthly = Enumerable.Range(1, 12).ToDictionary(month => month, month => orders
                     .Where(order => order.SellerId == dealer.Id && order.CreatedBy == user.Id && order.OrderDate!.Value.Month == month)
-                    .Sum(order => order.GrandTotal));
+                    .Sum(ValOf));
                 return new DealerPerformanceRow(dealer, user, monthly, Name(divisions, user.DivisionId), BranchName(user, branches), Name(allNames, user.ReportingId));
             }))
             .OrderBy(x => ZoneOrder.Rank(x.Zone)).ThenBy(x => x.Zone).ThenBy(x => x.Branch).ThenBy(x => x.Dealer.Name).ThenBy(x => x.User.Name).ToList();
@@ -1487,33 +1544,61 @@ INNER JOIN (SELECT customer_id, MIN(id) AS id FROM addresses WHERE deleted_at IS
             .ThenBy(x => BranchName(x, branches)).ThenBy(x => x.Name).ToList();
         var rangeStart = filter.StartDate.ToDateTime(TimeOnly.MinValue);
         var rangeEndExclusive = filter.EndDate.AddDays(1).ToDateTime(TimeOnly.MinValue);
+        // Project only the columns this report uses. Legacy (older) orders left many of the
+        // non-nullable amount columns NULL, so materialising the whole Order entity threw
+        // "Data is Null"; reading just these avoids every one of those columns, and the two
+        // numbers are read as nullable then coalesced for the same reason.
         var orders = await _db.Orders.AsNoTracking().Where(x => x.ExecutiveId.HasValue && userIds.Contains(x.ExecutiveId.Value)
-                && x.OrderDate >= rangeStart && x.OrderDate < rangeEndExclusive && x.DeletedAt == null).ToListAsync(cancellationToken);
+                && x.OrderDate >= rangeStart && x.OrderDate < rangeEndExclusive && x.DeletedAt == null)
+            .Select(x => new { x.Id, x.ExecutiveId, TotalQty = (long?)x.TotalQty ?? 0L, GrandTotal = (decimal?)x.GrandTotal ?? 0m })
+            .ToListAsync(cancellationToken);
         var orderIds = orders.Select(x => x.Id).ToArray();
         // OrderDetailConfiguration intentionally ignores BaseEntity.DeletedAt because
         // the deployed order_details mapping does not expose it to EF.
         var details = await _db.OrderDetails.AsNoTracking().Where(x => x.OrderId.HasValue && orderIds.Contains(x.OrderId.Value))
             .Select(x => new { x.OrderId, x.ProductId }).ToListAsync(cancellationToken);
         var attendances = await _db.Attendances.AsNoTracking().Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value)
-                && x.PunchinDate >= rangeStart && x.PunchinDate < rangeEndExclusive && x.DeletedAt == null).ToListAsync(cancellationToken);
+                && x.PunchinDate >= rangeStart && x.PunchinDate < rangeEndExclusive && x.DeletedAt == null)
+            .Select(x => new { x.UserId, x.WorkingType, x.PunchinDate })
+            .ToListAsync(cancellationToken);
         var customers = await _db.Customers.AsNoTracking().Where(x => x.DeletedAt == null && x.Active == "Y").Select(x => new { x.Id, x.CreatedBy, x.ExecutiveId, x.CreatedAt }).ToListAsync(cancellationToken);
 
         var visitCounts = await VisitCounts(userIds, filter.StartDate, filter.EndDate, cancellationToken);
         var assignedCounts = await AssignedCustomerCounts(userIds, cancellationToken);
+        // With a segment picked, the order columns read only that segment's lines.
+        var segmentTotals = filter.SegmentId.HasValue ? await SegmentOrderTotalsAsync(orderIds, filter.SegmentId.Value, cancellationToken) : null;
+        var segmentProducts = filter.SegmentId.HasValue ? await SegmentProductIdsAsync(filter.SegmentId.Value, cancellationToken) : null;
         var rows = users.Select(user =>
         {
             var userOrders = orders.Where(x => x.ExecutiveId == user.Id).ToList();
             var ids = userOrders.Select(x => x.Id).ToHashSet();
             var workingDays = attendances.Where(x => x.UserId == user.Id && !string.Equals(x.WorkingType, "Full Day Leave", StringComparison.OrdinalIgnoreCase)).Select(x => x.PunchinDate.Date).Distinct().Count();
             var visited = visitCounts.GetValueOrDefault(user.Id);
-            var productive = userOrders.Count;
             var target = workingDays * 15;
             var newCounters = customers.Count(x => x.CreatedBy == user.Id && x.CreatedAt >= rangeStart && x.CreatedAt < rangeEndExclusive);
+
+            int productive; long orderQty; decimal orderValue; int uniqueSku;
+            if (segmentTotals is null)
+            {
+                productive = userOrders.Count;
+                orderQty = userOrders.Sum(x => x.TotalQty);
+                orderValue = userOrders.Sum(x => x.GrandTotal);
+                uniqueSku = details.Where(x => x.OrderId.HasValue && ids.Contains(x.OrderId.Value) && x.ProductId.HasValue).Select(x => x.ProductId).Distinct().Count();
+            }
+            else
+            {
+                // Only orders that carry a line of the segment, and only that line's qty/value.
+                var segOrders = userOrders.Where(x => segmentTotals.ContainsKey(x.Id)).ToList();
+                productive = segOrders.Count;
+                orderQty = segOrders.Sum(x => segmentTotals[x.Id].Qty);
+                orderValue = segOrders.Sum(x => segmentTotals[x.Id].Value);
+                uniqueSku = details.Where(x => x.OrderId.HasValue && ids.Contains(x.OrderId.Value) && x.ProductId.HasValue && segmentProducts!.Contains(x.ProductId!.Value)).Select(x => x.ProductId).Distinct().Count();
+            }
+
             return new AsrPerformanceRow(user.Id, user.Name, Domain.Services.EmployeeStatus.Of(user.Active), 15, workingDays, target, visited,
                 target > 0 ? Math.Round(visited * 100m / target, 1) : 0, productive,
                 visited > 0 ? Math.Round(productive * 100m / visited, 1) : 0, newCounters,
-                userOrders.Sum(x => x.TotalQty), userOrders.Sum(x => x.GrandTotal),
-                details.Where(x => x.OrderId.HasValue && ids.Contains(x.OrderId.Value) && x.ProductId.HasValue).Select(x => x.ProductId).Distinct().Count(),
+                orderQty, orderValue, uniqueSku,
                 assignedCounts.GetValueOrDefault(user.Id, customers.Count(x => x.ExecutiveId == user.Id)),
                 Name(divisions, user.DivisionId), BranchName(user, branches), Name(designations, user.DesignationId), Name(userNames, user.ReportingId));
         }).ToList();
@@ -1617,6 +1702,27 @@ ORDER BY s.created_at DESC, s.id DESC, sd.id ASC", cancellationToken);
     /// <summary>Every check-in is a visit, including a repeat visit to a customer already
     /// seen. The ASR performance report and the rating report share this one definition so
     /// the same employee cannot show two different visit totals in two reports.</summary>
+    /// <summary>Per-order quantity and value limited to one segment's lines - the product's
+    /// own segment (products.category_id), the way the order download sums a segment's sale.
+    /// An order with no line in the segment is absent from the map, so it reads as zero.</summary>
+    private async Task<Dictionary<ulong, (long Qty, decimal Value)>> SegmentOrderTotalsAsync(IReadOnlyCollection<ulong> orderIds, ulong segmentId, CancellationToken ct)
+    {
+        if (orderIds.Count == 0) return new();
+        var lines = await (from d in _db.OrderDetails.AsNoTracking()
+                           where d.OrderId.HasValue && orderIds.Contains(d.OrderId.Value) && d.ProductId.HasValue
+                           join p in _db.Products.IgnoreQueryFilters() on d.ProductId equals p.Id
+                           where p.CategoryId == segmentId
+                           select new { OrderId = d.OrderId!.Value, d.Quantity, d.LineTotal })
+                          .ToListAsync(ct);
+        return lines.GroupBy(x => x.OrderId)
+            .ToDictionary(g => g.Key, g => (g.Sum(x => x.Quantity), g.Sum(x => x.LineTotal)));
+    }
+
+    /// <summary>The product ids that belong to one segment (products.category_id). Used to
+    /// narrow "unique SKU" counts to a picked segment.</summary>
+    private async Task<HashSet<ulong>> SegmentProductIdsAsync(ulong segmentId, CancellationToken ct) =>
+        (await _db.Products.IgnoreQueryFilters().Where(p => p.CategoryId == segmentId).Select(p => p.Id).ToListAsync(ct)).ToHashSet();
+
     private async Task<Dictionary<ulong, int>> VisitCounts(ulong[] userIds, DateOnly start, DateOnly end, CancellationToken ct)
     {
         if (userIds.Length == 0) return [];
@@ -1811,13 +1917,30 @@ assigned_at, unassigned_at FROM (
             var promotionalActivities = await Api.Services.PromotionalActivityCounts.LoadAsync(_db, userIds, periodStart, periodEnd, ct);
             var targets = await _db.SalesTargetUsers.AsNoTracking().Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value)
                 && x.Year.HasValue && targetYears.Contains(x.Year.Value) && x.Month != null && targetMonths.Contains(x.Month)).Select(x => new { UserId = x.UserId!.Value, x.Year, x.Month, x.Target }).ToListAsync(ct);
-            var orders = await _db.Orders.AsNoTracking().Where(x => x.CreatedBy.HasValue && userIds.Contains(x.CreatedBy.Value)
-                && x.OrderDate >= periodStart && x.OrderDate < periodEnd && x.DeletedAt == null).Select(x => new { UserId = x.CreatedBy!.Value, Value = x.GrandTotal }).ToListAsync(ct);
+            var orders = filter.SegmentId.HasValue
+                ? await (from o in _db.Orders.AsNoTracking()
+                         where o.CreatedBy.HasValue && userIds.Contains(o.CreatedBy.Value) && o.OrderDate >= periodStart && o.OrderDate < periodEnd && o.DeletedAt == null
+                         join d in _db.OrderDetails.AsNoTracking() on (ulong?)o.Id equals d.OrderId
+                         join p in _db.Products.IgnoreQueryFilters() on d.ProductId equals p.Id
+                         where p.CategoryId == filter.SegmentId.Value
+                         group d by new { o.Id, UserId = o.CreatedBy!.Value } into g
+                         select new { g.Key.UserId, Value = g.Sum(x => x.LineTotal) }).ToListAsync(ct)
+                : await _db.Orders.AsNoTracking().Where(x => x.CreatedBy.HasValue && userIds.Contains(x.CreatedBy.Value)
+                    && x.OrderDate >= periodStart && x.OrderDate < periodEnd && x.DeletedAt == null).Select(x => new { UserId = x.CreatedBy!.Value, Value = x.GrandTotal }).ToListAsync(ct);
             var visits = await VisitCounts(userIds, DateOnly.FromDateTime(periodStart), DateOnly.FromDateTime(periodEnd.AddDays(-1)), ct);
             var assignmentsByUser = users.ToDictionary(x => x.Id,
                 x => RetailerAssignmentsForPeriod(retailerAssignmentPeriods, x.Id, periodStart, periodEnd));
             var periodRetailerIds = assignmentsByUser.Values.SelectMany(x => x).Distinct().ToArray();
-            var activeRetailerIds = periodRetailerIds.Length == 0 ? new HashSet<ulong>() : (await _db.Orders.AsNoTracking()
+            HashSet<ulong> activeRetailerIds;
+            if (periodRetailerIds.Length == 0) activeRetailerIds = new();
+            else if (filter.SegmentId.HasValue)
+                activeRetailerIds = (await (from o in _db.Orders.AsNoTracking()
+                    where o.BuyerId.HasValue && periodRetailerIds.Contains(o.BuyerId.Value) && o.OrderDate >= periodStart && o.OrderDate < periodEnd && o.DeletedAt == null
+                    join d in _db.OrderDetails.AsNoTracking() on (ulong?)o.Id equals d.OrderId
+                    join p in _db.Products.IgnoreQueryFilters() on d.ProductId equals p.Id
+                    where p.CategoryId == filter.SegmentId.Value
+                    select o.BuyerId!.Value).Distinct().ToListAsync(ct)).ToHashSet();
+            else activeRetailerIds = (await _db.Orders.AsNoTracking()
                 .Where(x => x.BuyerId.HasValue && periodRetailerIds.Contains(x.BuyerId.Value)
                     && x.OrderDate >= periodStart && x.OrderDate < periodEnd && x.DeletedAt == null)
                 .Select(x => x.BuyerId!.Value).Distinct().ToListAsync(ct)).ToHashSet();
@@ -2267,6 +2390,9 @@ public class RfmFilter
     [FromQuery(Name = "branch_id")] public ulong? BranchId { get; set; }
     [FromQuery(Name = "state_id")] public ulong? StateId { get; set; }
     [FromQuery(Name = "district_id")] public ulong? DistrictId { get; set; }
+    // With a segment picked, every RFM figure (recency/frequency/monetary and activation)
+    // reads only that segment's order lines.
+    [FromQuery(Name = "segment_id")] public ulong? SegmentId { get; set; }
 }
 
 /// <summary>The movement report needs a month to stand on as well; both are required.</summary>
@@ -2302,6 +2428,7 @@ public sealed class AsrPerformanceFilter
     [FromQuery(Name = "designation_id")] public ulong? DesignationId { get; set; }
     [FromQuery(Name = "start_date")] public DateOnly StartDate { get; set; }
     [FromQuery(Name = "end_date")] public DateOnly EndDate { get; set; }
+    [FromQuery(Name = "segment_id")] public ulong? SegmentId { get; set; }
 }
 
 public sealed class ProductivityFilter
@@ -2318,6 +2445,7 @@ public sealed class ProductivityFilter
     [FromQuery(Name = "branch_id")] public ulong? BranchId { get; set; }
     [FromQuery(Name = "state_id")] public ulong? StateId { get; set; }
     [FromQuery(Name = "designation_id")] public ulong[] DesignationIds { get; set; } = [];
+    [FromQuery(Name = "segment_id")] public ulong? SegmentId { get; set; }
 }
 
 public sealed class RatingReportFilter
@@ -2334,6 +2462,8 @@ public sealed class RatingReportFilter
     [FromQuery(Name = "search")] public string? Search { get; set; }
     [FromQuery(Name = "page")] public int Page { get; set; } = 1;
     [FromQuery(Name = "page_size")] public int PageSize { get; set; } = 10;
+    // With a segment picked, the Sales rating (and "active retailer" check) reads only that segment's lines.
+    [FromQuery(Name = "segment_id")] public ulong? SegmentId { get; set; }
 }
 
 internal sealed record RatingReportRow(ulong UserId, string Branch, string EmployeeCode, string EmployeeName, string EmployeeStatus, string ReportingManager, string Zone,
@@ -2371,7 +2501,8 @@ internal sealed record RetailerAssignmentPeriod(ulong UserId, ulong CustomerId, 
 internal sealed record RetailerOrderActivity(ulong CustomerId, DateTime OrderDate);
 
 public sealed record DealerPerformanceRow(Domain.Entities.Customer Dealer, Domain.Entities.User User, IReadOnlyDictionary<int, decimal> Monthly, string Zone, string Branch, string Reporting);
-public sealed record PerformanceOrder(ulong? BuyerId, ulong? SellerId, ulong? ExecutiveId, ulong? CreatedBy, DateTime? OrderDate, long TotalQty, decimal GrandTotal);
+public sealed record PerformanceOrder(ulong Id, ulong? BuyerId, ulong? SellerId, ulong? ExecutiveId, ulong? CreatedBy, DateTime? OrderDate, long TotalQty, decimal GrandTotal);
+internal sealed record RfmOrderStat(ulong BuyerId, int Orders, DateTime LastOrder, decimal Value);
 
 public sealed record AsrPerformanceRow(ulong UserId, string UserName, string EmployeeStatus, int DailyTarget, int WorkingDays, int VisitTarget, int Visited, decimal Adherence, int Productive, decimal Productivity, int NewCounters, long OrderQty, decimal OrderValue, int UniqueSku, int Cumulative, string Zone, string Branch, string Designation, string ReportingManager)
 {

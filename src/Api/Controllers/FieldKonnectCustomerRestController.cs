@@ -1573,12 +1573,11 @@ WHERE {where}", cancellationToken, parameters.ToArray())).FirstOrDefault();
         if (ids.Length == 0) return "1 = 0";
 
         var csv = string.Join(',', ids);
-        var migratedFieldMatches = ids.SelectMany(id => new[]
-        {
-            $"(',' + REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(JSON_QUERY(c.custom_fields, '$.employee_id'), JSON_VALUE(c.custom_fields, '$.employee_id'), ''), ' ', ''), '[', ''), ']', ''), '\"', '') + ',') LIKE '%,{id},%'",
-            $"(',' + REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(JSON_QUERY(c.custom_fields, '$.sales_executive_id'), JSON_VALUE(c.custom_fields, '$.sales_executive_id'), ''), ' ', ''), '[', ''), ']', ''), '\"', '') + ',') LIKE '%,{id},%'",
-            $"(',' + REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(JSON_QUERY(c.custom_fields, '$.supervisor_id'), JSON_VALUE(c.custom_fields, '$.supervisor_id'), ''), ' ', ''), '[', ''), ']', ''), '\"', '') + ',') LIKE '%,{id},%'"
-        });
+        // Match any of the user ids against each assignment custom-field in ONE pass with
+        // STRING_SPLIT, instead of a LIKE per (user, field). The old form built 3 x N LIKEs
+        // over a JSON column, so a manager with a large downline timed the listing out.
+        string SplitMatch(string jsonPath) =>
+            $@"EXISTS (SELECT 1 FROM STRING_SPLIT(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(JSON_QUERY(c.custom_fields, '{jsonPath}'), JSON_VALUE(c.custom_fields, '{jsonPath}'), ''), ' ', ''), '[', ''), ']', ''), '""', ''), ',') split_value WHERE TRY_CONVERT(decimal(20,0), NULLIF(split_value.value, '')) IN ({csv}))";
 
         return $@"(
 c.id IN (
@@ -1588,7 +1587,9 @@ c.id IN (
       AND ed.user_id IN ({csv})
 )
 OR c.executive_id IN ({csv})
-OR {string.Join(" OR ", migratedFieldMatches)}
+OR {SplitMatch("$.employee_id")}
+OR {SplitMatch("$.sales_executive_id")}
+OR {SplitMatch("$.supervisor_id")}
 )";
     }
 

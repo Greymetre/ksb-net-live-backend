@@ -622,7 +622,7 @@ public sealed class TeamDashboardController : ControllerBase
         // Visibility is decided on the full user set, so a national role still reads
         // as "all branches" even though the figures below only cover the field force.
         var scope = candidates.Count >= totalInternal ? "all"
-            : roles.Any(role => role.RoleId == RoleIds.BranchManager) ? "branch"
+            : roles.Any(role => role.Name != null && role.Name.Contains("branch manager", StringComparison.OrdinalIgnoreCase)) ? "branch"
             : candidates.Count > 1 ? "team" : "self";
 
         // Every dashboard figure reports on the field force only: ASR and DSR users.

@@ -50,6 +50,12 @@ public static class PermissionCatalog
         // Each check is a paid call to the GST register, so it is its own permission and is
         // not handed to any role automatically.
         new("customer_kyc.gst_lookup", "GST Lookup", "customer_kyc", "KYC", "customers", "Customers Management", "gst_lookup", 176, [], []),
+        // Dealer Feedback - read-only for internal users. Whoever can see / export the customer
+        // listing gets the feedback listing / export too, so no role is edited by hand on live.
+        // Both the current name and its legacy name are listed, so inheritance lands whether or
+        // not the live permission row has already been renamed (the V9.9 lesson).
+        new("dealer_feedback.view", "View Listing", "dealer_feedback", "Dealer Feedback", "customers", "Customers Management", "view", 177, [], ["customer.view", "customer_access"]),
+        new("dealer_feedback.export", "Export", "dealer_feedback", "Dealer Feedback", "customers", "Customers Management", "export", 178, [], ["customer.export", "customer_download", "customers_report"]),
         // ---------- Address Management ----------
         // Country
         new("country.view", "View Listing", "country", "Country", "address", "Address Management", "view", 180, ["country_access"], []),

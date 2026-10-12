@@ -20,6 +20,7 @@ public sealed class AppDbContext : DbContext
     public DbSet<ModelHasRole> ModelHasRoles => Set<ModelHasRole>();
     public DbSet<RoleHasPermission> RoleHasPermissions => Set<RoleHasPermission>();
     public DbSet<MobileUserLoginDetail> MobileUserLoginDetails => Set<MobileUserLoginDetail>();
+    public DbSet<DealerFeedback> DealerFeedbacks => Set<DealerFeedback>();
     public DbSet<OAuthAccessToken> OAuthAccessTokens => Set<OAuthAccessToken>();
     public DbSet<UserDetails> UserDetails => Set<UserDetails>();
     public DbSet<UserCityAssign> UserCityAssigns => Set<UserCityAssign>();

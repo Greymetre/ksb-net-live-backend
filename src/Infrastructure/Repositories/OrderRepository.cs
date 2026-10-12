@@ -584,7 +584,7 @@ public sealed class OrderRepository : IOrderRepository
                 .OrderBy(x => x.DesignationName)
                 .Select(x => new OptionDto { Id = x.Id, Name = x.DesignationName })
                 .ToListAsync(cancellationToken),
-            Retailers = await CustomerOptionsAsync([RetailerCustomerType, InfluencerCustomerType], ["shop_name", "owner_name"], cancellationToken, dealerCustomerId),
+            Retailers = await CustomerOptionsAsync([RetailerCustomerType, InfluencerCustomerType], ["shop_name", "owner_name"], cancellationToken, dealerCustomerId, appendCity: true),
             Distributors = await CustomerOptionsAsync([DistributorCustomerType], ["legal_name", "shop_name", "distributor_code"], cancellationToken, dealerCustomerId),
             Families = await _dbContext.ProductFamilies.AsNoTracking()
                 .Where(x => x.Active == "Y")
@@ -691,7 +691,7 @@ public sealed class OrderRepository : IOrderRepository
         return query;
     }
 
-    private async Task<IReadOnlyCollection<OptionDto>> CustomerOptionsAsync(IReadOnlyCollection<ulong> customerTypes, string[] preferredFields, CancellationToken cancellationToken, ulong? dealerCustomerId = null)
+    private async Task<IReadOnlyCollection<OptionDto>> CustomerOptionsAsync(IReadOnlyCollection<ulong> customerTypes, string[] preferredFields, CancellationToken cancellationToken, ulong? dealerCustomerId = null, bool appendCity = false)
     {
         var query = _dbContext.Customers.AsNoTracking()
             .Where(x => x.Active == "Y" && x.CustomerType.HasValue && customerTypes.Contains(x.CustomerType.Value))
@@ -709,15 +709,75 @@ public sealed class OrderRepository : IOrderRepository
             .Select(x => new { x.Id, x.Name, x.CustomFields })
             .ToListAsync(cancellationToken);
 
-        return customers
-            .Select(customer => new OptionDto
+        var named = customers
+            .Select(customer => new { customer.Id, Base = CustomerDisplayName(customer.Name, customer.CustomFields, preferredFields), customer.CustomFields })
+            .Where(x => !string.IsNullOrWhiteSpace(x.Base))
+            .ToList();
+
+        if (!appendCity)
+        {
+            return named
+                .Select(x => new OptionDto { Id = x.Id, Name = x.Base })
+                .OrderBy(option => option.Name)
+                .ToArray();
+        }
+
+        // For the retailer filter the city is shown in brackets after the name. The city id
+        // is read the same way the customer listing resolves it: custom_fields first, then the
+        // customer's latest address - so the filter and the listing never disagree. A retailer
+        // with no city anywhere reads "(-)".
+        var cfCity = named.ToDictionary(x => x.Id, x => ParseCityId(x.CustomFields));
+        var missing = cfCity.Where(kv => !kv.Value.HasValue).Select(kv => kv.Key).ToArray();
+        var addrCity = await LatestAddressCityIdsAsync(missing, cancellationToken);
+
+        ulong? Effective(ulong id) => cfCity.GetValueOrDefault(id) ?? (addrCity.TryGetValue(id, out var c) ? c : null);
+
+        var allCityIds = named.Select(x => Effective(x.Id)).Where(v => v.HasValue).Select(v => v!.Value).Distinct().ToArray();
+        var cityNames = allCityIds.Length == 0
+            ? new Dictionary<ulong, string>()
+            : await _dbContext.Cities.AsNoTracking().Where(c => allCityIds.Contains(c.Id)).ToDictionaryAsync(c => c.Id, c => c.CityName, cancellationToken);
+
+        return named
+            .Select(x =>
             {
-                Id = customer.Id,
-                Name = CustomerDisplayName(customer.Name, customer.CustomFields, preferredFields)
+                var cityId = Effective(x.Id);
+                var label = cityId.HasValue && cityNames.TryGetValue(cityId.Value, out var name) && !string.IsNullOrWhiteSpace(name) ? name.Trim() : "-";
+                return new OptionDto { Id = x.Id, Name = $"{x.Base} ({label})" };
             })
-            .Where(option => !string.IsNullOrWhiteSpace(option.Name))
             .OrderBy(option => option.Name)
             .ToArray();
+    }
+
+    private static ulong? ParseCityId(string? customFields)
+    {
+        var raw = CustomerField(customFields, "city_id") ?? CustomerField(customFields, "billing_city");
+        return ulong.TryParse(raw, out var id) && id > 0 ? id : null;
+    }
+
+    /// <summary>The city id on each customer's latest (highest-id, non-deleted) address -
+    /// the fallback the customer listing uses when custom_fields carries no city_id.</summary>
+    private async Task<Dictionary<ulong, ulong>> LatestAddressCityIdsAsync(IReadOnlyCollection<ulong> customerIds, CancellationToken cancellationToken)
+    {
+        var result = new Dictionary<ulong, ulong>();
+        if (customerIds.Count == 0) return result;
+
+        var idCsv = string.Join(',', customerIds);
+        var connection = _dbContext.Database.GetDbConnection();
+        if (connection.State != System.Data.ConnectionState.Open) await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = $@"SELECT a.customer_id, a.city_id
+FROM addresses a
+INNER JOIN (SELECT customer_id, MAX(id) AS id FROM addresses WHERE deleted_at IS NULL AND customer_id IN ({idCsv}) GROUP BY customer_id) latest ON latest.id = a.id
+WHERE a.city_id IS NOT NULL";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (reader.IsDBNull(0) || reader.IsDBNull(1)) continue;
+            var customerId = Convert.ToUInt64(reader.GetValue(0));
+            var cityId = Convert.ToUInt64(reader.GetValue(1));
+            if (customerId > 0 && cityId > 0) result[customerId] = cityId;
+        }
+        return result;
     }
 
     private async Task<ulong?> DealerCustomerIdAsync(ulong? actorUserId, CancellationToken cancellationToken)
