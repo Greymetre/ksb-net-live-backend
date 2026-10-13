@@ -35,7 +35,7 @@ public sealed class ReportManagementController : ControllerBase
         var users = await _db.Users.AsNoTracking().Where(x => visibleIds.Contains(x.Id) && x.Active == "Y" && !x.IsDeleted && x.DeletedAt == null)
             .OrderBy(x => x.Name).Select(x => new { id = x.Id, name = x.Name }).ToListAsync(cancellationToken);
         var divisions = (await _db.Divisions.AsNoTracking().Where(x => x.Active == "Y" && x.DeletedAt == null)
-            .Select(x => new { id = x.Id, name = x.DivisionName }).ToListAsync(cancellationToken)).ByZone(x => x.name).ToList();
+            .Select(x => new { id = x.Id, name = x.DivisionName }).ToListAsync(cancellationToken)).Where(x => ZoneOrder.IsSalesZone(x.name)).ByZone(x => x.name).ToList();
         var branches = await BranchOptionRowsAsync(cancellationToken);
         var designations = await _db.Designations.AsNoTracking().Where(x => x.Active == "Y" && x.DeletedAt == null)
             .OrderBy(x => x.DesignationName).Select(x => new { id = x.Id, name = x.DesignationName }).ToListAsync(cancellationToken);
@@ -66,7 +66,7 @@ public sealed class ReportManagementController : ControllerBase
             .OrderBy(x => x.Ranking).ThenBy(x => x.CategoryName)
             .Select(x => new { id = x.Id, name = x.CategoryName }).ToListAsync(cancellationToken);
         var zones = (await _db.Divisions.AsNoTracking().Where(x => x.Active == "Y" && x.DeletedAt == null)
-            .Select(x => new { id = x.Id, name = x.DivisionName }).ToListAsync(cancellationToken)).ByZone(x => x.name).ToList();
+            .Select(x => new { id = x.Id, name = x.DivisionName }).ToListAsync(cancellationToken)).Where(x => ZoneOrder.IsSalesZone(x.name)).ByZone(x => x.name).ToList();
         var schemes = await _db.LoyaltySchemes.AsNoTracking().Where(x => x.Status == "Published" && x.DeletedAt == null)
             .OrderByDescending(x => x.StartDate).ThenBy(x => x.SchemeName)
             .Select(x => new { id = x.Id, name = x.SchemeName, code = x.SchemeCode, start_date = x.StartDate, end_date = x.EndDate })
@@ -126,7 +126,8 @@ public sealed class ReportManagementController : ControllerBase
         var divisions = await _db.Divisions.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.DivisionName, ct);
         var branches = await _db.Branches.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.BranchName, ct);
         var userNames = await _db.Users.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.Name, ct);
-        users = users.OrderBy(x => ZoneOrder.Rank(Name(divisions, x.DivisionId))).ThenBy(x => Name(divisions, x.DivisionId))
+        users = users.Where(x => ZoneOrder.IsSalesZone(Name(divisions, x.DivisionId)))
+            .OrderBy(x => ZoneOrder.Rank(Name(divisions, x.DivisionId))).ThenBy(x => Name(divisions, x.DivisionId))
             .ThenBy(x => BranchName(x, branches)).ThenBy(x => x.Name).ToList();
 
         var indiaToday = DateTime.UtcNow.AddHours(5).AddMinutes(30).Date;
@@ -372,7 +373,7 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
         var visibleIds = (await _hr.GetVisibleUserIdsAsync(actor, cancellationToken)).Distinct().ToArray();
         var users = await _db.Users.AsNoTracking().Where(x => visibleIds.Contains(x.Id) && x.Active == "Y" && !x.IsDeleted && x.DeletedAt == null)
             .OrderBy(x => x.Name).Select(x => new { id = x.Id, name = x.Name }).ToListAsync(cancellationToken);
-        var divisions = (await _db.Divisions.AsNoTracking().Where(x => x.Active == "Y" && x.DeletedAt == null).Select(x => new { id = x.Id, name = x.DivisionName }).ToListAsync(cancellationToken)).ByZone(x => x.name).ToList();
+        var divisions = (await _db.Divisions.AsNoTracking().Where(x => x.Active == "Y" && x.DeletedAt == null).Select(x => new { id = x.Id, name = x.DivisionName }).ToListAsync(cancellationToken)).Where(x => ZoneOrder.IsSalesZone(x.name)).ByZone(x => x.name).ToList();
         var branches = await BranchOptionRowsAsync(cancellationToken);
         var designations = await _db.Designations.AsNoTracking().Where(x => x.Active == "Y" && x.DeletedAt == null).OrderBy(x => x.DesignationName).Select(x => new { id = x.Id, name = x.DesignationName }).ToListAsync(cancellationToken);
         var states = await _db.States.AsNoTracking().Where(x => x.Active == "Y" && x.DeletedAt == null).OrderBy(x => x.StateName).Select(x => new { id = x.Id, name = x.StateName }).ToListAsync(cancellationToken);
@@ -444,7 +445,7 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
     public async Task<IActionResult> RfmOptions(CancellationToken ct)
     {
         var zones = (await _db.Divisions.AsNoTracking().Where(x => x.Active == "Y" && x.DeletedAt == null)
-            .Select(x => new { id = x.Id, name = x.DivisionName }).ToListAsync(ct)).ByZone(x => x.name).ToList();
+            .Select(x => new { id = x.Id, name = x.DivisionName }).ToListAsync(ct)).Where(x => ZoneOrder.IsSalesZone(x.name)).ByZone(x => x.name).ToList();
         var branches = await BranchOptionRowsAsync(ct);
         var states = await _db.States.AsNoTracking().Where(x => x.Active == "Y" && x.DeletedAt == null)
             .OrderBy(x => x.StateName).Select(x => new { id = x.Id, name = x.StateName }).ToListAsync(ct);
@@ -1499,6 +1500,7 @@ INNER JOIN (SELECT customer_id, MIN(id) AS id FROM addresses WHERE deleted_at IS
                     .Sum(ValOf));
                 return new DealerPerformanceRow(dealer, user, monthly, Name(divisions, user.DivisionId), BranchName(user, branches), Name(allNames, user.ReportingId));
             }))
+            .Where(x => ZoneOrder.IsSalesZone(x.Zone))
             .OrderBy(x => ZoneOrder.Rank(x.Zone)).ThenBy(x => x.Zone).ThenBy(x => x.Branch).ThenBy(x => x.Dealer.Name).ThenBy(x => x.User.Name).ToList();
         using var workbook = new XLWorkbook(); var sheet = workbook.Worksheets.Add("Distributor Productivity");
         var headers = new[] { "Distributor Code", "Distributor Name", "Distributor Location", "Employees Code", "Designation", "Employees Name", "Employee Status", "Reporting Manager", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Total" };
@@ -1540,7 +1542,8 @@ INNER JOIN (SELECT customer_id, MIN(id) AS id FROM addresses WHERE deleted_at IS
         var designations = await _db.Designations.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.DesignationName, cancellationToken);
         var userNames = await _db.Users.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
 
-        users = users.OrderBy(x => ZoneOrder.Rank(Name(divisions, x.DivisionId))).ThenBy(x => Name(divisions, x.DivisionId))
+        users = users.Where(x => ZoneOrder.IsSalesZone(Name(divisions, x.DivisionId)))
+            .OrderBy(x => ZoneOrder.Rank(Name(divisions, x.DivisionId))).ThenBy(x => Name(divisions, x.DivisionId))
             .ThenBy(x => BranchName(x, branches)).ThenBy(x => x.Name).ToList();
         var rangeStart = filter.StartDate.ToDateTime(TimeOnly.MinValue);
         var rangeEndExclusive = filter.EndDate.AddDays(1).ToDateTime(TimeOnly.MinValue);
@@ -1871,7 +1874,8 @@ assigned_at, unassigned_at FROM (
         var divisions = await _db.Divisions.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.DivisionName, ct);
         var branches = await _db.Branches.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.BranchName, ct);
         var userNames = await _db.Users.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.Name, ct);
-        users = users.OrderBy(x => ZoneOrder.Rank(Name(divisions, x.DivisionId))).ThenBy(x => Name(divisions, x.DivisionId))
+        users = users.Where(x => ZoneOrder.IsSalesZone(Name(divisions, x.DivisionId)))
+            .OrderBy(x => ZoneOrder.Rank(Name(divisions, x.DivisionId))).ThenBy(x => Name(divisions, x.DivisionId))
             .ThenBy(x => BranchName(x, branches)).ThenBy(x => x.Name).ToList();
 
         var indiaToday = DateTime.UtcNow.AddHours(5).AddMinutes(30).Date;

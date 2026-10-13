@@ -41,7 +41,7 @@ public sealed class CheckinReportsController : ControllerBase
         var users = await _db.Users.AsNoTracking().Where(x => visibleIds.Contains(x.Id) && x.Active == "Y" && !x.IsDeleted)
             .OrderBy(x => x.Name).Select(x => new { x.Id, x.Name, x.Mobile }).ToListAsync(ct);
         var divisions = (await _db.Divisions.AsNoTracking().Where(x => x.Active == "Y").Select(x => new { x.Id, name = x.DivisionName }).ToListAsync(ct))
-            .ByZone(x => x.name).ToList();
+            .Where(x => ZoneOrder.IsSalesZone(x.name)).ByZone(x => x.name).ToList();
         var branchZones = await _db.BranchZoneMapAsync(ct);
         var branches = (await _db.Branches.AsNoTracking().Where(x => x.Active == "Y").OrderBy(x => x.BranchName).Select(x => new { x.Id, name = x.BranchName }).ToListAsync(ct))
             .Select(x => new { x.Id, x.name, zone_id = branchZones.TryGetValue(x.Id, out var zoneId) ? zoneId : (ulong?)null }).ToList();

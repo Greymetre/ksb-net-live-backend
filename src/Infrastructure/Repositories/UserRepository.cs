@@ -23,7 +23,7 @@ public sealed class UserRepository : IUserRepository
     public async Task<IReadOnlyCollection<UserDto>> GetUsersAsync(UserListFiltersDto filters, CancellationToken cancellationToken)
     {
         var baseQuery = _dbContext.Users.AsNoTracking();
-        if (await ReportingVisibility.IsDistributorUserAsync(_dbContext, filters.ActorUserId, cancellationToken))
+        if (!await ReportingVisibility.HasUnrestrictedDataScopeAsync(_dbContext, filters.ActorUserId, cancellationToken))
         {
             var visibleUserIds = await ReportingVisibility.GetVisibleUserIdsAsync(_dbContext, filters.ActorUserId, cancellationToken);
             baseQuery = ReportingVisibility.InternalUsersQuery(_dbContext, baseQuery)
@@ -61,7 +61,7 @@ public sealed class UserRepository : IUserRepository
     public async Task<UserDto?> GetUserDtoAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken)
     {
         var query = _dbContext.Users.AsNoTracking().Where(x => x.Id == id);
-        if (await ReportingVisibility.IsDistributorUserAsync(_dbContext, actorUserId, cancellationToken))
+        if (!await ReportingVisibility.HasUnrestrictedDataScopeAsync(_dbContext, actorUserId, cancellationToken))
         {
             var visibleUserIds = await ReportingVisibility.GetVisibleUserIdsAsync(_dbContext, actorUserId, cancellationToken);
             query = ReportingVisibility.InternalUsersQuery(_dbContext, query)
@@ -147,7 +147,7 @@ public sealed class UserRepository : IUserRepository
     public async Task<IReadOnlyCollection<UserExcelRowDto>> ExportUsersAsync(UserExportFiltersDto filters, CancellationToken cancellationToken)
     {
         var baseQuery = _dbContext.Users.AsNoTracking();
-        if (await ReportingVisibility.IsDistributorUserAsync(_dbContext, filters.ActorUserId, cancellationToken))
+        if (!await ReportingVisibility.HasUnrestrictedDataScopeAsync(_dbContext, filters.ActorUserId, cancellationToken))
         {
             var visibleUserIds = await ReportingVisibility.GetVisibleUserIdsAsync(_dbContext, filters.ActorUserId, cancellationToken);
             baseQuery = ReportingVisibility.InternalUsersQuery(_dbContext, baseQuery)
@@ -192,9 +192,23 @@ public sealed class UserRepository : IUserRepository
             .Select(x => new { x.Id, x.BranchName })
             .ToDictionaryAsync(x => x.Id.ToString(), x => x.BranchName, cancellationToken);
 
+        // All reporting managers per user (reporting_ids), so the export's "Reporting To" and
+        // "Reporting ID" columns carry every manager - and the id column round-trips through import.
+        var managerIdsByUser = users.ToDictionary(
+            x => x.user.Id,
+            x => ReportingVisibility.ReportingManagerIds(x.user.ReportingIds, x.user.ReportingId));
+        var managerIds = managerIdsByUser.Values.SelectMany(ids => ids).Distinct().ToArray();
+        var managerNames = managerIds.Length == 0
+            ? new Dictionary<ulong, string>()
+            : await _dbContext.Users.AsNoTracking()
+                .Where(x => managerIds.Contains(x.Id))
+                .Select(x => new { x.Id, x.Name })
+                .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
+
         return users.Select(row =>
         {
             var userRoles = roles.Where(x => x.ModelId == row.user.Id).ToArray();
+            var managerIdList = managerIdsByUser.TryGetValue(row.user.Id, out var mgrs) ? mgrs : [];
             return new UserExcelRowDto
             {
                 Id = row.user.Id,
@@ -207,6 +221,11 @@ public sealed class UserRepository : IUserRepository
                 DepartmentName = row.DepartmentName,
                 DivisionName = row.DivisionName,
                 ReportingName = row.ReportingName,
+                ReportingNames = managerIdList.Count > 0
+                    ? string.Join(", ", managerIdList
+                        .Select(id => managerNames.TryGetValue(id, out var name) ? name : null)
+                        .Where(name => !string.IsNullOrWhiteSpace(name)))
+                    : row.ReportingName,
                 Mobile = row.user.Mobile,
                 Email = row.user.Email,
                 // Anything other than an explicit "Y" is treated as inactive, which is
@@ -223,6 +242,7 @@ public sealed class UserRepository : IUserRepository
                     ? null
                     : $"{row.user.Latitude}, {row.user.Longitude}",
                 ReportingId = row.user.ReportingId,
+                ReportingIds = managerIdList.Count > 0 ? string.Join(",", managerIdList) : null,
                 RoleIds = string.Join(", ", userRoles.Select(x => x.Id)),
                 Payroll = row.user.Payroll,
                 DesignationId = row.user.DesignationId,

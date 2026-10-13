@@ -16,6 +16,5 @@ public interface IUserService
     Task<LaravelApiResponse> SetUserActiveAsync(ulong id, string? active, ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> DeleteUserAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
     Task<MasterDataFileDto> ExportUsersAsync(UserExportFiltersDto filters, CancellationToken cancellationToken);
-    Task<MasterDataFileDto> GetUserTemplateAsync(CancellationToken cancellationToken);
     Task<LaravelApiResponse> UploadUsersAsync(Stream fileStream, ulong? actorUserId, CancellationToken cancellationToken);
 }

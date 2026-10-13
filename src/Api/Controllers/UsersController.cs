@@ -203,16 +203,6 @@ public sealed class UsersController : ControllerBase
     }
 
     [Authorize]
-    [RequirePermission("user.template")]
-    [HttpGet("users-template")]
-    [HttpGet("users/template")]
-    public async Task<IActionResult> UserTemplate(CancellationToken cancellationToken)
-    {
-        var file = await _userService.GetUserTemplateAsync(cancellationToken);
-        return File(file.Content, file.ContentType, file.FileName);
-    }
-
-    [Authorize]
     [RequirePermission("user.import")]
     [HttpPost("users-upload")]
     [HttpPost("users/upload")]

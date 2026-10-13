@@ -52,6 +52,7 @@ public sealed class PromotionalActivityManagementController : ControllerBase
                 .Select(x => new { id = x.Id, name = x.BranchName }).ToListAsync(ct))
             .Select(x => new { x.id, x.name, zone_id = branchZones.TryGetValue(x.id, out var zoneId) ? zoneId : (ulong?)null }).ToList();
         var zones = (await _db.Divisions.AsNoTracking().Select(x => new { id = x.Id, name = x.DivisionName }).ToListAsync(ct))
+            .Where(x => Domain.Services.ZoneOrder.IsSalesZone(x.name))
             .OrderBy(x => Domain.Services.ZoneOrder.Rank(x.name)).ThenBy(x => x.name).ToList();
         return Ok(new
         {

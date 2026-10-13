@@ -823,6 +823,7 @@ ORDER BY u.name ASC", cancellationToken);
                 var first = group.First();
                 return new { id = ULong(first, "zone_id"), name = Str(first, "zone_name"), zone_name = Str(first, "zone_name") };
             })
+            .Where(x => ZoneOrder.IsSalesZone(x.name))
             .OrderBy(x => ZoneOrder.Rank(x.name))
             .ThenBy(x => x.name)
             .Cast<object>()

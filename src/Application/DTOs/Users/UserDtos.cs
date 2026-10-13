@@ -253,6 +253,8 @@ public sealed class UserExcelRowDto
     public string? DepartmentName { get; set; }
     public string? DivisionName { get; set; }
     public string? ReportingName { get; set; }
+    /// <summary>All reporting managers' names, comma-separated (the "Reporting To" column).</summary>
+    public string? ReportingNames { get; set; }
     public string? Mobile { get; set; }
     public string? Email { get; set; }
     /// <summary>"Active" or "Inactive" - the word, not the stored Y/N flag, so the
@@ -267,6 +269,9 @@ public sealed class UserExcelRowDto
     public string? EmployeeSuperCode { get; set; }
     public string? BaseLocationCoordinates { get; set; }
     public ulong? ReportingId { get; set; }
+    /// <summary>All reporting manager ids, comma-separated (the "Reporting ID" column). This is
+    /// what the import reads back, so a user with several managers round-trips through the sheet.</summary>
+    public string? ReportingIds { get; set; }
     public string? RoleIds { get; set; }
     public string? Payroll { get; set; }
     public ulong? DesignationId { get; set; }
@@ -283,4 +288,7 @@ public sealed class UserImportResultDto
     public int UpdatedRows { get; set; }
     public int FailedRows { get; set; }
     public IReadOnlyCollection<string> Errors { get; set; } = [];
+    /// <summary>Rows that succeeded but are worth flagging - e.g. an id that was not found,
+    /// so the row was created as a new user instead of updating.</summary>
+    public IReadOnlyCollection<string> Warnings { get; set; } = [];
 }

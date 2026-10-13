@@ -42,15 +42,6 @@ public sealed class UserService : IUserService
         };
     }
 
-    private static readonly string[] TemplateHeadings =
-    [
-        "id", "employees_code", "user_name", "designation", "role", "zone_name", "base_location", "department",
-        "division", "reporting_to", "mobile", "password", "email", "status", "date_of_joining", "date_of_birth",
-        "date_of_confirmation", "date_of_leaving", "grade", "designation_code", "employee_super_code",
-        "base_location_coordinates_latitude_longitude", "reporting_id", "role_ids", "payroll", "designation_id",
-        "branch_id", "division_id", "department_id", "attandance_summary_report"
-    ];
-
     private readonly IUserRepository _repository;
     private readonly IPasswordHasher _passwordHasher;
 
@@ -265,7 +256,7 @@ public sealed class UserService : IUserService
             x.Location,
             x.DepartmentName,
             x.DivisionName,
-            x.ReportingName,
+            x.ReportingNames ?? x.ReportingName,
             x.Mobile,
             x.Email,
             x.Status,
@@ -277,7 +268,7 @@ public sealed class UserService : IUserService
             x.DesignationCode,
             x.EmployeeSuperCode,
             x.BaseLocationCoordinates,
-            x.ReportingId,
+            x.ReportingIds ?? (x.ReportingId > 0 ? x.ReportingId.ToString() : null),
             x.RoleIds,
             x.Payroll,
             x.DesignationId,
@@ -288,16 +279,15 @@ public sealed class UserService : IUserService
         }));
     }
 
-    public Task<MasterDataFileDto> GetUserTemplateAsync(CancellationToken cancellationToken) =>
-        Task.FromResult(CreateWorkbook("users.xlsx", TemplateHeadings, []));
-
     public async Task<LaravelApiResponse> UploadUsersAsync(Stream fileStream, ulong? actorUserId, CancellationToken cancellationToken)
     {
         var result = await ImportRowsAsync(fileStream, row => ImportUserRowAsync(row, actorUserId, cancellationToken), cancellationToken);
         return LaravelApiResponse.Success("import", result, "User import completed");
     }
 
-    private async Task<bool> ImportUserRowAsync(ExcelRow row, ulong? actorUserId, CancellationToken cancellationToken)
+    private readonly record struct ImportRowResult(bool Updated, string? Warning);
+
+    private async Task<ImportRowResult> ImportUserRowAsync(ExcelRow row, ulong? actorUserId, CancellationToken cancellationToken)
     {
         var name = row.Value("user_name");
         if (string.IsNullOrWhiteSpace(name))
@@ -311,7 +301,30 @@ public sealed class UserService : IUserService
         var id = row.ULong("id");
         var user = id.HasValue ? await _repository.GetUserAsync(id.Value, cancellationToken) : null;
         var updated = user is not null;
+        // An id that was typed but matches no user: the row still creates a new user, but we flag
+        // it so the import summary says so rather than silently making a duplicate.
+        var idProvidedButMissing = id.HasValue && user is null;
         if (user is not null) ClearStaleDeletedFlag(user);
+
+        // Blank id creates a new user, a matching id updates that user. Either way the email and
+        // mobile must stay unique: a row whose email or mobile already belongs to someone else is
+        // refused (counted as a failed row), the same rule the Add/Edit screens enforce. On an
+        // update the user's own id is excluded so its unchanged email/mobile is not a clash.
+        var importMobile = row.Value("mobile")?.Trim();
+        var importEmail = row.Value("email")?.Trim();
+        var exceptUserId = updated ? id : null;
+        if (!string.IsNullOrWhiteSpace(importMobile)
+            && await _repository.UserMobileExistsAsync(importMobile, exceptUserId, cancellationToken))
+        {
+            throw new LaravelHttpException(LaravelStatusCodes.BadRequest,
+                $"The mobile number '{importMobile}' is already registered to another user.");
+        }
+        if (!string.IsNullOrWhiteSpace(importEmail)
+            && await _repository.UserEmailExistsAsync(importEmail, exceptUserId, cancellationToken))
+        {
+            throw new LaravelHttpException(LaravelStatusCodes.BadRequest,
+                $"The email address '{importEmail}' is already registered to another user.");
+        }
 
         if (user is null)
         {
@@ -355,10 +368,12 @@ public sealed class UserService : IUserService
         user.DivisionId = row.ULong("division_id");
         user.DepartmentId = row.ULong("department_id");
         user.WarehouseId = row.ULong("warehouse_id");
-        user.ReportingId = row.ULong("reporting_id");
-        // The import sheet carries a single reporting manager, so it is authoritative: keep
-        // reporting_ids in step with it instead of leaving a stale multi-manager list behind.
-        user.ReportingIds = user.ReportingId is > 0 ? user.ReportingId.Value.ToString() : null;
+        // The reporting_id column may hold several managers as a comma-separated list - the
+        // export writes them that way, so an exported sheet round-trips. The first id is the
+        // primary (reportingid); the whole set is stored in reporting_ids.
+        var reportingIds = ParseReportingIds(row.Value("reporting_id"));
+        user.ReportingId = reportingIds.Length > 0 ? reportingIds[0] : null;
+        user.ReportingIds = reportingIds.Length > 0 ? string.Join(',', reportingIds) : null;
         user.Payroll = NormalizePayrollGrade(row.Value("payroll"));
         user.SalesType = row.Value("sales_type") ?? user.SalesType;
         user.ShowAttandanceReport = NormalizeAttendance(row.Value("attandance_summary_report")) ?? user.ShowAttandanceReport;
@@ -435,7 +450,8 @@ public sealed class UserService : IUserService
         await UpsertEducationAsync(user.Id, 4, row.Value("other"), cancellationToken);
 
         await _repository.SaveChangesAsync(cancellationToken);
-        return updated;
+        return new ImportRowResult(updated,
+            idProvidedButMissing ? $"The ID {id!.Value} was not found, so a new user was created." : null);
     }
 
     private async Task<IReadOnlyCollection<ulong>> ResolveRoleIdsAsync(ExcelRow row, CancellationToken cancellationToken)
@@ -507,7 +523,7 @@ public sealed class UserService : IUserService
         };
     }
 
-    private static async Task<UserImportResultDto> ImportRowsAsync(Stream fileStream, Func<ExcelRow, Task<bool>> importRow, CancellationToken cancellationToken)
+    private static async Task<UserImportResultDto> ImportRowsAsync(Stream fileStream, Func<ExcelRow, Task<ImportRowResult>> importRow, CancellationToken cancellationToken)
     {
         using var workbook = new XLWorkbook(fileStream);
         var worksheet = workbook.Worksheets.First();
@@ -519,6 +535,7 @@ public sealed class UserService : IUserService
         var importedRows = 0;
         var updatedRows = 0;
         var errors = new List<string>();
+        var warnings = new List<string>();
 
         foreach (var worksheetRow in worksheet.RowsUsed().Where(row => row.RowNumber() > headerRow.RowNumber()))
         {
@@ -531,9 +548,10 @@ public sealed class UserService : IUserService
             totalRows++;
             try
             {
-                var updated = await importRow(new ExcelRow(worksheetRow, headings));
-                if (updated) updatedRows++;
+                var outcome = await importRow(new ExcelRow(worksheetRow, headings));
+                if (outcome.Updated) updatedRows++;
                 else importedRows++;
+                if (outcome.Warning is not null) warnings.Add($"Row {worksheetRow.RowNumber()}: {outcome.Warning}");
             }
             catch (Exception exception) when (exception is LaravelHttpException or FormatException or InvalidOperationException)
             {
@@ -547,7 +565,8 @@ public sealed class UserService : IUserService
             ImportedRows = importedRows,
             UpdatedRows = updatedRows,
             FailedRows = errors.Count,
-            Errors = errors
+            Errors = errors,
+            Warnings = warnings
         };
     }
 
@@ -688,6 +707,16 @@ public sealed class UserService : IUserService
 
         return request.BranchId;
     }
+
+    /// <summary>Reads the import sheet's reporting_id cell, which may be a single id or a
+    /// comma-separated list of managers. Returns the distinct, positive ids in order.</summary>
+    private static ulong[] ParseReportingIds(string? value) =>
+        (value ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(part => ulong.TryParse(part, out var id) ? id : 0)
+            .Where(id => id > 0)
+            .Distinct()
+            .ToArray();
 
     /// <summary>The reporting managers for the request: the explicit multi-select list, or the
     /// single reporting_id when only that was sent. First is the primary.</summary>
