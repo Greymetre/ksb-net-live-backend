@@ -56,6 +56,10 @@ public sealed class UserDto
     public string? DepartmentName { get; set; }
     public ulong? ReportingId { get; set; }
     public string? ReportingName { get; set; }
+    /// <summary>All reporting managers (ids), for the edit form to prefill the multi-select.</summary>
+    public IReadOnlyCollection<ulong>? ReportingManagerIds { get; set; }
+    /// <summary>All reporting managers' names, comma-separated, for display.</summary>
+    public string? ReportingNames { get; set; }
     public string? Location { get; set; }
     public string? Latitude { get; set; }
     public string? Longitude { get; set; }
@@ -92,6 +96,9 @@ public sealed class UserRequestDto
     public ulong? DivisionId { get; set; }
     public ulong? DepartmentId { get; set; }
     public ulong? ReportingId { get; set; }
+    /// <summary>All reporting managers the user reports to. The first becomes the primary
+    /// (ReportingId); the full set is stored so each manager sees the user reporting-wise.</summary>
+    public IReadOnlyCollection<ulong>? ReportingManagerIds { get; set; }
     public string? Location { get; set; }
     public string? BaseLocationCoordinates { get; set; }
     public string? CurrentAddress { get; set; }

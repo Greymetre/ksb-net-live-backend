@@ -125,7 +125,8 @@ public sealed class UserService : IUserService
             DesignationId = request.DesignationId,
             DivisionId = request.DivisionId,
             DepartmentId = request.DepartmentId,
-            ReportingId = request.ReportingId,
+            ReportingId = PrimaryReportingId(request),
+            ReportingIds = ReportingIdsCsv(request),
             Payroll = request.Payroll,
             WarehouseId = request.WarehouseId,
             SalesType = request.SalesType ?? string.Empty,
@@ -192,7 +193,8 @@ public sealed class UserService : IUserService
         user.DesignationId = request.DesignationId;
         user.DivisionId = request.DivisionId;
         user.DepartmentId = request.DepartmentId;
-        user.ReportingId = request.ReportingId;
+        user.ReportingId = PrimaryReportingId(request);
+        user.ReportingIds = ReportingIdsCsv(request);
         user.Payroll = request.Payroll;
         user.WarehouseId = request.WarehouseId;
         user.SalesType = request.SalesType ?? string.Empty;
@@ -354,6 +356,9 @@ public sealed class UserService : IUserService
         user.DepartmentId = row.ULong("department_id");
         user.WarehouseId = row.ULong("warehouse_id");
         user.ReportingId = row.ULong("reporting_id");
+        // The import sheet carries a single reporting manager, so it is authoritative: keep
+        // reporting_ids in step with it instead of leaving a stale multi-manager list behind.
+        user.ReportingIds = user.ReportingId is > 0 ? user.ReportingId.Value.ToString() : null;
         user.Payroll = NormalizePayrollGrade(row.Value("payroll"));
         user.SalesType = row.Value("sales_type") ?? user.SalesType;
         user.ShowAttandanceReport = NormalizeAttendance(row.Value("attandance_summary_report")) ?? user.ShowAttandanceReport;
@@ -684,6 +689,27 @@ public sealed class UserService : IUserService
         return request.BranchId;
     }
 
+    /// <summary>The reporting managers for the request: the explicit multi-select list, or the
+    /// single reporting_id when only that was sent. First is the primary.</summary>
+    private static ulong[] ReportingIdSet(UserRequestDto request)
+    {
+        var ids = request.ReportingManagerIds?.Where(id => id > 0).Distinct().ToArray() ?? [];
+        if (ids.Length == 0 && request.ReportingId is > 0) ids = [request.ReportingId.Value];
+        return ids;
+    }
+
+    private static ulong? PrimaryReportingId(UserRequestDto request)
+    {
+        var ids = ReportingIdSet(request);
+        return ids.Length > 0 ? ids[0] : null;
+    }
+
+    private static string? ReportingIdsCsv(UserRequestDto request)
+    {
+        var ids = ReportingIdSet(request);
+        return ids.Length > 0 ? string.Join(',', ids) : null;
+    }
+
     private static UserRequestDto NormalizeRequest(UserRequestDto request)
     {
         request.Active ??= request.StringAlias("active");
@@ -711,6 +737,7 @@ public sealed class UserService : IUserService
         request.DateOfJoining ??= request.DateAlias("dateOfJoining");
         request.Roles ??= request.ULongListAlias("roles");
         request.CityIds ??= request.ULongListAlias("cityIds");
+        request.ReportingManagerIds ??= request.ULongListAlias("reportingManagerIds");
         return request;
     }
 

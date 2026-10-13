@@ -30,6 +30,7 @@ public sealed class UserConfiguration : IEntityTypeConfiguration<User>
         builder.Property(x => x.UserCode).HasColumnName("user_code").HasMaxLength(50).HasDefaultValue("");
         builder.Property(x => x.Location).HasColumnName("location").HasMaxLength(250).HasDefaultValue("");
         builder.Property(x => x.ReportingId).HasColumnName("reportingid");
+        builder.Property(x => x.ReportingIds).HasColumnName("reporting_ids");
         builder.Property(x => x.RegionId).HasColumnName("region_id");
         builder.Property(x => x.EmployeeCodes).HasColumnName("employee_codes").HasMaxLength(250);
         builder.Property(x => x.BranchId).HasColumnName("branch_id").HasMaxLength(255);

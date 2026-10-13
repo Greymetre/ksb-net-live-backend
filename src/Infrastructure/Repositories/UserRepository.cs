@@ -401,6 +401,20 @@ public sealed class UserRepository : IUserRepository
             .Select(x => new { x.Id, x.BranchName })
             .ToDictionaryAsync(x => x.Id.ToString(), x => x.BranchName, cancellationToken);
 
+        // A user can report to more than one manager (reporting_ids). Resolve every manager id
+        // that appears across the loaded users to a name so the edit form can prefill the
+        // multi-select and the list can show all managers, not just the primary one.
+        var managerIdsByUser = users.ToDictionary(
+            x => x.user.Id,
+            x => ReportingVisibility.ReportingManagerIds(x.user.ReportingIds, x.user.ReportingId));
+        var managerIds = managerIdsByUser.Values.SelectMany(ids => ids).Distinct().ToArray();
+        var managerNames = managerIds.Length == 0
+            ? new Dictionary<ulong, string>()
+            : await _dbContext.Users.AsNoTracking()
+                .Where(x => managerIds.Contains(x.Id))
+                .Select(x => new { x.Id, x.Name })
+                .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
+
         return users.Select(row => new UserDto
         {
             Id = row.user.Id,
@@ -422,6 +436,11 @@ public sealed class UserRepository : IUserRepository
             DepartmentName = row.DepartmentName,
             ReportingId = row.user.ReportingId,
             ReportingName = row.ReportingName,
+            ReportingManagerIds = managerIdsByUser.TryGetValue(row.user.Id, out var mgrIds) ? mgrIds : [],
+            ReportingNames = managerIdsByUser.TryGetValue(row.user.Id, out var ids) && ids.Count > 0
+                ? string.Join(", ", ids.Select(id => managerNames.TryGetValue(id, out var name) ? name : null)
+                    .Where(name => !string.IsNullOrWhiteSpace(name)))
+                : row.ReportingName,
             Location = row.user.Location,
             Latitude = row.user.Latitude,
             Longitude = row.user.Longitude,

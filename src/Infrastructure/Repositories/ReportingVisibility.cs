@@ -73,7 +73,7 @@ internal static class ReportingVisibility
     {
         var internalUsers = await InternalUsersQuery(db, db.Users.AsNoTracking())
             .Where(x => (includeInactive || x.Active == "Y") && !x.IsDeleted)
-            .Select(x => new { x.Id, x.ReportingId, x.BranchId, x.DesignationId })
+            .Select(x => new { x.Id, x.ReportingId, x.ReportingIds, x.BranchId, x.DesignationId })
             .Take(MaxRows)
             .ToListAsync(cancellationToken);
 
@@ -160,7 +160,7 @@ internal static class ReportingVisibility
         while (frontier.Count > 0)
         {
             var children = internalUsers
-                .Where(user => user.ReportingId.HasValue && frontier.Contains(user.ReportingId.Value) && visible.Add(user.Id))
+                .Where(user => ReportingManagerIds(user.ReportingIds, user.ReportingId).Any(frontier.Contains) && visible.Add(user.Id))
                 .Select(user => user.Id)
                 .ToArray();
 
@@ -251,6 +251,20 @@ WHERE user_id IN ({string.Join(',', visible)})
 
     private static string[] SplitCsv(string? value) =>
         string.IsNullOrWhiteSpace(value) ? [] : value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    /// <summary>A user's reporting managers: every id in the reporting_ids CSV, or the single
+    /// reportingid when that CSV is empty. A user may report to more than one manager, and
+    /// each of them (and everyone above them) sees the user reporting-wise.</summary>
+    internal static IReadOnlyCollection<ulong> ReportingManagerIds(string? reportingIds, ulong? reportingId)
+    {
+        var fromCsv = SplitCsv(reportingIds)
+            .Select(part => ulong.TryParse(part, out var id) ? id : 0)
+            .Where(id => id > 0)
+            .Distinct()
+            .ToArray();
+        if (fromCsv.Length > 0) return fromCsv;
+        return reportingId is > 0 ? [reportingId.Value] : [];
+    }
 
     private static bool IsAdminRole(string? roleName) =>
         roleName?.Contains("admin", StringComparison.OrdinalIgnoreCase) == true;

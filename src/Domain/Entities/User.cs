@@ -21,6 +21,10 @@ public sealed class User : BaseEntity
     public string UserCode { get; set; } = string.Empty;
     public string Location { get; set; } = string.Empty;
     public ulong? ReportingId { get; set; }
+    /// <summary>All reporting managers as a comma-separated list of user ids. ReportingId is
+    /// the first (primary) of these; a user may report to more than one manager, and each of
+    /// them sees the user reporting-wise.</summary>
+    public string? ReportingIds { get; set; }
     public ulong? RegionId { get; set; }
     public string? EmployeeCodes { get; set; }
     public string? BranchId { get; set; }

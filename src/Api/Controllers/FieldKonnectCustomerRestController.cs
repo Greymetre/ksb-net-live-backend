@@ -327,7 +327,8 @@ ORDER BY page.created_at DESC, page.id DESC", cancellationToken, parameters.ToAr
                 data = RetailerDetails(row),
                 distributors = await LinkedDistributors(row, cancellationToken),
                 check_status = await CheckStatus("secondary_customer", id, cancellationToken),
-                hierarchy_level = await HierarchyLevel(ULong(row, "created_by"), cancellationToken)
+                hierarchy_level = await HierarchyLevel(ULong(row, "created_by"), cancellationToken),
+                can_review_approval = await RetailerApprovalAllowed(row, cancellationToken)
             });
         }
         catch (Exception exception)
@@ -1941,6 +1942,30 @@ ORDER BY checkin_date DESC, checkin_time DESC, id DESC", cancellationToken,
                 checkout_datetime = row is null ? null : DateTimeString(row, "checkout_date", "checkout_time")
             }
         };
+    }
+
+    /// <summary>Whether the signed-in user may approve / reject / pending this retailer -
+    /// the same rule the CRM applies: a creator or the assigned person cannot, anyone who
+    /// sees it reporting-wise can, and an all-access (admin) user always can. The field app
+    /// shows the approval actions off this, so both honour one rule. The server guard in
+    /// SetRetailerApprovalStatusAsync is still the final authority.</summary>
+    private async Task<bool> RetailerApprovalAllowed(Dictionary<string, object?> row, CancellationToken cancellationToken)
+    {
+        var actor = CurrentUserId();
+        if (actor == 0) return false;
+        var access = await SecondaryCustomerAccess(actor, cancellationToken);
+        if (access.AllAccess) return true;
+        if (ULong(row, "created_by") == actor) return false;
+        // The assigned person is the first id of the employee_id field - the same value the
+        // customers.assigned_employee_id computed column holds.
+        return FirstCsvId(Str(row, "employee_id")) != actor;
+    }
+
+    private static ulong FirstCsvId(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return 0;
+        var first = value.Split(',')[0].Trim().Trim('"', '[', ']', ' ');
+        return ulong.TryParse(first, out var id) ? id : 0;
     }
 
     private async Task<int> HierarchyLevel(ulong targetUserId, CancellationToken cancellationToken)
