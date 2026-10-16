@@ -353,6 +353,7 @@ public static class PermissionCatalog
         new("loyalty_performance_report.view", "View Report", "loyalty_performance_report", "Loyalty Performance", "reports", "Reports Management", "view", 2235, [], []),
         new("loyalty_performance_report.export_asr", "ASR Wise Export", "loyalty_performance_report", "Loyalty Performance", "reports", "Reports Management", "export_asr", 2236, [], []),
         new("loyalty_performance_report.export_dealer", "Dealer Wise Export", "loyalty_performance_report", "Loyalty Performance", "reports", "Reports Management", "export_dealer", 2237, [], []),
+        new("loyalty_performance_report.export_retailer", "Retailer Wise Export", "loyalty_performance_report", "Loyalty Performance", "reports", "Reports Management", "export_retailer", 2238, [], []),
         // ---------- Setting Management ----------
         // FieldKonnect App Setting
         new("app_setting.view", "View Setting", "app_setting", "FieldKonnect App Setting", "settings", "Setting Management", "view", 2240, ["loyalty_app_setting_access", "field_konnect_app_setting_access"], []),

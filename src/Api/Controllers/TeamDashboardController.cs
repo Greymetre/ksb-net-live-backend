@@ -137,11 +137,8 @@ public sealed class TeamDashboardController : ControllerBase
             .Select(x => x.BuyerId!.Value).Distinct().ToListAsync(ct);
         var buyersFromTeam = orderedBuyerIds.Count == 0 ? 0 : await customerBase.CountAsync(x => orderedBuyerIds.Contains(x.Id), ct);
 
-        // ---------- Field activity, taken from the attendance working type ----------
-        var workingToday = WorkingTypes(todayAttendance.Select(x => x.WorkingType));
-        var workingMonth = WorkingTypes(await WorkingTypeRange(effectiveIds, monthStart, monthEnd, ct));
-        var workingYear = WorkingTypes(await WorkingTypeRange(effectiveIds, yearStart, yearEnd, ct));
-
+        // ---------- Field activity: the promotional activities logged, grouped by meet type -
+        // the same source the SFA app's field activity uses, not the attendance working type. --
         var promotional = await _db.PromotionalActivities.AsNoTracking()
             .Where(x => x.DeletedAt == null && (teamLongIds.Contains(x.UserId) || teamLongIds.Contains(x.CreatedById))
                 && x.ActivityDate >= yearStart && x.ActivityDate < yearEnd)
@@ -179,6 +176,23 @@ public sealed class TeamDashboardController : ControllerBase
                 };
             })
             .ToList();
+
+        // Field activity for a window, from the promotional activities loaded above, grouped by
+        // meet type (retailer / nukkad / farmer / influencer) exactly like the SFA app.
+        object FieldActivity(DateTime start, DateTime end)
+        {
+            var inRange = promotional.Where(x => x.ActivityDate >= start && x.ActivityDate < end).ToList();
+            int Count(string type) => inRange.Count(x => string.Equals(x.ActivityType, type, StringComparison.OrdinalIgnoreCase));
+            string[] known = ["retailer", "nukkad", "farmer", "influencer"];
+            return new
+            {
+                retailer = Count("retailer"),
+                nukkad = Count("nukkad"),
+                farmer = Count("farmer"),
+                influencer = Count("influencer"),
+                other = inRange.Count(x => !known.Contains((x.ActivityType ?? "").ToLowerInvariant()))
+            };
+        }
 
         return Ok(new
         {
@@ -223,9 +237,9 @@ public sealed class TeamDashboardController : ControllerBase
             },
             activities = new
             {
-                today = workingToday,
-                month = workingMonth,
-                year = workingYear,
+                today = FieldActivity(today, tomorrow),
+                month = FieldActivity(monthStart, monthEnd),
+                year = FieldActivity(yearStart, yearEnd),
                 promotional = new
                 {
                     year = promotional.Count,
@@ -722,16 +736,19 @@ public sealed class TeamDashboardController : ControllerBase
     private static object AttendanceBlock(ulong[] ids, List<AttendanceRow> rows)
     {
         var mine = rows.Where(x => ids.Contains(x.UserId)).ToList();
-        var present = mine.Select(x => x.UserId).Distinct().Count();
+        // Anyone with an attendance row today has "checked in" - but a person on leave also has
+        // one (its working type is the leave). The SFA app shows Present as checked-in minus
+        // leave, so someone on full-day leave is not counted present; this matches it exactly.
+        var checkedIn = mine.Select(x => x.UserId).Distinct().Count();
         var onLeave = mine.Sum(x => x.WorkingType == "Full Day Leave" ? 1m
             : x.WorkingType is "First Half Leave" or "Second Half Leave" ? 0.5m : 0m);
         return new
         {
             total = ids.Length,
-            present,
+            present = checkedIn - onLeave,
             on_leave = onLeave,
             mis_punch = mine.Count(x => !x.PunchoutTime.HasValue),
-            not_punched = Math.Max(0, ids.Length - present)
+            not_punched = Math.Max(0, ids.Length - checkedIn)
         };
     }
 
