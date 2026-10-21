@@ -2124,15 +2124,20 @@ WHERE customertype = 1 AND deleted_at IS NULL AND executive_id IN ({string.Join(
         if (scheme is null) return BadRequest(new { status = false, message = "The selected scheme was not found." });
         var slabs = scheme.Slabs.Where(x => x.DeletedAt == null).OrderBy(x => x.ValueFrom).ThenBy(x => x.SortOrder).ToList();
 
-        var asrDesignationIds = await _db.Designations.AsNoTracking()
-            .Where(x => x.DesignationName.Trim() == "ASR").Select(x => x.Id).ToListAsync(cancellationToken);
         var employeeStatus = Domain.Services.EmployeeStatus.Read(filter.EmployeeStatus);
         var visibleIds = (await _hr.GetVisibleUserIdsAsync(CurrentUserId(), includeInactive: true, cancellationToken)).ToHashSet();
-        var zoneAsrs = (await _db.Users.AsNoTracking()
-                .Where(x => x.DesignationId.HasValue && asrDesignationIds.Contains(x.DesignationId.Value)
-                    && x.DivisionId.HasValue && filter.ZoneIds.Contains(x.DivisionId.Value) && !x.IsDeleted && x.DeletedAt == null)
+        // Every employee, so a retailer always shows the name of whoever it is assigned to -
+        // ASR, DSR or otherwise - the way the CRM invoice listing does. The ones who belong to a
+        // selected zone (and pass the visibility and status filters) decide which retailers the
+        // zone sections list; an invoiced retailer assigned outside them still appears so no
+        // invoice value is lost - under "No Zone", but still carrying its employee's name.
+        var allUsers = (await _db.Users.AsNoTracking()
+                .Where(x => !x.IsDeleted && x.DeletedAt == null)
                 .ToListAsync(cancellationToken))
-            .Where(x => visibleIds.Contains(x.Id) && Domain.Services.EmployeeStatus.Matches(employeeStatus, x.Active))
+            .ToDictionary(x => x.Id);
+        var zoneEmployees = allUsers.Values
+            .Where(x => x.DivisionId.HasValue && filter.ZoneIds.Contains(x.DivisionId.Value)
+                && visibleIds.Contains(x.Id) && Domain.Services.EmployeeStatus.Matches(employeeStatus, x.Active))
             .ToDictionary(x => x.Id);
 
         var rangeStart = filter.StartDate.ToDateTime(TimeOnly.MinValue);
@@ -2152,46 +2157,58 @@ WHERE customertype = 1 AND deleted_at IS NULL AND executive_id IN ({string.Join(
             .GroupBy(x => x.InvoiceId)
             .ToDictionary(x => x.Key, x => x.First().Amount);
 
-        // Every retailer assigned to a selected zone's ASR (customer type 2) - via the
-        // employee_details junction and the customer's own executive_id - plus any retailer
-        // that raised an invoice under the scheme. So the sheet covers the whole zone and is
-        // not blank just because the period had no invoices; a retailer with none reads zero.
-        var zoneAsrCsv = string.Join(',', zoneAsrs.Keys);
-        var assignRows = zoneAsrs.Count == 0 ? [] : await Query($@"
-SELECT CAST(ed.customer_id AS bigint) rid, CAST(ed.user_id AS bigint) uid
-FROM employee_details ed JOIN customers c ON c.id = ed.customer_id AND c.customertype = 2 AND c.deleted_at IS NULL
-WHERE ed.deleted_at IS NULL AND ed.active = 'Y' AND ed.user_id IN ({zoneAsrCsv})
-UNION SELECT CAST(id AS bigint), CAST(executive_id AS bigint) FROM customers
-WHERE customertype = 2 AND deleted_at IS NULL AND executive_id IN ({zoneAsrCsv})", cancellationToken);
-        var assignedAsr = assignRows
-            .Select(r => (Rid: ULong(r, "rid"), Uid: ULong(r, "uid")))
-            .Where(x => zoneAsrs.ContainsKey(x.Uid))
-            .GroupBy(x => x.Rid)
-            .ToDictionary(g => g.Key, g => g.First().Uid);
+        // The candidate retailers (customer type 2): everyone assigned - through the
+        // employee_details junction or the customer's own executive_id - to an employee of a
+        // selected zone, plus every retailer that raised an invoice under the scheme in the
+        // period. A retailer with no business in the period still appears, reading zero.
+        var zoneEmpCsv = string.Join(',', zoneEmployees.Keys);
+        var assignRows = zoneEmployees.Count == 0 ? [] : await Query($@"
+SELECT CAST(ed.customer_id AS bigint) rid FROM employee_details ed
+JOIN customers c ON c.id = ed.customer_id AND c.customertype = 2 AND c.deleted_at IS NULL
+WHERE ed.deleted_at IS NULL AND ed.active = 'Y' AND ed.user_id IN ({zoneEmpCsv})
+UNION SELECT CAST(id AS bigint) rid FROM customers
+WHERE customertype = 2 AND deleted_at IS NULL AND executive_id IN ({zoneEmpCsv})", cancellationToken);
+        var assignedRetailerIds = assignRows.Select(r => ULong(r, "rid")).ToHashSet();
 
-        var allRetailerIds = assignedAsr.Keys.Concat(invoices.Select(x => x.SecondaryCustomerId)).Distinct().ToArray();
+        var allRetailerIds = assignedRetailerIds.Concat(invoices.Select(x => x.SecondaryCustomerId)).Distinct().ToArray();
         var retailers = await _db.Customers.AsNoTracking()
             .Where(x => x.CustomerType == 2 && allRetailerIds.Contains(x.Id))
-            .Select(x => new { x.Id, x.Name, x.CustomFields })
+            .Select(x => new { x.Id, x.Name, x.CustomFields, x.ExecutiveId })
             .ToListAsync(cancellationToken);
+
+        // A retailer's employee, resolved the one way the customer master and the CRM invoice
+        // listing resolve it: custom_fields employee_id, then sales_executive_id, then the
+        // executive_id column - whatever that person's designation.
+        ulong AssignedEmployeeId(string? customFields, ulong? executiveId)
+        {
+            var fields = CustomFieldsJson.Read(customFields);
+            var id = ReadIdList(fields.GetValueOrDefault("employee_id")).FirstOrDefault();
+            if (id == 0) id = ReadIdList(fields.GetValueOrDefault("sales_executive_id")).FirstOrDefault();
+            return id != 0 ? id : (executiveId ?? 0);
+        }
+        var empByRetailer = retailers.ToDictionary(x => x.Id, x => AssignedEmployeeId(x.CustomFields, x.ExecutiveId));
         var retailerName = retailers.ToDictionary(x => x.Id, x => x.Name);
-        // A retailer's ASR: its assignment, else the custom-field employee_id (for an invoice
-        // retailer not in the assignment table), limited to an ASR in a selected zone.
-        var asrByRetailer = retailers.ToDictionary(x => x.Id, x =>
-            assignedAsr.TryGetValue(x.Id, out var a) && a != 0 ? a
-            : ReadIdList(CustomFieldsJson.Read(x.CustomFields).GetValueOrDefault("employee_id")).FirstOrDefault(zoneAsrs.ContainsKey));
         var invoicesByRetailer = invoices.GroupBy(x => x.SecondaryCustomerId).ToDictionary(g => g.Key, g => g.ToList());
 
         var branches = await _db.Branches.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.BranchName, cancellationToken);
 
         var rows = retailers
-            .Where(r => asrByRetailer.TryGetValue(r.Id, out var asrId) && asrId != 0)
+            // Keep a retailer when its assigned employee is in a selected zone, or when it raised
+            // a scheme invoice (so no invoice value is ever lost). It sits under that employee;
+            // a retailer with no resolvable employee shows a dash and lands under "No Zone".
             .Select(r =>
             {
-                var asr = zoneAsrs[asrByRetailer[r.Id]];
-                var rInv = invoicesByRetailer.GetValueOrDefault(r.Id);
-                var approvedValue = rInv?.Where(x => x.ApprovalStatus == Domain.Entities.NewInvoice.StatusApprovedHo)
-                    .Sum(x => hoAmounts.TryGetValue(x.Id, out var a) ? a : x.Amount) ?? 0m;
+                var empId = empByRetailer.GetValueOrDefault(r.Id);
+                allUsers.TryGetValue(empId, out var emp);
+                return (Retailer: r, Emp: emp, InZone: zoneEmployees.ContainsKey(empId), HasInvoice: invoicesByRetailer.ContainsKey(r.Id));
+            })
+            .Where(x => x.InZone || x.HasInvoice)
+            .Select(x =>
+            {
+                var emp = x.Emp;
+                var rInv = invoicesByRetailer.GetValueOrDefault(x.Retailer.Id);
+                var approvedValue = rInv?.Where(i => i.ApprovalStatus == Domain.Entities.NewInvoice.StatusApprovedHo)
+                    .Sum(i => hoAmounts.TryGetValue(i.Id, out var a) ? a : i.Amount) ?? 0m;
                 // The slab the period's approved business reached - the same rule the app applies.
                 var achieved = slabs.LastOrDefault(s => approvedValue >= s.ValueFrom && (!s.ValueTo.HasValue || approvedValue <= s.ValueTo.Value))
                     ?? slabs.LastOrDefault(s => approvedValue >= s.ValueFrom);
@@ -2200,17 +2217,17 @@ WHERE customertype = 2 AND deleted_at IS NULL AND executive_id IN ({zoneAsrCsv})
                     : SchemeReward.IsPercentage(SchemeReward.TypeFor(scheme, achieved))
                         ? Math.Round(approvedValue * achieved.RewardValue / 100, 2)
                         : achieved.RewardValue;
-                var zoneName = asr.DivisionId.HasValue && zoneNames.TryGetValue(asr.DivisionId.Value, out var zn) ? zn : "";
+                var zoneName = x.InZone && emp?.DivisionId is { } div && zoneNames.TryGetValue(div, out var zn) ? zn : "";
                 return new RetailerLoyaltyRow(
                     zoneName,
-                    BranchName(asr, branches),
-                    asr.Name,
-                    Name(retailerName, r.Id),
+                    x.InZone && emp is not null ? BranchName(emp, branches) : "",
+                    emp?.Name ?? "-",
+                    Name(retailerName, x.Retailer.Id),
                     scheme.SchemeName,
                     approvedValue <= 0 || achieved is null ? "-" : achieved.TierName,
                     approvedValue <= 0 || achieved is null ? "-" : SchemeReward.Label(scheme, achieved),
                     incentiveAmount,
-                    rInv?.Sum(x => x.Amount) ?? 0m,
+                    rInv?.Sum(i => i.Amount) ?? 0m,
                     approvedValue);
             })
             .OrderBy(x => string.IsNullOrWhiteSpace(x.Branch) ? 1 : 0)
@@ -2221,7 +2238,7 @@ WHERE customertype = 2 AND deleted_at IS NULL AND executive_id IN ({zoneAsrCsv})
 
         using var workbook = new XLWorkbook();
         var sheet = workbook.Worksheets.Add("Retailer Wise");
-        var headers = new[] { "Branch", "ASR Name", "Retailer Name", "Scheme Name", "Slab Qualified", "Incentive %", "Incentive Amount", "Total Invoice Amount (Lac)", "Approved Invoice Val (Lac)" };
+        var headers = new[] { "Branch", "Employee Name", "Retailer Name", "Scheme Name", "Slab Qualified", "Incentive %", "Incentive Amount", "Total Invoice Amount (Lac)", "Approved Invoice Val (Lac)" };
         const int labelColumns = 6; // up to and including "Incentive %"; the figures sit to the right
         for (var i = 0; i < headers.Length; i++) sheet.Cell(1, i + 1).Value = headers[i];
 
