@@ -2192,6 +2192,23 @@ WHERE customertype = 2 AND deleted_at IS NULL AND executive_id IN ({zoneEmpCsv})
 
         var branches = await _db.Branches.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.BranchName, cancellationToken);
 
+        var retailerIds = retailers.Select(x => x.Id).ToList();
+        // What each retailer bought in the period (its secondary sale) - its own orders' line
+        // totals, under the same segment rule the ASR and Dealer sheets use. One figure per retailer.
+        var salesByRetailer = (await (from order in _db.Orders.AsNoTracking()
+                join line in _db.OrderDetails.AsNoTracking() on (ulong?)order.Id equals line.OrderId
+                join productRow in _db.Products.AsNoTracking().IgnoreQueryFilters() on line.ProductId equals (ulong?)productRow.Id into products
+                from product in products.DefaultIfEmpty()
+                where order.BuyerId.HasValue && retailerIds.Contains(order.BuyerId.Value)
+                    && order.DeletedAt == null
+                    && order.OrderDate >= rangeStart && order.OrderDate < rangeEndExclusive
+                    && (!filter.SegmentId.HasValue || (product != null ? product.CategoryId : line.CategoryId) == filter.SegmentId)
+                group line by order.BuyerId!.Value into g
+                select new { BuyerId = g.Key, Total = g.Sum(x => x.LineTotal) }).ToListAsync(cancellationToken))
+            .ToDictionary(x => x.BuyerId, x => x.Total);
+        // Each retailer's KYC standing, worded exactly as the customer export's KYC Status column.
+        var kycStates = await _customers.GetKycExportStatesAsync(retailerIds, cancellationToken);
+
         var rows = retailers
             // Keep a retailer when its assigned employee is in a selected zone, or when it raised
             // a scheme invoice (so no invoice value is ever lost). It sits under that employee;
@@ -2223,9 +2240,11 @@ WHERE customertype = 2 AND deleted_at IS NULL AND executive_id IN ({zoneEmpCsv})
                     x.InZone && emp is not null ? BranchName(emp, branches) : "",
                     emp?.Name ?? "-",
                     Name(retailerName, x.Retailer.Id),
+                    KycStatusText(kycStates.GetValueOrDefault(x.Retailer.Id)),
                     scheme.SchemeName,
                     approvedValue <= 0 || achieved is null ? "-" : achieved.TierName,
                     approvedValue <= 0 || achieved is null ? "-" : SchemeReward.Label(scheme, achieved),
+                    salesByRetailer.GetValueOrDefault(x.Retailer.Id),
                     incentiveAmount,
                     rInv?.Sum(i => i.Amount) ?? 0m,
                     approvedValue);
@@ -2238,14 +2257,15 @@ WHERE customertype = 2 AND deleted_at IS NULL AND executive_id IN ({zoneEmpCsv})
 
         using var workbook = new XLWorkbook();
         var sheet = workbook.Worksheets.Add("Retailer Wise");
-        var headers = new[] { "Branch", "Employee Name", "Retailer Name", "Scheme Name", "Slab Qualified", "Incentive %", "Incentive Amount", "Total Invoice Amount (Lac)", "Approved Invoice Val (Lac)" };
-        const int labelColumns = 6; // up to and including "Incentive %"; the figures sit to the right
+        var headers = new[] { "Branch", "Employee Name", "Retailer Name", "KYC Status", "Scheme Name", "Slab Qualified", "Incentive %", "Act Sec Sales (Lac)", "Incentive Amount", "Total Invoice Amount (Lac)", "Approved Invoice Val (Lac)" };
+        const int labelColumns = 7; // up to and including "Incentive %"; the figures sit to the right
         for (var i = 0; i < headers.Length; i++) sheet.Cell(1, i + 1).Value = headers[i];
 
         void WriteRetailerLine(int row, IEnumerable<object?> label, IReadOnlyCollection<RetailerLoyaltyRow> figures)
         {
             WriteRow(sheet, row, label.Concat(new object?[]
             {
+                ToLakh(figures.Sum(x => x.SecondarySales)),
                 figures.Sum(x => x.IncentiveAmount),
                 ToLakh(figures.Sum(x => x.TotalInvoiceAmount)),
                 ToLakh(figures.Sum(x => x.ApprovedInvoiceValue))
@@ -2268,7 +2288,7 @@ WHERE customertype = 2 AND deleted_at IS NULL AND executive_id IN ({zoneEmpCsv})
                 foreach (var row in branchGroup)
                 {
                     WriteRetailerLine(outputRow++,
-                        new object?[] { row.Branch, row.AsrName, row.RetailerName, row.SchemeName, row.SlabQualified, row.IncentivePercent },
+                        new object?[] { row.Branch, row.AsrName, row.RetailerName, row.KycStatus, row.SchemeName, row.SlabQualified, row.IncentivePercent },
                         new[] { row });
                 }
                 WriteRetailerTotal(outputRow++, "SUBTOTAL - " + (string.IsNullOrWhiteSpace(branchGroup.Key) ? "No Branch" : branchGroup.Key), branchGroup.ToList(), XLColor.Yellow, whiteText: false);
@@ -2304,8 +2324,10 @@ WHERE customertype = 2 AND deleted_at IS NULL AND executive_id IN ({zoneEmpCsv})
         var zoneNames = await _db.Divisions.AsNoTracking().Where(x => filter.ZoneIds.Contains(x.Id))
             .ToDictionaryAsync(x => x.Id, x => x.DivisionName, cancellationToken);
         if (zoneNames.Count != filter.ZoneIds.Distinct().Count()) return BadRequest(new { status = false, message = "One or more selected zones were not found." });
-        if (!await _db.LoyaltySchemes.AsNoTracking().AnyAsync(x => x.Id == filter.SchemeId && x.DeletedAt == null, cancellationToken))
-            return BadRequest(new { status = false, message = "The selected scheme was not found." });
+        var scheme = await _db.LoyaltySchemes.AsNoTracking().Include(x => x.Slabs)
+            .FirstOrDefaultAsync(x => x.Id == filter.SchemeId && x.DeletedAt == null, cancellationToken);
+        if (scheme is null) return BadRequest(new { status = false, message = "The selected scheme was not found." });
+        var slabs = scheme.Slabs.Where(x => x.DeletedAt == null).OrderBy(x => x.ValueFrom).ThenBy(x => x.SortOrder).ToList();
 
         var asrDesignationIds = await _db.Designations.AsNoTracking()
             .Where(x => x.DesignationName.Trim() == "ASR").Select(x => x.Id).ToListAsync(cancellationToken);
@@ -2433,6 +2455,16 @@ WHERE customertype = 2 AND deleted_at IS NULL AND executive_id IN ({zoneEmpCsv})
             var inv = invoiceGroups.GetValueOrDefault((dealerId, user.Id));
             var retailers = inv?.Retailers ?? [];
             var zoneName = user.DivisionId.HasValue && zoneNames.TryGetValue(user.DivisionId.Value, out var zn) ? zn : "";
+            // The three incentive columns treat the row's own HO-approved total like a single
+            // retailer against the scheme slabs: the slab that total reaches, that slab's rate,
+            // and the reward it pays on the total - the same slab rule the retailer sheet applies.
+            var approvedValue = inv?.Approved ?? 0m;
+            var achieved = slabs.LastOrDefault(s => approvedValue >= s.ValueFrom && (!s.ValueTo.HasValue || approvedValue <= s.ValueTo.Value))
+                ?? slabs.LastOrDefault(s => approvedValue >= s.ValueFrom);
+            var incentiveAmount = achieved is null || approvedValue <= 0 ? 0m
+                : SchemeReward.IsPercentage(SchemeReward.TypeFor(scheme, achieved))
+                    ? Math.Round(approvedValue * achieved.RewardValue / 100, 2)
+                    : achieved.RewardValue;
             return new LoyaltyReportRow(
                 zoneName,
                 BranchName(user, branches),
@@ -2443,9 +2475,12 @@ WHERE customertype = 2 AND deleted_at IS NULL AND executive_id IN ({zoneEmpCsv})
                 Name(managers, user.ReportingId),
                 dealerWise ? salesByDealerAsr.GetValueOrDefault((dealerId, user.Id)) : salesByAsr.GetValueOrDefault(user.Id),
                 inv?.Total ?? 0m,
-                inv?.Approved ?? 0m,
+                approvedValue,
                 retailers.Count,
-                retailers.Count(id => !KycApproved(retailerFields[id])));
+                retailers.Count(id => !KycApproved(retailerFields[id])),
+                approvedValue <= 0 || achieved is null ? "-" : achieved.TierName,
+                approvedValue <= 0 || achieved is null ? "-" : SchemeReward.Label(scheme, achieved),
+                incentiveAmount);
         }
 
         List<LoyaltyReportRow> rows;
@@ -2489,13 +2524,13 @@ WHERE customertype = 2 AND deleted_at IS NULL AND executive_id IN ({zoneEmpCsv})
         using var workbook = new XLWorkbook();
         var sheet = workbook.Worksheets.Add(dealerWise ? "Dealer Wise" : "ASR Wise");
         var headers = dealerWise
-            ? new[] { "Branch", "Dealer Name", "ASR Name", "Employee Status", "Reporting Mgr", "Primary Sales", "Act Sec Sales (Lac)", "Total Invoice Amount (Lac)", "Approved Invoice Val (Lac)", "No. of Active Retailers", "KYC Pending" }
-            : new[] { "Branch", "ASR Name", "Designation", "Employee Status", "Reporting Mgr", "Primary Sales", "Act Sec Sales (Lac)", "Total Invoice Amount (Lac)", "Approved Invoice Val (Lac)", "No. of Active Retailers", "KYC Pending" };
+            ? new[] { "Branch", "Dealer Name", "ASR Name", "Employee Status", "Reporting Mgr", "Primary Sales", "Act Sec Sales (Lac)", "Total Invoice Amount (Lac)", "Approved Invoice Val (Lac)", "No. of Active Retailers", "KYC Pending", "Slab Qualified", "Incentive %", "Incentive Amount" }
+            : new[] { "Branch", "ASR Name", "Designation", "Employee Status", "Reporting Mgr", "Primary Sales", "Act Sec Sales (Lac)", "Total Invoice Amount (Lac)", "Approved Invoice Val (Lac)", "No. of Active Retailers", "KYC Pending", "Slab Qualified", "Incentive %", "Incentive Amount" };
         // Everything left of Primary Sales names the row; the figures sit to its right.
         var labelColumns = 5;
-        // Two header rows: the last four columns sit under one "Loyalty Program Performance"
+        // Two header rows: the loyalty-program columns sit under one "Loyalty Program Performance"
         // heading, and every other heading spans both rows.
-        const int loyaltyColumns = 4;
+        const int loyaltyColumns = 7;
         var loyaltyStart = headers.Length - loyaltyColumns + 1;
         for (var column = 1; column < loyaltyStart; column++)
         {
@@ -2515,7 +2550,12 @@ WHERE customertype = 2 AND deleted_at IS NULL AND executive_id IN ({zoneEmpCsv})
                 ToLakh(figures.Sum(x => x.TotalInvoiceAmount)),
                 ToLakh(figures.Sum(x => x.ApprovedInvoiceValue)),
                 figures.Sum(x => x.ActiveRetailers),
-                figures.Sum(x => x.KycPending)
+                figures.Sum(x => x.KycPending),
+                // Slab and rate belong to a single row's own total; a subtotal spans many slabs,
+                // so it leaves them blank and just adds up the incentive its rows earned.
+                isTotal ? "" : figures.First().SlabQualified,
+                isTotal ? "" : figures.First().IncentivePercent,
+                figures.Sum(x => x.IncentiveAmount)
             }).ToList());
         }
 
@@ -2571,6 +2611,9 @@ WHERE customertype = 2 AND deleted_at IS NULL AND executive_id IN ({zoneEmpCsv})
             dataRange.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
             dataRange.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
             sheet.Range(3, labelColumns + 2, outputRow - 1, labelColumns + 4).Style.NumberFormat.Format = "#,##0.00";
+            // Incentive Amount (the last column) is rupees; Slab Qualified and Incentive % next
+            // to it stay as text.
+            sheet.Range(3, headers.Length, outputRow - 1, headers.Length).Style.NumberFormat.Format = "#,##0.00";
         }
         // Widths follow row 2 and the data, not the merged group heading across three columns.
         sheet.SheetView.FreezeRows(2); sheet.Columns().AdjustToContents(2, Math.Max(2, outputRow - 1), 8, 45);
@@ -2600,6 +2643,27 @@ WHERE customertype = 2 AND deleted_at IS NULL AND executive_id IN ({zoneEmpCsv})
     private static bool KycApproved(IReadOnlyDictionary<string, string?> fields) =>
         new[] { "gst_kyc_status", "pan_kyc_status", "aadhar_kyc_status", "bank_kyc_status" }
             .All(key => string.Equals(fields.GetValueOrDefault(key)?.Trim(), "approved", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>The retailer's KYC standing, worded exactly as the customer export's KYC Status
+    /// column: the stage, then how its four documents stand - e.g. "Awaiting Review - 2 Approved,
+    /// 2 Pending" or "Fully Approved - 4 Approved". Blank when the retailer has no KYC record.</summary>
+    private static string KycStatusText(Application.DTOs.Customers.CustomerKycExportStateDto? state)
+    {
+        if (state is null) return string.Empty;
+        var stage = state.Stage switch
+        {
+            "approved" => "Fully Approved",
+            "complete_pending" => "Awaiting Review",
+            "partial" => "Partly Submitted",
+            _ => "Not Started"
+        };
+        var counts = new[] { "Approved", "Rejected", "Pending", "Not Started" }
+            .Select(label => (Label: label, Count: state.DocumentStatus.Values.Count(value => value == label)))
+            .Where(x => x.Count > 0)
+            .Select(x => $"{x.Count} {x.Label}");
+        var joined = string.Join(", ", counts);
+        return joined.Length == 0 ? stage : $"{stage} - {joined}";
+    }
 
     /// <summary>Rupees to lakhs. Written unrounded and shown to two decimals by the cell
     /// format, so a subtotal is the exact sum of its rows rather than of rounded figures.</summary>
@@ -2657,9 +2721,9 @@ public sealed class RfmMovementFilter : RfmFilter
     [FromQuery(Name = "employee_status")] public string? EmployeeStatus { get; set; }
 }
 
-public sealed record LoyaltyReportRow(string Zone, string Branch, string? DealerName, string AsrName, string Designation, string EmployeeStatus, string ReportingManager, decimal SecondarySales, decimal TotalInvoiceAmount, decimal ApprovedInvoiceValue, int ActiveRetailers, int KycPending);
+public sealed record LoyaltyReportRow(string Zone, string Branch, string? DealerName, string AsrName, string Designation, string EmployeeStatus, string ReportingManager, decimal SecondarySales, decimal TotalInvoiceAmount, decimal ApprovedInvoiceValue, int ActiveRetailers, int KycPending, string SlabQualified, string IncentivePercent, decimal IncentiveAmount);
 
-public sealed record RetailerLoyaltyRow(string Zone, string Branch, string AsrName, string RetailerName, string SchemeName, string SlabQualified, string IncentivePercent, decimal IncentiveAmount, decimal TotalInvoiceAmount, decimal ApprovedInvoiceValue);
+public sealed record RetailerLoyaltyRow(string Zone, string Branch, string AsrName, string RetailerName, string KycStatus, string SchemeName, string SlabQualified, string IncentivePercent, decimal SecondarySales, decimal IncentiveAmount, decimal TotalInvoiceAmount, decimal ApprovedInvoiceValue);
 
 public sealed class LoyaltyPerformanceFilter
 {
