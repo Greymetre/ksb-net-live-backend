@@ -51,6 +51,11 @@ public sealed class TeamDashboardController : ControllerBase
         var asrIds = scope.AsrIds;
         var dsrIds = scope.DsrIds;
         var team = scope.Team;
+        // The retailer figures and the year-order total count every visible user's work
+        // (managers and back-office included), the same universe the SFA app's dashboard uses.
+        // Today's and this month's orders stay on the field force, which is what the app shows
+        // there too.
+        var allVisibleIds = scope.VisibleIds;
 
         var now = DateTime.UtcNow.AddHours(5).AddMinutes(30);
         var today = now.Date;
@@ -70,9 +75,13 @@ public sealed class TeamDashboardController : ControllerBase
         // ---------- Orders ----------
         var todayOrders = await Orders(effectiveIds, today, tomorrow, ct);
         var monthOrders = await Orders(effectiveIds, monthStart, monthEnd, ct);
-        var yearOrders = await Orders(effectiveIds, yearStart, yearEnd, ct);
+        var yearOrders = await Orders(allVisibleIds, yearStart, yearEnd, ct);
         var asrMonthOrders = await Orders(asrIds, monthStart, monthEnd, ct);
         var dsrMonthOrders = await Orders(dsrIds, monthStart, monthEnd, ct);
+        // "Orders this month" counts the distinct retailers ordered from this month, not the
+        // number of orders - a retailer ordering several times still counts once. Value and
+        // quantity stay as the field-force totals (unchanged).
+        var monthUniqueBuyers = await UniqueBuyers(effectiveIds, monthStart, monthEnd, ct);
 
         var trendRows = effectiveIds.Length == 0
             ? []
@@ -115,7 +124,7 @@ public sealed class TeamDashboardController : ControllerBase
 
         // ---------- Customers ----------
         var customerBase = _db.Customers.AsNoTracking()
-            .Where(x => x.DeletedAt == null && x.Active == "Y" && x.CreatedBy.HasValue && effectiveIds.Contains(x.CreatedBy.Value));
+            .Where(x => x.DeletedAt == null && x.Active == "Y" && x.CreatedBy.HasValue && allVisibleIds.Contains(x.CreatedBy.Value));
         var approvedBase = customerBase.Where(x => x.CustomFields != null && EF.Functions.Like(x.CustomFields, "%\"status\":\"approved\"%"));
 
         var totalRetailers = await customerBase.CountAsync(x => x.CustomerType == RetailerCustomerType, ct);
@@ -218,6 +227,7 @@ public sealed class TeamDashboardController : ControllerBase
             {
                 today = OrderBlock(todayOrders),
                 month = OrderBlock(monthOrders),
+                month_unique_buyers = monthUniqueBuyers,
                 year = OrderBlock(yearOrders),
                 asr_month = OrderBlock(asrMonthOrders),
                 dsr_month = OrderBlock(dsrMonthOrders),
@@ -231,8 +241,8 @@ public sealed class TeamDashboardController : ControllerBase
                 approved_today = approvedToday,
                 approved_year = approvedYear,
                 with_order_year = buyersFromTeam,
-                unique_buyers_month = await UniqueBuyers(effectiveIds, monthStart, monthEnd, ct),
-                unique_buyers_year = await UniqueBuyers(effectiveIds, yearStart, yearEnd, ct),
+                unique_buyers_month = await UniqueBuyers(allVisibleIds, monthStart, monthEnd, ct),
+                unique_buyers_year = await UniqueBuyers(allVisibleIds, yearStart, yearEnd, ct),
                 pending_kyc = pendingKycRetailers
             },
             activities = new
@@ -665,7 +675,8 @@ public sealed class TeamDashboardController : ControllerBase
             teamIds,
             asrIds,
             dsrIds,
-            team);
+            team,
+            candidates.Select(x => x.Id).ToArray());
     }
 
     private static object UserBlock(DashboardScope scope) => new
@@ -852,6 +863,7 @@ public sealed class TeamDashboardController : ControllerBase
     private sealed record TeamMember(ulong Id, string Name, string? Designation, ulong? DesignationId);
     private sealed record DashboardScope(
         ulong ActorId, string ActorName, string Designation, List<string> Roles, List<string> Branches,
-        string Scope, string ScopeLabel, ulong[] TeamIds, ulong[] AsrIds, ulong[] DsrIds, List<TeamMember> Team);
+        string Scope, string ScopeLabel, ulong[] TeamIds, ulong[] AsrIds, ulong[] DsrIds, List<TeamMember> Team,
+        ulong[] VisibleIds);
     private sealed record TargetRow(ulong UserId, string? Month, decimal? Target, decimal? Achievement, decimal? QuantityTarget, decimal? QuantityAchievement);
 }

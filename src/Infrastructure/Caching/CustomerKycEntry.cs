@@ -83,6 +83,21 @@ public sealed class CustomerKycEntry
             var detailsFilled = definition.Key == "bank"
                 ? details.Where(row => row.Label is "Account Number" or "IFSC Code").All(row => row.Value is not null)
                 : details[0].Value is not null;
+            var detailSummary = details.FirstOrDefault(row => row.Value is not null)?.Value;
+
+            // The GST popup also states whether the customer is GST registered, read from the
+            // gst_treatment toggle the form stores: it is turned ON for a customer who is NOT
+            // registered (stored "Yes"), so a stored "Yes" reads as "No" here and anything else
+            // (off, or never set) reads as "Yes". It is a read-only line - no Field - set from
+            // the toggle, not edited on this screen, and it sits after the GST number so neither
+            // the "details filled" flag nor the summary changes.
+            if (definition.Key == "gst")
+                details.Add(new CustomerKycDetail
+                {
+                    Label = "GST Registered",
+                    Value = string.Equals((Value(fields, "gst_treatment") ?? string.Empty).Trim(), "Yes", StringComparison.OrdinalIgnoreCase) ? "No" : "Yes",
+                    Field = string.Empty
+                });
 
             return new CustomerKycDocument
             {
@@ -91,7 +106,7 @@ public sealed class CustomerKycEntry
                 Uploaded = First(fields, definition.FileFields) is not null,
                 AttachmentPath = First(fields, definition.FileFields),
                 DetailsFilled = detailsFilled,
-                DetailSummary = details.FirstOrDefault(row => row.Value is not null)?.Value,
+                DetailSummary = detailSummary,
                 Details = details,
                 Status = NormalizeStatus(Value(fields, $"{prefix}_status")),
                 Remark = Value(fields, $"{prefix}_remark"),
