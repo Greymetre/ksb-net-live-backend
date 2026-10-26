@@ -126,7 +126,10 @@ public sealed class CustomerKycEntry
         // Partial is about effort, not about a document being usable: a bank proof needs both
         // the account number and the IFSC to count as filled in, but somebody who typed only
         // one of them has still started.
-        var anyInput = documents.Any(x => x.Uploaded || x.Details.Any(detail => detail.Value is not null));
+        // Only real, editable details (those with a Field) count as the customer having started.
+        // Display-only lines such as "GST Registered" always carry a value and must not, or every
+        // customer would look started and none would read "Not Started".
+        var anyInput = documents.Any(x => x.Uploaded || x.Details.Any(detail => !string.IsNullOrEmpty(detail.Field) && detail.Value is not null));
 
         var person = string.Join(" ", new[] { firstName, lastName }.Where(value => !string.IsNullOrWhiteSpace(value))).Trim();
         var ownerName = First(fields, ["owner_name"]) ?? (!string.IsNullOrWhiteSpace(person) ? person : name);
