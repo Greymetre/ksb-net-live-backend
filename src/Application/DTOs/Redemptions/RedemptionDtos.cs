@@ -23,6 +23,10 @@ public sealed class RedemptionDto
     public int Status { get; set; }
     public string StatusLabel { get; set; } = string.Empty;
     public string? Remark { get; set; }
+    public string? PayoutTransactionNo { get; set; }
+    public decimal? PayoutAmount { get; set; }
+    public decimal? TdsPercent { get; set; }
+    public DateTime? PaymentDate { get; set; }
     public ulong? CreatedBy { get; set; }
     public string? CreatedByName { get; set; }
     public DateTime? CreatedAt { get; set; }
@@ -69,6 +73,9 @@ public sealed class RedemptionSummaryDto
     public int Approved { get; set; }
     public int Pending { get; set; }
     public int RejectedOrHold { get; set; }
+    public int Hold { get; set; }
+    public int Success { get; set; }
+    public int Failed { get; set; }
 }
 
 public sealed class RedemptionListResultDto

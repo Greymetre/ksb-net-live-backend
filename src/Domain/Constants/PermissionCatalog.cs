@@ -290,6 +290,15 @@ public static class PermissionCatalog
         new("redemption.create", "Create", "redemption", "Redemption", "loyalty", "Loyalty Management", "create", 2015, [], ["redemption_access"]),
         new("redemption.export", "Export", "redemption", "Redemption", "loyalty", "Loyalty Management", "export", 2020, ["redemption_download"], []),
         new("redemption.import", "Import", "redemption", "Redemption", "loyalty", "Loyalty Management", "import", 2025, [], []),
+        new("redemption.edit", "Edit", "redemption", "Redemption", "loyalty", "Loyalty Management", "edit", 2026, [], []),
+        new("redemption.delete", "Delete", "redemption", "Redemption", "loyalty", "Loyalty Management", "delete", 2027, [], []),
+        new("redemption.approve", "Approve", "redemption", "Redemption", "loyalty", "Loyalty Management", "approve", 2028, [], []),
+        new("redemption.reject", "Reject", "redemption", "Redemption", "loyalty", "Loyalty Management", "reject", 2029, [], []),
+        new("redemption.reopen", "Move back to Pending", "redemption", "Redemption", "loyalty", "Loyalty Management", "reopen", 2031, [], []),
+        new("redemption.hold", "Hold Payout", "redemption", "Redemption", "loyalty", "Loyalty Management", "hold", 2032, [], []),
+        new("redemption.success", "Mark Payout Success", "redemption", "Redemption", "loyalty", "Loyalty Management", "success", 2033, [], []),
+        new("redemption.failed", "Mark Payout Failed", "redemption", "Redemption", "loyalty", "Loyalty Management", "failed", 2034, [], []),
+        new("redemption.update", "Update Redemptions (Import)", "redemption", "Redemption", "loyalty", "Loyalty Management", "update", 2035, [], []),
         // ---------- Beats Management ----------
         // Beats
         new("beat.view", "View Listing", "beat", "Beats", "beats", "Beats Management", "view", 2030, ["beat_access"], []),

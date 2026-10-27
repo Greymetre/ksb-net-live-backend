@@ -2296,10 +2296,11 @@ WHERE customertype = 2 AND deleted_at IS NULL AND executive_id IN ({zoneEmpCsv})
         {
             WriteRow(sheet, row, label.Concat(new object?[]
             {
-                figures.Sum(x => x.SecondarySales),
-                figures.Sum(x => x.IncentiveAmount),
-                figures.Sum(x => x.TotalInvoiceAmount),
-                figures.Sum(x => x.ApprovedInvoiceValue),
+                // Retailer Wise amounts are shown as whole rupees (2345.87 -> 2346, 4324.47 -> 4324).
+                Math.Round(figures.Sum(x => x.SecondarySales), 0, MidpointRounding.AwayFromZero),
+                Math.Round(figures.Sum(x => x.IncentiveAmount), 0, MidpointRounding.AwayFromZero),
+                Math.Round(figures.Sum(x => x.TotalInvoiceAmount), 0, MidpointRounding.AwayFromZero),
+                Math.Round(figures.Sum(x => x.ApprovedInvoiceValue), 0, MidpointRounding.AwayFromZero),
                 kyc
             }).ToList());
         }
@@ -2342,7 +2343,7 @@ WHERE customertype = 2 AND deleted_at IS NULL AND executive_id IN ({zoneEmpCsv})
         {
             usedRange.Style.Font.FontName = "Calibri"; usedRange.Style.Font.FontSize = 9;
             // Only the four figure columns are numbers; KYC Status (the last column) stays text.
-            sheet.Range(2, labelColumns + 1, Math.Max(2, outputRow - 1), labelColumns + 4).Style.NumberFormat.Format = "#,##0.00";
+            sheet.Range(2, labelColumns + 1, Math.Max(2, outputRow - 1), labelColumns + 4).Style.NumberFormat.Format = "#,##0";
         }
         sheet.SheetView.FreezeRows(1); sheet.Columns().AdjustToContents(1, Math.Max(1, outputRow - 1), 8, 45);
         using var stream = new MemoryStream(); workbook.SaveAs(stream);

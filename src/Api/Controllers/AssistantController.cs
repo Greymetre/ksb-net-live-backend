@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using Application.DTOs.Customers;
 using Application.Interfaces.Repositories;
 using Domain.Constants;
 using Domain.Entities;
@@ -50,7 +51,7 @@ public sealed class AssistantController : ControllerBase
     /// <summary>One exportable report/listing: the words that trigger it, the permission that
     /// gates it, the API path that produces the file, and whether it needs the loyalty
     /// zone+scheme wizard first.</summary>
-    private sealed record ExportSpec(string Key, string Label, string[] Keywords, string Permission, string Path, string FileName, bool LoyaltyWizard, bool NeedsDates);
+    private sealed record ExportSpec(string Key, string Label, string[] Keywords, string Permission, string Path, string FileName, bool LoyaltyWizard, bool NeedsDates, string[]? AskFilters = null);
 
     private static readonly ExportSpec[] Exports =
     [
@@ -60,6 +61,34 @@ public sealed class AssistantController : ControllerBase
         new("loyalty_dealer", "Loyalty Performance - Dealer Wise", ["dealer wise", "loyalty dealer", "performance dealer"], "loyalty_performance_report.export_dealer", "reports/loyalty-performance/dealer-export", "Loyalty_Performance_Dealer_Wise.xlsx", true, true),
         new("loyalty_retailer", "Loyalty Performance - Retailer Wise", ["retailer wise", "loyalty retailer", "performance retailer"], "loyalty_performance_report.export_retailer", "reports/loyalty-performance/retailer-export", "Loyalty_Performance_Retailer_Wise.xlsx", true, true),
         new("loyalty_wallet", "Wallet Report", ["wallet"], "loyalty_performance_report.export_wallet", "reports/loyalty-performance/wallet-export", "Loyalty_Wallet_Report.xlsx", true, false),
+
+        // Plain listing exports - the endpoint already returns the correct, reporting-scoped data,
+        // so these download straight away (they need an export verb, e.g. "export users").
+        // Multi-word keys first so "export user targets" / "export attendance summary" don't match
+        // the single-word spec.
+        new("user_targets", "User Targets", ["user target", "target"], "user_target.export", "user-targets/export", "User_Targets.xlsx", false, false, ["financial_year"]),
+        new("attendance_summary", "Attendance Summary", ["attendance summary"], "attendance_summary.export", "attendance-summary/export", "Attendance_Summary.xlsx", false, false),
+        new("city_assignments", "City Assignments", ["city assignment"], "city_assignment.export", "city-assignments/export", "City_Assignments.xlsx", false, false),
+        new("customers", "Customers", ["customer", "retailer list", "dealer list"], "customer.export", "customers/export", "Customers.xlsx", false, false, ["customer_type"]),
+        new("invoices", "Invoices", ["invoice"], "invoice_transaction.export", "new-invoices/export", "Invoices.xlsx", false, false),
+        new("users", "Users", ["user", "employee list", "staff list"], "user.export", "users/export", "Users.xlsx", false, false),
+        new("schemes", "Loyalty Schemes", ["scheme"], "scheme.export", "loyalty-schemes/export", "Loyalty_Schemes.xlsx", false, false),
+        new("attendance", "Attendance", ["attendance"], "attendance.export", "attendances/export", "Attendance.xlsx", false, false),
+        new("holidays", "Holidays", ["holiday"], "holiday.export", "holidays/export", "Holidays.xlsx", false, false),
+        new("leaves", "Leaves", ["leave"], "leave.export", "leaves/export", "Leaves.xlsx", false, false),
+        new("tours", "Tours", ["tour"], "tour.export", "tours/export", "Tours.xlsx", false, false),
+        new("products", "Products", ["product"], "product.export", "products/export", "Products.xlsx", false, false),
+        new("segments", "Segments", ["segment"], "segment.export", "segments/export", "Segments.xlsx", false, false),
+        new("families", "Families", ["family", "families"], "family.export", "families/export", "Families.xlsx", false, false),
+        new("branches", "Branches", ["branch"], "branch.export", "branches/export", "Branches.xlsx", false, false),
+        new("divisions", "Zones", ["zone list", "division"], "zone.export", "divisions/export", "Zones.xlsx", false, false),
+        new("designations", "Designations", ["designation"], "designation.export", "designations/export", "Designations.xlsx", false, false),
+        new("departments", "Departments", ["department"], "department.export", "departments/export", "Departments.xlsx", false, false),
+        new("states", "States", ["state"], "state.export", "states/export", "States.xlsx", false, false),
+        new("cities", "Cities", ["city", "cities"], "city.export", "cities/export", "Cities.xlsx", false, false),
+        new("districts", "Districts", ["district"], "district.export", "districts/export", "Districts.xlsx", false, false),
+        new("pincodes", "Pincodes", ["pincode", "pin code"], "pincode.export", "pincodes/export", "Pincodes.xlsx", false, false),
+        new("countries", "Countries", ["country", "countries"], "country.export", "countries/export", "Countries.xlsx", false, false),
     ];
 
     // Index matches the order of every Phrases[] array below.
@@ -231,6 +260,69 @@ public sealed class AssistantController : ControllerBase
             "தற்போது உங்கள் பார்வையில் {0} சில்லறை விற்பனையாளர்கள் அங்கீகரிக்கப்பட்டுள்ளனர்.",
             "ಸದ್ಯ ನಿಮ್ಮ ವೀಕ್ಷಣೆಯಲ್ಲಿ {0} ರಿಟೇಲರ್‌ಗಳು ಅನುಮೋದಿತವಾಗಿವೆ.",
         ],
+        ["attendance_present"] =
+        [
+            "In {0}, {1} team member(s) marked attendance (punched in) in your view.",
+            "{0} में आपकी view में {1} टीम मेंबर ने अटेंडेंस लगाई (पंच-इन किया)।",
+            "{0} mein aapki view mein {1} team member ne attendance lagayi (punch-in kiya).",
+            "In {0}, {1} team member(s) marked attendance (punched in) in your view.",
+            "In {0}, {1} team member(s) marked attendance (punched in) in your view.",
+            "In {0}, {1} team member(s) marked attendance (punched in) in your view.",
+        ],
+        ["expenses_total"] =
+        [
+            "In {0}, {1} expense claim(s) in your view — ₹{2} claimed, ₹{3} approved.",
+            "{0} में आपकी view में {1} एक्सपेंस क्लेम — ₹{2} क्लेम, ₹{3} अप्रूव्ड।",
+            "{0} mein aapki view mein {1} expense claim — ₹{2} claim, ₹{3} approved.",
+            "In {0}, {1} expense claim(s) in your view — ₹{2} claimed, ₹{3} approved.",
+            "In {0}, {1} expense claim(s) in your view — ₹{2} claimed, ₹{3} approved.",
+            "In {0}, {1} expense claim(s) in your view — ₹{2} claimed, ₹{3} approved.",
+        ],
+        ["promotional_total"] =
+        [
+            "In {0}, {1} promotional activit(y/ies) in your view.",
+            "{0} में आपकी view में {1} प्रमोशनल एक्टिविटी हुईं।",
+            "{0} mein aapki view mein {1} promotional activity hui.",
+            "In {0}, {1} promotional activit(y/ies) in your view.",
+            "In {0}, {1} promotional activit(y/ies) in your view.",
+            "In {0}, {1} promotional activit(y/ies) in your view.",
+        ],
+        ["products_total"] =
+        [
+            "There are {0} active product(s) in the catalog.",
+            "कैटलॉग में {0} एक्टिव प्रोडक्ट हैं।",
+            "Catalog mein {0} active product hain.",
+            "There are {0} active product(s) in the catalog.",
+            "There are {0} active product(s) in the catalog.",
+            "There are {0} active product(s) in the catalog.",
+        ],
+        ["beats_total"] =
+        [
+            "There are {0} active beat(s) set up.",
+            "{0} एक्टिव बीट सेटअप हैं।",
+            "{0} active beat setup hain.",
+            "There are {0} active beat(s) set up.",
+            "There are {0} active beat(s) set up.",
+            "There are {0} active beat(s) set up.",
+        ],
+        ["users_total"] =
+        [
+            "You've got {0} user(s) in your view.",
+            "आपकी view में {0} यूज़र हैं।",
+            "Aapki view mein {0} user hain.",
+            "You've got {0} user(s) in your view.",
+            "You've got {0} user(s) in your view.",
+            "You've got {0} user(s) in your view.",
+        ],
+        ["feedback_total"] =
+        [
+            "In {0}, {1} dealer feedback entr(y/ies) in your view — average rating {2}/5.",
+            "{0} में आपकी view में {1} डीलर फीडबैक — औसत रेटिंग {2}/5।",
+            "{0} mein aapki view mein {1} dealer feedback — average rating {2}/5.",
+            "In {0}, {1} dealer feedback entr(y/ies) in your view — average rating {2}/5.",
+            "In {0}, {1} dealer feedback entr(y/ies) in your view — average rating {2}/5.",
+            "In {0}, {1} dealer feedback entr(y/ies) in your view — average rating {2}/5.",
+        ],
         ["denied"] =
         [
             "Hmm, it looks like you don't have access to {0} right now.",
@@ -399,6 +491,8 @@ public sealed class AssistantController : ControllerBase
         // --- A conversation already inside the loyalty export wizard ---------------------
         if (ctx.TryGetValue("flow", out var flow) && flow == "loyalty_export")
             return Ok(await ContinueLoyaltyWizardAsync(message, text, ctx, Can, cancellationToken));
+        if (flow == "export_wizard")
+            return Ok(ContinueExportWizard(text, ctx, Can));
 
         // --- Greeting / help / "what can you do" -----------------------------------------
         if (text.Length == 0
@@ -423,9 +517,13 @@ public sealed class AssistantController : ControllerBase
                 return Ok(new ChatReply(Pf("export_denied", export.Label), Help(Can).Chips, null, null));
             if (export.LoyaltyWizard)
                 return Ok(await StartLoyaltyWizardAsync(export, cancellationToken));
+            // Needs a filter (e.g. customers -> customer type, user targets -> financial year):
+            // ask for it in chat, then export.
+            if ((export.AskFilters ?? []).Length > 0)
+                return Ok(StartExportWizard(export));
             // A plain listing export: the endpoint already scopes to what this user may see.
             return Ok(new ChatReply(Pf("export_preparing", export.Label), [],
-                new ChatAction("download", "GET", export.Path, new Dictionary<string, string>(), export.FileName, ""), null));
+                new ChatAction("download", "GET", export.Path, new Dictionary<string, string>(), export.FileName, "/" + export.Path.Replace("/export", "")), null));
         }
 
         // --- "which reports / what can I export" -----------------------------------------
@@ -465,6 +563,9 @@ public sealed class AssistantController : ControllerBase
         }
         if (can("invoice_transaction.view")) chips.Add(new Chip("This month's invoices", "this month invoices"));
         if (can("redemption.view")) chips.Add(new Chip("Redemptions this month", "redemptions this month"));
+        if (can("attendance.view")) chips.Add(new Chip("Today's attendance", "today attendance"));
+        if (can("expense.view")) chips.Add(new Chip("Expenses this month", "expenses this month"));
+        if (can("promotional_activity.view")) chips.Add(new Chip("Promotional activities", "promotional activities this month"));
         if (can("customer.view") || can("customer_kyc.view")) { chips.Add(new Chip("Pending approvals", "pending approval")); chips.Add(new Chip("Approved retailers", "approved retailers")); }
         chips.Add(new Chip("What can I export?", "reports"));
         return new ChatReply(P("help"), chips, null, null);
@@ -551,6 +652,90 @@ public sealed class AssistantController : ControllerBase
             var cnt = await baseQ.CountAsync(ct);
             var val = cnt == 0 ? 0m : await baseQ.SumAsync(i => i.Amount, ct);
             return Text(Pf("invoices_total", period, cnt, val.ToString("#,##0")));
+        }
+
+        // --- Attendance / present count (period × how many punched in) ---------------------
+        if (!hasExportVerb && Matches(text, "attendance", "present", "punch in", "punch-in", "punchin", "haazir", "hajri", "haajri", "hajiri", "upasthit",
+                "अटेंडेंस", "हाज़िर", "हाजिर", "हाज़िरी", "उपस्थित"))
+        {
+            if (!can("attendance.view")) return Denied("attendance");
+            var (rs, re, period) = ResolvePeriod(text, todayStart);
+            var visible = await VisibleUserIdsAsync(ct);
+            var present = await _db.Attendances.AsNoTracking()
+                .Where(a => a.DeletedAt == null && a.Active == "Y" && a.UserId.HasValue
+                    && a.PunchinDate >= rs && a.PunchinDate < re && visible.Contains(a.UserId.Value))
+                .Select(a => a.UserId).Distinct().CountAsync(ct);
+            return Text(Pf("attendance_present", period, present));
+        }
+
+        // --- Expenses (period × count + claimed/approved amount) ---------------------------
+        if (!hasExportVerb && Matches(text, "expense", "expenses", "kharch", "kharcha", "kharche", "vyay", "एक्सपेंस", "खर्च", "व्यय"))
+        {
+            if (!can("expense.view")) return Denied("expenses");
+            var (rs, re, period) = ResolvePeriod(text, todayStart);
+            var visible = await VisibleUserIdsAsync(ct);
+            // NOTE: deleted_at is not mapped on Expense, so don't filter on it here.
+            var rows = await _db.Expenses.AsNoTracking()
+                .Where(e => e.CreatedAt >= rs && e.CreatedAt < re
+                    && e.UserId.HasValue && visible.Contains(e.UserId.Value))
+                .Select(e => new { e.ClaimAmount, e.ApproveAmount }).ToListAsync(ct);
+            var claimed = rows.Sum(x => x.ClaimAmount ?? 0m);
+            var approved = rows.Sum(x => x.ApproveAmount ?? 0m);
+            return Text(Pf("expenses_total", period, rows.Count, claimed.ToString("#,##0"), approved.ToString("#,##0")));
+        }
+
+        // --- Promotional activities (period × count) ---------------------------------------
+        if (!hasExportVerb && Matches(text, "promotional", "promotion", "promo activity", "promo activities", "activities", "activity", "प्रमोशन", "प्रमोशनल", "एक्टिविटी"))
+        {
+            if (!can("promotional_activity.view")) return Denied("promotional activities");
+            var (rs, re, period) = ResolvePeriod(text, todayStart);
+            var visible = await VisibleUserIdsAsync(ct);
+            // UserId/CreatedById are long on this entity, so scope in memory against the visible set.
+            var uids = await _db.PromotionalActivities.AsNoTracking()
+                .Where(p => p.DeletedAt == null && p.ActivityDate >= rs && p.ActivityDate < re)
+                .Select(p => p.UserId).ToListAsync(ct);
+            var count = uids.Count(uid => visible.Contains((ulong)uid));
+            return Text(Pf("promotional_total", period, count));
+        }
+
+        // --- Dealer feedback (period × count + average rating) -----------------------------
+        if (!hasExportVerb && Matches(text, "feedback", "dealer feedback", "फीडबैक", "feedbacks"))
+        {
+            if (!can("dealer_feedback.view")) return Denied("dealer feedback");
+            var (rs, re, period) = ResolvePeriod(text, todayStart);
+            var visible = await VisibleUserIdsAsync(ct);
+            var ratings = await _db.DealerFeedbacks.AsNoTracking()
+                .Where(f => f.DeletedAt == null && f.CreatedAt >= rs && f.CreatedAt < re
+                    && f.CreatedByUserId.HasValue && visible.Contains(f.CreatedByUserId.Value))
+                .Select(f => f.Rating).ToListAsync(ct);
+            var avg = ratings.Count == 0 ? 0 : Math.Round(ratings.Average(), 1);
+            return Text(Pf("feedback_total", period, ratings.Count, avg.ToString("0.#")));
+        }
+
+        // --- Products (active count - master data, no period) ------------------------------
+        if (!hasExportVerb && Matches(text, "product", "products", "sku", "item", "items", "प्रोडक्ट", "आइटम"))
+        {
+            if (!can("product.view")) return Denied("products");
+            var count = await _db.Products.AsNoTracking().CountAsync(p => p.DeletedAt == null && p.Active == "Y", ct);
+            return Text(Pf("products_total", count));
+        }
+
+        // --- Beats (active count - master data, no period) ---------------------------------
+        if (!hasExportVerb && Matches(text, "beat", "beats", "route", "routes", "बीट", "रूट"))
+        {
+            if (!can("beat.view")) return Denied("beats");
+            // NOTE: deleted_at is not mapped on Beat; the Active flag is the live filter.
+            var count = await _db.Beats.AsNoTracking().CountAsync(b => b.Active == "Y", ct);
+            return Text(Pf("beats_total", count));
+        }
+
+        // --- Users / team size (count within the user's view) ------------------------------
+        if (!hasExportVerb && !Matches(text, "target") && Matches(text, "user", "users", "team size", "staff count", "कितने यूज़र", "यूज़र", "टीम"))
+        {
+            if (!can("user.view")) return Denied("users");
+            var visible = await VisibleUserIdsAsync(ct);
+            var count = await _db.Users.AsNoTracking().CountAsync(u => visible.Contains(u.Id) && u.Active == "Y" && !u.IsDeleted, ct);
+            return Text(Pf("users_total", count));
         }
 
         // Orders analytics - the ranking dimension, the metric and the PERIOD are all read from
@@ -713,14 +898,19 @@ public sealed class AssistantController : ControllerBase
     /// <summary>Counts customers of a type whose approval status matches, using the SAME
     /// custom_fields "status" match the Customer Master listing uses - so the bot's numbers
     /// equal that screen's - then narrowed to the customers this user may see.</summary>
-    private async Task<int> CountVisibleCustomersByStatusAsync(ulong customerType, string status, CancellationToken ct)
+    private async Task<long> CountVisibleCustomersByStatusAsync(ulong customerType, string status, CancellationToken ct)
     {
-        var like = $"%\"status\":\"{status.ToUpperInvariant()}\"%";
-        var ids = await _db.Customers.AsNoTracking()
-            .Where(x => x.CustomerType == customerType && x.DeletedAt == null && x.CustomFields != null && EF.Functions.Like(x.CustomFields, like))
-            .Select(x => x.Id).ToListAsync(ct);
-        var visible = await _customers.FilterVisibleCustomerIdsAsync(CurrentUserId(), ids, ct);
-        return visible.Count;
+        // Run the Customer Master listing's OWN query (same filter, same reporting scope), and
+        // read its total - so the bot's number is exactly what that screen shows for this status.
+        var result = await _customers.GetCustomersAsync(new CustomerListFilterDto
+        {
+            ActorUserId = CurrentUserId(),
+            CustomerType = customerType,
+            Status = status,
+            Page = 1,
+            PageSize = 1
+        }, ct);
+        return result.Total;
     }
 
     // ----------------------------------------------------------- Loyalty export wizard ---
@@ -761,7 +951,7 @@ public sealed class AssistantController : ControllerBase
             var pars = new Dictionary<string, string> { ["scheme_id"] = picked.Id.ToString(), ["zone_id"] = ctx["zones"] };
             if (export.NeedsDates) { pars["start_date"] = picked.StartDate.ToString("yyyy-MM-dd"); pars["end_date"] = picked.EndDate.ToString("yyyy-MM-dd"); }
             return new ChatReply(Pf("wizard_preparing", export.Label, picked.SchemeName), [],
-                new ChatAction("download", "GET", export.Path, pars, export.FileName, ""), null);
+                new ChatAction("download", "GET", export.Path, pars, export.FileName, export.Key == "loyalty_wallet" ? "/reports/wallet-report" : "/reports/loyalty-performance"), null);
         }
 
         return new ChatReply("Done.", Help(can).Chips, null, null);
@@ -777,6 +967,69 @@ public sealed class AssistantController : ControllerBase
         (await _db.LoyaltySchemes.AsNoTracking().Where(x => x.Status == "Published" && x.DeletedAt == null)
             .OrderByDescending(x => x.StartDate).Select(x => new { x.Id, x.SchemeName, x.SchemeCode }).Take(25).ToListAsync(ct))
         .Select(x => new Chip(string.IsNullOrWhiteSpace(x.SchemeCode) ? x.SchemeName : $"{x.SchemeName} ({x.SchemeCode})", x.Id.ToString())).ToList();
+
+    // -------------------------------------------------------- Generic export filter wizard ---
+    // For exports that need a filter the CRM also makes mandatory (customers -> customer type,
+    // user targets -> financial year): ask it in chat with chips, then download. Only a genuine
+    // runtime error falls back to opening the export's page (handled on the client via `route`).
+    private ChatReply StartExportWizard(ExportSpec export)
+    {
+        var ctx = new Dictionary<string, string> { ["flow"] = "export_wizard", ["export"] = export.Key };
+        return AskNextExportFilter(export, ctx);
+    }
+
+    private ChatReply ContinueExportWizard(string text, Dictionary<string, string> ctx, Func<string, bool> can)
+    {
+        var export = Exports.FirstOrDefault(e => e.Key == ctx.GetValueOrDefault("export"));
+        if (export is null || !can(export.Permission)) return new ChatReply(P("wizard_unavailable"), Help(can).Chips, null, null);
+        if (ctx.TryGetValue("await", out var kind))
+        {
+            var val = ParseExportFilter(kind, text);
+            if (val is null) { var (q, chips) = ExportFilterQuestion(kind); return new ChatReply(q, chips, null, ctx); }
+            ctx[ExportFilterParam(kind)] = val;
+            ctx.Remove("await");
+        }
+        return AskNextExportFilter(export, ctx);
+    }
+
+    private ChatReply AskNextExportFilter(ExportSpec export, Dictionary<string, string> ctx)
+    {
+        var next = (export.AskFilters ?? []).FirstOrDefault(f => !ctx.ContainsKey(ExportFilterParam(f)));
+        if (next is null)
+        {
+            var pars = (export.AskFilters ?? []).ToDictionary(ExportFilterParam, f => ctx[ExportFilterParam(f)]);
+            return new ChatReply(Pf("export_preparing", export.Label), [],
+                new ChatAction("download", "GET", export.Path, pars, export.FileName, "/" + export.Path.Replace("/export", "")), null);
+        }
+        ctx["await"] = next;
+        var (question, chips) = ExportFilterQuestion(next);
+        return new ChatReply($"{export.Label} — {question}", chips, null, ctx);
+    }
+
+    private static (string Question, List<Chip> Chips) ExportFilterQuestion(string kind) => kind switch
+    {
+        "customer_type" => ("which customer type?", [new Chip("Retailer", "retailer"), new Chip("Dealer", "dealer")]),
+        "financial_year" => ("which financial year?", FinancialYearChips()),
+        _ => ("please provide the filter.", [])
+    };
+
+    private static string? ParseExportFilter(string kind, string text) => kind switch
+    {
+        "customer_type" => text.Contains("dealer") || text.Contains("distributor") ? "1" : text.Contains("retailer") || text.Contains("customer") ? "2" : null,
+        "financial_year" => System.Text.RegularExpressions.Regex.Match(text, @"\d{4}\s*-\s*\d{4}") is { Success: true } m ? m.Value.Replace(" ", "") : null,
+        _ => null
+    };
+
+    private static string ExportFilterParam(string kind) => kind; // param name == filter kind here
+
+    private static List<Chip> FinancialYearChips()
+    {
+        var now = DateTime.UtcNow.AddHours(5).AddMinutes(30);
+        var start = now.Month >= 4 ? now.Year : now.Year - 1; // India FY starts April
+        var chips = new List<Chip>();
+        for (var i = 0; i < 3; i++) { var fy = $"{start - i}-{start - i + 1}"; chips.Add(new Chip(fy, fy)); }
+        return chips;
+    }
 
     // ---------------------------------------------------------------------- Helpers ------
     private static ChatReply Text(string message) => new(message, [], null, null);

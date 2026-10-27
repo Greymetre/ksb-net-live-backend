@@ -32,7 +32,7 @@ public sealed class NewInvoiceService : INewInvoiceService
             DistributorCustomerId = filter.DistributorCustomerId, SecondaryCustomerIds = filter.SecondaryCustomerIds,
             SchemeId = filter.SchemeId, RetailerSearch = filter.RetailerSearch, InvoiceNumber = filter.InvoiceNumber,
             ApprovalStatus = filter.ApprovalStatus, ApprovalStatuses = filter.ApprovalStatuses,
-            BranchId = filter.BranchId, DivisionIds = filter.DivisionIds,
+            BranchId = filter.BranchId, DivisionIds = filter.DivisionIds, AssignedUserId = filter.AssignedUserId,
             FromDate = filter.FromDate, ToDate = filter.ToDate, Search = filter.Search, Unpaged = true
         };
         var summaryInvoices = (await _repository.GetInvoicesAsync(summaryFilter, actorUserId, cancellationToken)).Items;
@@ -45,7 +45,7 @@ public sealed class NewInvoiceService : INewInvoiceService
         {
             DistributorCustomerId = filter.DistributorCustomerId, SecondaryCustomerIds = filter.SecondaryCustomerIds,
             SchemeId = filter.SchemeId, RetailerSearch = filter.RetailerSearch, InvoiceNumber = filter.InvoiceNumber,
-            BranchId = filter.BranchId, DivisionIds = filter.DivisionIds,
+            BranchId = filter.BranchId, DivisionIds = filter.DivisionIds, AssignedUserId = filter.AssignedUserId,
             FromDate = filter.FromDate, ToDate = filter.ToDate, Search = filter.Search, Unpaged = true
         };
         var stageCounts = await _repository.GetInvoiceSummaryAsync(stageFilter, actorUserId, cancellationToken);

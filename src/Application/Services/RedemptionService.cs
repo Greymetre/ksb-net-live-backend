@@ -1,3 +1,4 @@
+using System.Globalization;
 using Application.Common;
 using Application.DTOs.Customers;
 using Application.DTOs.MasterData;
@@ -29,15 +30,31 @@ public sealed class RedemptionService : IRedemptionService
     public async Task<LaravelApiResponse> GetRedemptionsAsync(RedemptionFilterDto filter, CancellationToken cancellationToken)
     {
         var redemptions = await _repository.GetRedemptionsAsync(filter, cancellationToken);
+
+        // The status cards count the whole view regardless of the clicked status, so they stay
+        // meaningful while a status filter is applied. Only re-fetch (status-agnostic) when a status
+        // filter is actually set; otherwise the already-loaded list is the full set.
+        var summarySet = redemptions;
+        if (filter.Status.HasValue)
+        {
+            var clickedStatus = filter.Status;
+            filter.Status = null;
+            summarySet = await _repository.GetRedemptionsAsync(filter, cancellationToken);
+            filter.Status = clickedStatus;
+        }
+
         return LaravelApiResponse.Success("redemptions", new RedemptionListResultDto
         {
             Redemptions = redemptions,
             Summary = new RedemptionSummaryDto
             {
-                TotalRequests = redemptions.Count,
-                Approved = redemptions.Count(x => x.Status == LoyaltyRedemption.StatusApproved),
-                Pending = redemptions.Count(x => x.Status == LoyaltyRedemption.StatusPending),
-                RejectedOrHold = redemptions.Count(x => x.Status is LoyaltyRedemption.StatusRejected or LoyaltyRedemption.StatusHold)
+                TotalRequests = summarySet.Count,
+                Approved = summarySet.Count(x => x.Status == LoyaltyRedemption.StatusApproved),
+                Pending = summarySet.Count(x => x.Status == LoyaltyRedemption.StatusPending),
+                RejectedOrHold = summarySet.Count(x => x.Status == LoyaltyRedemption.StatusRejected),
+                Hold = summarySet.Count(x => x.Status == LoyaltyRedemption.StatusHold),
+                Success = summarySet.Count(x => x.Status == LoyaltyRedemption.StatusSuccess),
+                Failed = summarySet.Count(x => x.Status == LoyaltyRedemption.StatusFailed)
             }
         });
     }
@@ -48,34 +65,47 @@ public sealed class RedemptionService : IRedemptionService
         return CreateWorkbook("Redemption Report.xlsx",
             ["Zone", "Branch", "Dealer Code", "Dealer Name", "Customer Code", "Customer Shop Name", "Type", "City", "Mobile",
              "GST No", "Aadhaar Number", "Pan Number", "Bank Account Type", "Bank Account Number", "IFSC Code", "Account Holder Name",
-             "Bank Name", "Mode", "Redeem Point", "Status", "Transaction Id", "Scheme Type", "Redeem Date", "Transaction Date", "Created By"],
-            redemptions.Select(x => new object?[]
+             "Bank Name", "Mode", "Redeem Point", "TDS %", "TDS Dedcut Amt", "Final Pay Amount", "Status", "UTR No", "Transaction Id",
+             "Scheme Type", "Transaction Date", "Payment Date", "Created By"],
+            redemptions.Select(x =>
             {
-                x.Zone,
-                x.Branch,
-                x.DealerCode,
-                x.DistributorName,
-                x.CustomerCode,
-                x.ShopName,
-                x.CustomerTypeName,
-                x.CityName,
-                x.MobileNumber,
-                x.GstNo,
-                x.AadhaarNumber,
-                x.PanNumber,
-                x.BankAccountType,
-                x.AccountNumber,
-                x.IfscCode,
-                x.AccountHolder,
-                x.BankName,
-                x.RedeemMode,
-                x.Points,
-                x.StatusLabel,
-                x.TransactionNo,
-                x.WalletType,
-                x.CreatedAt,
-                x.ApprovedAt ?? x.CreatedAt,
-                x.CreatedByName
+                // TDS % is stored on the redemption (default 0); the deduction and final pay are
+                // always computed from it, so they stay correct after an Update-Redemptions import.
+                var tdsPercent = x.TdsPercent ?? 0m;
+                var tdsAmount = Math.Round(x.Points * tdsPercent / 100m, 2, MidpointRounding.AwayFromZero);
+                var finalPay = x.Points - tdsAmount;
+                return new object?[]
+                {
+                    x.Zone,
+                    x.Branch,
+                    x.DealerCode,
+                    x.DistributorName,
+                    x.CustomerCode,
+                    x.ShopName,
+                    x.CustomerTypeName,
+                    x.CityName,
+                    x.MobileNumber,
+                    x.GstNo,
+                    x.AadhaarNumber,
+                    x.PanNumber,
+                    x.BankAccountType,
+                    x.AccountNumber,
+                    x.IfscCode,
+                    x.AccountHolder,
+                    x.BankName,
+                    x.RedeemMode,
+                    x.Points,
+                    tdsPercent,
+                    tdsAmount,
+                    finalPay,
+                    x.StatusLabel,
+                    x.PayoutTransactionNo,       // UTR No - blank until a successful payout
+                    x.TransactionNo,             // Transaction Id - the redeem request number
+                    x.WalletType,                // Scheme Type
+                    x.CreatedAt,                 // Transaction Date - the redeem date
+                    x.PaymentDate,               // Payment Date - set via the Update import (date only)
+                    x.CreatedByName
+                };
             }));
     }
 
@@ -86,6 +116,10 @@ public sealed class RedemptionService : IRedemptionService
         // the customers actually shown, not the whole table.
         var customers = (await _customerRepository.GetCustomersAsync(new CustomerListFilterDto
         {
+            // Scope the dropdown to the signed-in user's reporting view (admin = all, branch roles
+            // = customers in assigned branches, everyone else = reporting downline). Without
+            // ActorUserId the dropdown would list every customer to everybody.
+            ActorUserId = actorUserId,
             Active = "Y",
             Search = search,
             Unpaged = true
@@ -175,6 +209,73 @@ public sealed class RedemptionService : IRedemptionService
         }, "Redemption request submitted successfully");
     }
 
+    /// <summary>Edits a pending redemption. Reuses the exact create validation (customer, scheme
+    /// toggle, KYC, bank, minimum + available points) - only the form comes in pre-filled. Everyone
+    /// except superadmin may edit a redemption only while it is still Pending.</summary>
+    public async Task<LaravelApiResponse> UpdateRedemptionAsync(ulong id, RedemptionCreateRequestDto request, ulong? actorUserId, bool actorIsSuperAdmin, CancellationToken cancellationToken)
+    {
+        if (!actorUserId.HasValue) throw Http(LaravelStatusCodes.Unauthorized, "Unauthenticated.");
+
+        var existing = await _repository.GetByIdAsync(id, cancellationToken) ?? throw Http(LaravelStatusCodes.NotFound, "Redemption not found.");
+        if (!actorIsSuperAdmin && existing.Status != LoyaltyRedemption.StatusPending)
+            throw Http(LaravelStatusCodes.NoContentLikeValidation, "Only pending redemptions can be edited.");
+
+        if (request.CustomerId == 0) throw Http(LaravelStatusCodes.NoContentLikeValidation, "Customer is required.");
+        if (!request.LoyaltySchemeId.HasValue) throw Http(LaravelStatusCodes.NoContentLikeValidation, "Loyalty scheme is required.");
+        if (!request.BankConfirmed) throw Http(LaravelStatusCodes.NoContentLikeValidation, "Bank details confirmation is required.");
+        if (request.Points < MinimumRedemptionPoints) throw Http(LaravelStatusCodes.NoContentLikeValidation, $"Minimum redemption is {MinimumRedemptionPoints:0} points.");
+
+        var walletType = NormalizeWalletType(request.WalletType);
+        var redeemMode = NormalizeRedeemMode(request.RedeemMode);
+        var customer = await _customerRepository.GetCustomerAsync(request.CustomerId, null, cancellationToken) ?? throw Http(LaravelStatusCodes.NotFound, "Customer not found.");
+
+        var schemeFlags = await _repository.GetSchemeFlagsAsync(new[] { request.LoyaltySchemeId!.Value }, cancellationToken);
+        if (schemeFlags.TryGetValue(request.LoyaltySchemeId.Value, out var requestedScheme) && !requestedScheme.RedemptionCrmEnabled)
+            throw Http(LaravelStatusCodes.NoContentLikeValidation, $"Redemption is turned off for the scheme \"{requestedScheme.Name}\".");
+
+        var invoices = (await _newInvoiceRepository.GetInvoicesAsync(new NewInvoiceFilterDto { Unpaged = true, SecondaryCustomerIds = new[] { customer.Id } }, actorUserId, cancellationToken)).Items;
+        var option = await BuildCustomerOptionAsync(customer, invoices.Where(x => x.SecondaryCustomerId == customer.Id).ToList(), cancellationToken, isAppChannel: false);
+
+        if (!option.KycApproved) throw Http(LaravelStatusCodes.NoContentLikeValidation, option.KycMessage);
+        if (string.IsNullOrWhiteSpace(option.AccountHolder) || string.IsNullOrWhiteSpace(option.AccountNumber) || string.IsNullOrWhiteSpace(option.BankName) || string.IsNullOrWhiteSpace(option.IfscCode))
+            throw Http(LaravelStatusCodes.NoContentLikeValidation, "Bank details are required before redemption.");
+
+        var scheme = (walletType == "Booster" ? option.BoosterSchemes : option.RegularSchemes)
+            .FirstOrDefault(x => x.SchemeId == request.LoyaltySchemeId);
+        if (scheme is null) throw Http(LaravelStatusCodes.NoContentLikeValidation, "Selected scheme is not available in this wallet.");
+
+        // The available points already have THIS redemption subtracted (it is non-rejected). When
+        // the edit stays on the same scheme + wallet, add its current points back so the max is
+        // what the user actually has to work with; moving to another scheme uses that scheme's own available.
+        var allowance = scheme.AvailablePoints;
+        if (existing.LoyaltySchemeId == request.LoyaltySchemeId && string.Equals(existing.WalletType, walletType, StringComparison.OrdinalIgnoreCase))
+            allowance += existing.Points;
+        if (request.Points > allowance)
+            throw Http(LaravelStatusCodes.NoContentLikeValidation, $"Redeem points ({request.Points:0}) cannot be more than the available {allowance:0} points for {scheme.SchemeName} ({walletType}).");
+
+        existing.CustomerId = customer.Id;
+        existing.LoyaltySchemeId = scheme.SchemeId;
+        existing.WalletType = walletType;
+        existing.SchemeName = scheme.SchemeName;
+        existing.RedeemMode = redeemMode;
+        existing.Points = request.Points;
+        existing.AccountHolder = option.AccountHolder;
+        existing.AccountNumber = option.AccountNumber;
+        existing.BankName = option.BankName;
+        existing.IfscCode = option.IfscCode;
+        existing.BankConfirmed = true;
+        existing.UpdatedAt = DateTime.UtcNow;
+
+        await _repository.UpdateAsync(existing, cancellationToken);
+        return LaravelApiResponse.Success("data", new
+        {
+            redemption_id = existing.Id,
+            request_id = existing.TransactionNo,
+            transaction_no_display = existing.TransactionNo,
+            message = "Redemption updated successfully"
+        }, "Redemption updated successfully");
+    }
+
     public MasterDataFileDto GetImportTemplate() =>
         CreateWorkbook("Redemption Import Template.xlsx",
             ["Customer ID", "Scheme Code", "Redeem Points", "Redeem Mode"],
@@ -238,6 +339,204 @@ public sealed class RedemptionService : IRedemptionService
         }
 
         return result;
+    }
+
+    /// <summary>Bulk-updates existing redemptions from the EXPORTED file (xlsx or csv), matched by
+    /// Transaction Id. Only TDS %, Status, UTR No and Payment Date are read; TDS Deduct Amt and
+    /// Final Pay Amount are recomputed, not imported. Every row reports its own validation message.</summary>
+    public async Task<RedemptionImportResultDto> UpdateRedemptionsImportAsync(Stream fileStream, string fileName, ulong? actorUserId, CancellationToken cancellationToken)
+    {
+        var result = new RedemptionImportResultDto();
+        var isCsv = (fileName ?? string.Empty).EndsWith(".csv", StringComparison.OrdinalIgnoreCase);
+        var rows = isCsv ? ReadCsvRows(fileStream) : ReadXlsxRows(fileStream);
+        if (rows.Count == 0) return result;
+
+        if (!rows[0].ContainsKey("transaction id"))
+            throw Http(LaravelStatusCodes.NoContentLikeValidation, "The file must have a \"Transaction Id\" column (use the exported redemption file).");
+
+        var txnIds = rows.Select(r => Val(r, "transaction id")).Where(x => x.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var byTxn = await _repository.GetByTransactionNosAsync(txnIds, cancellationToken);
+
+        var changed = false;
+        var rowNumber = 1; // header is row 1
+        foreach (var row in rows)
+        {
+            rowNumber++;
+            result.Total++;
+            var txnId = Val(row, "transaction id");
+            var rowResult = new RedemptionImportRowResultDto { Row = rowNumber };
+            try
+            {
+                if (txnId.Length == 0) throw Http(LaravelStatusCodes.NoContentLikeValidation, "Transaction Id is required.");
+                if (!byTxn.TryGetValue(txnId, out var redemption)) throw Http(LaravelStatusCodes.NoContentLikeValidation, $"Transaction Id '{txnId}' was not found.");
+                rowResult.CustomerId = redemption.CustomerId;
+
+                // TDS % (default 0). Blank keeps whatever is there (0 if never set).
+                var tdsText = Val(row, "tds %");
+                if (tdsText.Length > 0)
+                {
+                    if (!decimal.TryParse(tdsText, NumberStyles.Any, CultureInfo.InvariantCulture, out var tds)) throw Http(LaravelStatusCodes.NoContentLikeValidation, "TDS % must be a number.");
+                    if (tds is < 0m or > 100m) throw Http(LaravelStatusCodes.NoContentLikeValidation, "TDS % must be between 0 and 100.");
+                    redemption.TdsPercent = tds;
+                }
+                redemption.TdsPercent ??= 0m;
+
+                // Status - any status may be set directly (no workflow). Blank keeps the current one.
+                var statusText = Val(row, "status");
+                if (statusText.Length > 0)
+                {
+                    var status = ParseStatusText(statusText);
+                    if (status is null) throw Http(LaravelStatusCodes.NoContentLikeValidation, $"Invalid Status '{statusText}'. Use Pending, Approved, Rejected, Hold, Success or Failed.");
+                    redemption.Status = status.Value;
+                }
+
+                // UTR No - set when provided; blank leaves the existing value.
+                var utr = Val(row, "utr no");
+                if (utr.Length > 0) redemption.PayoutTransactionNo = utr;
+
+                // Payment Date - any Excel/CSV date format, DATE only (time dropped). Blank = no change.
+                var paymentText = Val(row, "payment date");
+                if (paymentText.Length > 0)
+                {
+                    var date = ParseFlexibleDate(paymentText);
+                    if (date is null) throw Http(LaravelStatusCodes.NoContentLikeValidation, $"Invalid Payment Date '{paymentText}'. Use a date like 31-12-2026.");
+                    redemption.PaymentDate = date.Value.Date;
+                }
+
+                // Keep the stored paid amount in step with the (possibly new) TDS.
+                var tdsPct = redemption.TdsPercent ?? 0m;
+                redemption.PayoutAmount = redemption.Points - Math.Round(redemption.Points * tdsPct / 100m, 2, MidpointRounding.AwayFromZero);
+                redemption.UpdatedAt = DateTime.UtcNow;
+
+                rowResult.Success = true;
+                rowResult.Message = "Updated.";
+                result.Created++;
+                changed = true;
+            }
+            catch (LaravelHttpException ex)
+            {
+                rowResult.Success = false;
+                rowResult.Message = ex.ResponseMessage?.ToString() ?? "Validation failed.";
+                result.Failed++;
+            }
+            catch (Exception)
+            {
+                rowResult.Success = false;
+                rowResult.Message = "Could not process this row.";
+                result.Failed++;
+            }
+            result.Rows.Add(rowResult);
+        }
+
+        if (changed) await _repository.SaveChangesAsync(cancellationToken);
+        return result;
+    }
+
+    private static string Val(IReadOnlyDictionary<string, string> row, string header) =>
+        row.TryGetValue(header, out var value) ? value.Trim() : string.Empty;
+
+    private static int? ParseStatusText(string text)
+    {
+        var value = text.Trim();
+        if (int.TryParse(value, out var n) && n is >= LoyaltyRedemption.StatusPending and <= LoyaltyRedemption.StatusFailed) return n;
+        return value.ToLowerInvariant() switch
+        {
+            "pending" => LoyaltyRedemption.StatusPending,
+            "approved" => LoyaltyRedemption.StatusApproved,
+            "rejected" => LoyaltyRedemption.StatusRejected,
+            "hold" => LoyaltyRedemption.StatusHold,
+            "success" => LoyaltyRedemption.StatusSuccess,
+            "failed" => LoyaltyRedemption.StatusFailed,
+            _ => null
+        };
+    }
+
+    private static readonly string[] DateFormats =
+    {
+        "dd-MM-yyyy", "d-M-yyyy", "dd/MM/yyyy", "d/M/yyyy", "yyyy-MM-dd", "yyyy/MM/dd",
+        "dd-MMM-yyyy", "d-MMM-yyyy", "dd MMM yyyy", "dd.MM.yyyy", "MM/dd/yyyy", "M/d/yyyy",
+        "dd-MM-yy", "dd/MM/yy"
+    };
+
+    private static DateTime? ParseFlexibleDate(string text)
+    {
+        var value = text.Trim();
+        if (value.Length == 0) return null;
+        // Explicit day-first formats first (Indian data), then a general invariant parse.
+        if (DateTime.TryParseExact(value, DateFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out var exact)) return exact.Date;
+        if (DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed)) return parsed.Date;
+        return null;
+    }
+
+    private static List<Dictionary<string, string>> ReadXlsxRows(Stream stream)
+    {
+        var rows = new List<Dictionary<string, string>>();
+        using var workbook = new XLWorkbook(stream);
+        var sheet = workbook.Worksheets.First();
+        var used = sheet.RangeUsed();
+        if (used is null) return rows;
+        var headerCells = used.FirstRow().Cells().ToList();
+        var headers = headerCells.Select(c => c.GetString().Trim().ToLowerInvariant()).ToList();
+        foreach (var row in used.Rows().Skip(1))
+        {
+            var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < headers.Count; i++)
+            {
+                if (headers[i].Length == 0) continue;
+                var cell = row.Cell(i + 1);
+                var text = cell.DataType == XLDataType.DateTime && cell.TryGetValue(out DateTime dt) ? dt.ToString("yyyy-MM-dd") : cell.GetString().Trim();
+                dict[headers[i]] = text;
+            }
+            rows.Add(dict);
+        }
+        return rows;
+    }
+
+    private static List<Dictionary<string, string>> ReadCsvRows(Stream stream)
+    {
+        var rows = new List<Dictionary<string, string>>();
+        using var reader = new StreamReader(stream);
+        var content = reader.ReadToEnd();
+        var lines = content.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n').Where(l => l.Trim().Length > 0).ToList();
+        if (lines.Count == 0) return rows;
+        var headers = SplitCsvLine(lines[0]).Select(h => h.Trim().ToLowerInvariant()).ToList();
+        foreach (var line in lines.Skip(1))
+        {
+            var cells = SplitCsvLine(line);
+            var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < headers.Count && i < cells.Count; i++)
+            {
+                if (headers[i].Length == 0) continue;
+                dict[headers[i]] = cells[i].Trim();
+            }
+            rows.Add(dict);
+        }
+        return rows;
+    }
+
+    private static List<string> SplitCsvLine(string line)
+    {
+        var cells = new List<string>();
+        var current = new System.Text.StringBuilder();
+        var inQuotes = false;
+        for (var i = 0; i < line.Length; i++)
+        {
+            var ch = line[i];
+            if (inQuotes)
+            {
+                if (ch == '"')
+                {
+                    if (i + 1 < line.Length && line[i + 1] == '"') { current.Append('"'); i++; }
+                    else inQuotes = false;
+                }
+                else current.Append(ch);
+            }
+            else if (ch == '"') inQuotes = true;
+            else if (ch == ',') { cells.Add(current.ToString()); current.Clear(); }
+            else current.Append(ch);
+        }
+        cells.Add(current.ToString());
+        return cells;
     }
 
     private async Task<RedemptionCustomerOptionDto> BuildCustomerOptionAsync(CustomerDto customer, IReadOnlyCollection<NewInvoiceDto> invoices, CancellationToken cancellationToken, bool isAppChannel)

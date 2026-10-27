@@ -2861,6 +2861,8 @@ VALUES ('Y', {0}, {1}, {2}, {3}, {4}, {5}, {6}, SYSUTCDATETIME(), SYSUTCDATETIME
         LoyaltyRedemption.StatusApproved => "approved",
         LoyaltyRedemption.StatusRejected => "rejected",
         LoyaltyRedemption.StatusHold => "hold",
+        LoyaltyRedemption.StatusSuccess => "success",
+        LoyaltyRedemption.StatusFailed => "failed",
         _ => "pending"
     };
 
@@ -2869,6 +2871,8 @@ VALUES ('Y', {0}, {1}, {2}, {3}, {4}, {5}, {6}, SYSUTCDATETIME(), SYSUTCDATETIME
         LoyaltyRedemption.StatusApproved => "Approved",
         LoyaltyRedemption.StatusRejected => "Rejected",
         LoyaltyRedemption.StatusHold => "Hold",
+        LoyaltyRedemption.StatusSuccess => "Success",
+        LoyaltyRedemption.StatusFailed => "Failed",
         _ => "Pending"
     };
 
@@ -2876,7 +2880,7 @@ VALUES ('Y', {0}, {1}, {2}, {3}, {4}, {5}, {6}, SYSUTCDATETIME(), SYSUTCDATETIME
     {
         status = LoyaltyRedemption.StatusPending;
         if (string.IsNullOrWhiteSpace(value) || string.Equals(value, "all", StringComparison.OrdinalIgnoreCase)) return false;
-        if (int.TryParse(value, out var parsed) && parsed is >= LoyaltyRedemption.StatusPending and <= LoyaltyRedemption.StatusHold)
+        if (int.TryParse(value, out var parsed) && parsed is >= LoyaltyRedemption.StatusPending and <= LoyaltyRedemption.StatusFailed)
         {
             status = parsed;
             return true;
@@ -2887,6 +2891,8 @@ VALUES ('Y', {0}, {1}, {2}, {3}, {4}, {5}, {6}, SYSUTCDATETIME(), SYSUTCDATETIME
             "approved" => LoyaltyRedemption.StatusApproved,
             "rejected" => LoyaltyRedemption.StatusRejected,
             "hold" => LoyaltyRedemption.StatusHold,
+            "success" => LoyaltyRedemption.StatusSuccess,
+            "failed" => LoyaltyRedemption.StatusFailed,
             "pending" => LoyaltyRedemption.StatusPending,
             _ => -1
         };

@@ -84,8 +84,11 @@ public sealed class CustomerRepository : ICustomerRepository
         }
         if (!string.IsNullOrWhiteSpace(filter.Status))
         {
+            // The stored custom_fields JSON is inconsistently spaced ("status":"X" vs
+            // "status": "X"), so strip spaces before matching - otherwise the space-less LIKE
+            // silently drops most rows (the listing read far fewer than the export derived).
             var status = filter.Status.Trim().ToUpperInvariant();
-            query = query.Where(x => x.CustomFields != null && EF.Functions.Like(x.CustomFields, $"%\"status\":\"{status}\"%"));
+            query = query.Where(x => x.CustomFields != null && EF.Functions.Like(x.CustomFields.Replace(" ", ""), $"%\"status\":\"{status}\"%"));
         }
         if (filter.StartDate.HasValue) query = query.Where(x => x.CreatedAt >= filter.StartDate.Value.Date);
         if (filter.EndDate.HasValue) query = query.Where(x => x.CreatedAt < filter.EndDate.Value.Date.AddDays(1));

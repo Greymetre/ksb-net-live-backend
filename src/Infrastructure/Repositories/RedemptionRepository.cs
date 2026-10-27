@@ -123,11 +123,34 @@ public sealed class RedemptionRepository : IRedemptionRepository
                 && x.Status != LoyaltyRedemption.StatusRejected)
             .ToListAsync(cancellationToken);
 
+    public async Task<LoyaltyRedemption?> GetByIdAsync(ulong id, CancellationToken cancellationToken) =>
+        await _dbContext.LoyaltyRedemptions.FirstOrDefaultAsync(x => x.Id == id && x.DeletedAt == null, cancellationToken);
+
+    public async Task<IReadOnlyDictionary<string, LoyaltyRedemption>> GetByTransactionNosAsync(IReadOnlyCollection<string> transactionNos, CancellationToken cancellationToken)
+    {
+        if (transactionNos.Count == 0) return new Dictionary<string, LoyaltyRedemption>();
+        // Tracked (no AsNoTracking) so the import can mutate and save them.
+        var rows = await _dbContext.LoyaltyRedemptions
+            .Where(x => x.DeletedAt == null && transactionNos.Contains(x.TransactionNo))
+            .ToListAsync(cancellationToken);
+        return rows
+            .GroupBy(x => x.TransactionNo)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+    }
+
+    public Task SaveChangesAsync(CancellationToken cancellationToken) => _dbContext.SaveChangesAsync(cancellationToken);
+
     public async Task<LoyaltyRedemption> CreateAsync(LoyaltyRedemption redemption, CancellationToken cancellationToken)
     {
         await _dbContext.LoyaltyRedemptions.AddAsync(redemption, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return redemption;
+    }
+
+    public async Task UpdateAsync(LoyaltyRedemption redemption, CancellationToken cancellationToken)
+    {
+        _dbContext.LoyaltyRedemptions.Update(redemption);
+        await _dbContext.SaveChangesAsync(cancellationToken);
     }
 
     public Task<bool> TransactionNoExistsAsync(string transactionNo, CancellationToken cancellationToken) =>
@@ -233,6 +256,10 @@ public sealed class RedemptionRepository : IRedemptionRepository
         Status = redemption.Status,
         StatusLabel = StatusLabel(redemption.Status),
         Remark = redemption.Remark,
+        PayoutTransactionNo = redemption.PayoutTransactionNo,
+        PayoutAmount = redemption.PayoutAmount,
+        TdsPercent = redemption.TdsPercent,
+        PaymentDate = redemption.PaymentDate,
         CreatedBy = redemption.CreatedBy,
         CreatedByName = createdByName,
         CreatedAt = redemption.CreatedAt
@@ -243,6 +270,8 @@ public sealed class RedemptionRepository : IRedemptionRepository
         LoyaltyRedemption.StatusApproved => "Approved",
         LoyaltyRedemption.StatusRejected => "Rejected",
         LoyaltyRedemption.StatusHold => "Hold",
+        LoyaltyRedemption.StatusSuccess => "Success",
+        LoyaltyRedemption.StatusFailed => "Failed",
         _ => "Pending"
     };
 

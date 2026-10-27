@@ -30,6 +30,10 @@ public sealed class LoyaltyRedemptionConfiguration : IEntityTypeConfiguration<Lo
         builder.Property(x => x.ApprovedAt).HasColumnName("approved_at");
         builder.Property(x => x.RejectedBy).HasColumnName("rejected_by");
         builder.Property(x => x.RejectedAt).HasColumnName("rejected_at");
+        builder.Property(x => x.PayoutTransactionNo).HasColumnName("payout_transaction_no").HasMaxLength(100);
+        builder.Property(x => x.PayoutAmount).HasColumnName("payout_amount").HasPrecision(15, 2);
+        builder.Property(x => x.TdsPercent).HasColumnName("tds_percent").HasPrecision(5, 2);
+        builder.Property(x => x.PaymentDate).HasColumnName("payment_date").HasColumnType("date");
         builder.Property(x => x.CreatedAt).HasColumnName("created_at");
         builder.Property(x => x.UpdatedAt).HasColumnName("updated_at");
         builder.Property(x => x.DeletedAt).HasColumnName("deleted_at");

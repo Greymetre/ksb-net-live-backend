@@ -6,6 +6,9 @@ public sealed class LoyaltyRedemption : BaseEntity
     public const int StatusApproved = 1;
     public const int StatusRejected = 2;
     public const int StatusHold = 3;
+    // Post-approval payout (disbursement) states.
+    public const int StatusSuccess = 4;
+    public const int StatusFailed = 5;
 
     public string TransactionNo { get; set; } = string.Empty;
     public ulong CustomerId { get; set; }
@@ -26,4 +29,9 @@ public sealed class LoyaltyRedemption : BaseEntity
     public DateTime? ApprovedAt { get; set; }
     public ulong? RejectedBy { get; set; }
     public DateTime? RejectedAt { get; set; }
+    // Payout result captured on a successful disbursement.
+    public string? PayoutTransactionNo { get; set; }
+    public decimal? PayoutAmount { get; set; }
+    public decimal? TdsPercent { get; set; }
+    public DateTime? PaymentDate { get; set; }
 }
