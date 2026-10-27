@@ -82,7 +82,7 @@ public sealed class HrRepository : IHrRepository
             query = query.Where(x => x.h.HolidayFor == holidayFor);
         }
         if (filter.BranchId.HasValue) query = query.Where(x => x.h.HolidayFor == "branch" && x.h.Branch == filter.BranchId);
-        if (filter.DivisionId.HasValue) query = query.Where(x => x.h.HolidayFor == "division" && x.h.DivisionId == filter.DivisionId);
+        if (filter.DivisionIds is { Length: > 0 }) query = query.Where(x => x.h.HolidayFor == "division" && x.h.DivisionId.HasValue && filter.DivisionIds.Contains(x.h.DivisionId.Value));
         if (!string.IsNullOrWhiteSpace(filter.Search))
         {
             var search = filter.Search.Trim();
@@ -211,7 +211,7 @@ public sealed class HrRepository : IHrRepository
             query = query.Where(x => x.tour.UserId.HasValue && allowedUserIds.Contains(x.tour.UserId.Value));
         }
         if (filter.ExecutiveId.HasValue) query = query.Where(x => x.tour.UserId == filter.ExecutiveId);
-        if (filter.DivisionId.HasValue) query = query.Where(x => x.user.DivisionId == filter.DivisionId);
+        if (filter.DivisionIds is { Length: > 0 }) query = query.Where(x => x.user.DivisionId.HasValue && filter.DivisionIds.Contains(x.user.DivisionId.Value));
         if (filter.DesignationId.HasValue) query = query.Where(x => x.user.DesignationId == filter.DesignationId);
         if (filter.StartDate.HasValue) query = query.Where(x => x.tour.Date >= filter.StartDate.Value.Date);
         if (filter.EndDate.HasValue) query = query.Where(x => x.tour.Date <= filter.EndDate.Value.Date);

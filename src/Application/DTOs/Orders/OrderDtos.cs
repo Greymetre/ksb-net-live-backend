@@ -7,7 +7,7 @@ public sealed class OrderFilterDto
     public ulong? RetailersId { get; set; }
     public ulong? DistributorId { get; set; }
     public ulong? UserId { get; set; }
-    public ulong? DivisionId { get; set; }
+    public ulong[] DivisionIds { get; set; } = [];
     public IReadOnlyCollection<ulong> DesignationIds { get; set; } = [];
     public int? PendingStatus { get; set; }
     public DateTime? StartDate { get; set; }

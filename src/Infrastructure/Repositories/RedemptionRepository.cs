@@ -70,14 +70,49 @@ public sealed class RedemptionRepository : IRedemptionRepository
         }
 
         var rows = await query.Take(MaxRows).ToListAsync(cancellationToken);
+        var customerList = rows.Select(x => x.Customer).Where(x => x is not null).Select(x => x!).ToList();
         var cities = await LoadCitiesAsync(rows.Select(x => CityId(x.Customer)), cancellationToken);
-        var distributors = await LoadDistributorNamesAsync(rows.Select(x => x.Customer).Where(x => x is not null)!, cancellationToken);
+        var distributors = await LoadDistributorsAsync(customerList, cancellationToken);
+
+        // Each customer's zone and branch come from the employee it is assigned to - custom_fields
+        // employee_id, then sales_executive_id, then executive_id - the resolver the rest of the app uses.
+        var employeeByCustomer = customerList
+            .GroupBy(c => c.Id).Select(g => g.First())
+            .ToDictionary(c => c.Id, c => FirstULong(ReadField(c, "employee_id")) ?? FirstULong(ReadField(c, "sales_executive_id")) ?? c.ExecutiveId);
+        var employeeIds = employeeByCustomer.Values.Where(x => x.HasValue).Select(x => x!.Value).Distinct().ToArray();
+        var employees = employeeIds.Length == 0
+            ? new Dictionary<ulong, (ulong? DivisionId, ulong? PrimaryBranchId, string? BranchId)>()
+            : (await _dbContext.Users.AsNoTracking().Where(x => employeeIds.Contains(x.Id))
+                .Select(x => new { x.Id, x.DivisionId, x.PrimaryBranchId, x.BranchId }).ToListAsync(cancellationToken))
+                .ToDictionary(x => x.Id, x => (x.DivisionId, x.PrimaryBranchId, x.BranchId));
+        var divisionIds = employees.Values.Where(x => x.DivisionId.HasValue).Select(x => x.DivisionId!.Value).Distinct().ToArray();
+        var divisions = divisionIds.Length == 0
+            ? new Dictionary<ulong, string>()
+            : await _dbContext.Divisions.AsNoTracking().Where(x => divisionIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.DivisionName, cancellationToken);
+        var branchIdSet = employees.Values.SelectMany(x => BranchIds(x.PrimaryBranchId, x.BranchId)).Distinct().ToArray();
+        var branches = branchIdSet.Length == 0
+            ? new Dictionary<ulong, string>()
+            : await _dbContext.Branches.AsNoTracking().Where(x => branchIdSet.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.BranchName, cancellationToken);
+
+        string ZoneOf(Customer? c) =>
+            c is not null && employeeByCustomer.TryGetValue(c.Id, out var eid) && eid.HasValue
+            && employees.TryGetValue(eid.Value, out var emp) && emp.DivisionId is { } d && divisions.TryGetValue(d, out var zn) ? zn : string.Empty;
+        string BranchOf(Customer? c)
+        {
+            if (c is null || !employeeByCustomer.TryGetValue(c.Id, out var eid) || !eid.HasValue || !employees.TryGetValue(eid.Value, out var emp)) return string.Empty;
+            foreach (var bid in BranchIds(emp.PrimaryBranchId, emp.BranchId))
+                if (branches.TryGetValue(bid, out var bn)) return bn;
+            return string.Empty;
+        }
 
         return rows.Select(x => ToDto(
             x.Redemption,
             x.Customer,
             CityName(x.Customer, cities),
-            DistributorName(x.Customer, distributors),
+            x.Customer != null && distributors.TryGetValue(x.Customer.Id, out var dist) ? dist.Name : null,
+            x.Customer != null && distributors.TryGetValue(x.Customer.Id, out var dc) ? dc.Code : null,
+            ZoneOf(x.Customer),
+            BranchOf(x.Customer),
             x.CreatedByName)).ToList();
     }
 
@@ -98,6 +133,30 @@ public sealed class RedemptionRepository : IRedemptionRepository
     public Task<bool> TransactionNoExistsAsync(string transactionNo, CancellationToken cancellationToken) =>
         _dbContext.LoyaltyRedemptions.AnyAsync(x => x.TransactionNo == transactionNo, cancellationToken);
 
+    public async Task<IReadOnlyDictionary<string, (ulong Id, string Tag)>> GetSchemesByCodeAsync(IReadOnlyCollection<string> codes, CancellationToken cancellationToken)
+    {
+        var wanted = codes.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()).Distinct().ToArray();
+        if (wanted.Length == 0) return new Dictionary<string, (ulong, string)>(StringComparer.OrdinalIgnoreCase);
+        var schemes = await _dbContext.LoyaltySchemes.AsNoTracking()
+            .Where(x => x.DeletedAt == null && wanted.Contains(x.SchemeCode))
+            .Select(x => new { x.Id, x.SchemeCode, x.SchemeTag })
+            .ToListAsync(cancellationToken);
+        return schemes
+            .GroupBy(x => x.SchemeCode, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => (g.First().Id, g.First().SchemeTag ?? "Regular"), StringComparer.OrdinalIgnoreCase);
+    }
+
+    public async Task<IReadOnlyDictionary<ulong, (string Name, bool RedemptionEnabled)>> GetSchemeFlagsAsync(IReadOnlyCollection<ulong> schemeIds, CancellationToken cancellationToken)
+    {
+        var ids = schemeIds.Where(x => x > 0).Distinct().ToArray();
+        if (ids.Length == 0) return new Dictionary<ulong, (string, bool)>();
+        return (await _dbContext.LoyaltySchemes.AsNoTracking()
+                .Where(x => ids.Contains(x.Id))
+                .Select(x => new { x.Id, x.SchemeName, x.RedemptionEnabled })
+                .ToListAsync(cancellationToken))
+            .ToDictionary(x => x.Id, x => (x.SchemeName ?? "Scheme", x.RedemptionEnabled));
+    }
+
     private async Task<Dictionary<ulong, string>> LoadCitiesAsync(IEnumerable<ulong?> cityIds, CancellationToken cancellationToken)
     {
         var ids = cityIds.Where(x => x.HasValue).Select(x => x!.Value).Distinct().ToArray();
@@ -106,7 +165,7 @@ public sealed class RedemptionRepository : IRedemptionRepository
             : await _dbContext.Cities.AsNoTracking().Where(x => ids.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.CityName, cancellationToken);
     }
 
-    private async Task<Dictionary<ulong, string>> LoadDistributorNamesAsync(IEnumerable<Customer> customers, CancellationToken cancellationToken)
+    private async Task<Dictionary<ulong, (string Name, string Code)>> LoadDistributorsAsync(IEnumerable<Customer> customers, CancellationToken cancellationToken)
     {
         var customerDistributorIds = customers
             .Select(customer => new { CustomerId = customer.Id, DistributorId = FirstULong(ReadField(customer, "distributor_name")) ?? FirstULong(ReadField(customer, "agri_distributor")) ?? customer.ParentId })
@@ -118,16 +177,26 @@ public sealed class RedemptionRepository : IRedemptionRepository
         var distributorIds = customerDistributorIds.Select(x => x.DistributorId!.Value).Distinct().ToArray();
         if (distributorIds.Length == 0) return [];
 
-        var names = await _dbContext.Customers.AsNoTracking()
+        var byId = (await _dbContext.Customers.AsNoTracking()
             .Where(x => distributorIds.Contains(x.Id))
-            .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
+            .Select(x => new { x.Id, x.Name, x.CustomerCode })
+            .ToListAsync(cancellationToken))
+            .ToDictionary(x => x.Id, x => (Name: x.Name ?? string.Empty, Code: x.CustomerCode ?? string.Empty));
 
         return customerDistributorIds
-            .Where(x => x.DistributorId.HasValue && names.ContainsKey(x.DistributorId.Value))
-            .ToDictionary(x => x.CustomerId, x => names[x.DistributorId!.Value]);
+            .Where(x => x.DistributorId.HasValue && byId.ContainsKey(x.DistributorId.Value))
+            .ToDictionary(x => x.CustomerId, x => byId[x.DistributorId!.Value]);
     }
 
-    private static RedemptionDto ToDto(LoyaltyRedemption redemption, Customer? customer, string? cityName, string? distributorName, string? createdByName) => new()
+    // Branch ids a user carries: the primary first, then the comma-separated BranchId list.
+    private static IEnumerable<ulong> BranchIds(ulong? primaryBranchId, string? branchId)
+    {
+        if (primaryBranchId.HasValue) yield return primaryBranchId.Value;
+        foreach (var part in (branchId ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            if (ulong.TryParse(part, out var id)) yield return id;
+    }
+
+    private static RedemptionDto ToDto(LoyaltyRedemption redemption, Customer? customer, string? cityName, string? distributorName, string? distributorCode, string zone, string branch, string? createdByName) => new()
     {
         Id = redemption.Id,
         TransactionNo = redemption.TransactionNo,
@@ -138,6 +207,20 @@ public sealed class RedemptionRepository : IRedemptionRepository
         MobileNumber = customer is null ? null : MobileNumber(customer),
         CityName = cityName,
         DistributorName = distributorName,
+        Zone = zone,
+        Branch = branch,
+        DealerCode = distributorCode ?? string.Empty,
+        ShopName = customer is null ? string.Empty : (ReadField(customer, "shop_name") ?? customer.Name ?? string.Empty),
+        // GST Treatment ON means the customer is NOT GST registered (stored "Yes"); then the GST No
+        // reads "Unregistered" whatever number was typed - a wrong number may have been entered and
+        // approved, so the toggle, not the field, decides.
+        GstNo = customer is null ? string.Empty
+            : string.Equals(ReadField(customer, "gst_treatment")?.Trim(), "Yes", StringComparison.OrdinalIgnoreCase) ? "Unregistered"
+            : (ReadField(customer, "gst_number") ?? ReadField(customer, "gstin_no") ?? string.Empty),
+        AadhaarNumber = customer is null ? string.Empty : (ReadField(customer, "aadhar_no") ?? ReadField(customer, "aadhaar_no") ?? ReadField(customer, "aadhaar_number") ?? ReadField(customer, "aadhar_number") ?? string.Empty),
+        PanNumber = customer is null ? string.Empty : (ReadField(customer, "pan_number") ?? ReadField(customer, "pan_no") ?? string.Empty),
+        BankAccountType = customer is null ? string.Empty : (ReadField(customer, "bank_account_type") ?? string.Empty),
+        ApprovedAt = redemption.ApprovedAt,
         LoyaltySchemeId = redemption.LoyaltySchemeId,
         SchemeName = redemption.SchemeName,
         WalletType = redemption.WalletType,
@@ -202,8 +285,6 @@ public sealed class RedemptionRepository : IRedemptionRepository
         return cityId.HasValue && cities.TryGetValue(cityId.Value, out var cityName) ? cityName : null;
     }
 
-    private static string? DistributorName(Customer? customer, IReadOnlyDictionary<ulong, string> distributors) =>
-        customer is not null && distributors.TryGetValue(customer.Id, out var distributorName) ? distributorName : null;
 
     private static string? ReadField(Customer customer, string key)
     {

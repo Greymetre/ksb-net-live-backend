@@ -282,11 +282,11 @@ public sealed class ExpenseRepository : IExpenseRepository
             query = query.Where(x => string.Compare(x.Date, filter.StartDate) >= 0 && string.Compare(x.Date, filter.EndDate) <= 0);
         }
 
-        if (filter.BranchId.HasValue || filter.DivisionId.HasValue || !string.IsNullOrWhiteSpace(filter.Payroll))
+        if (filter.BranchId.HasValue || filter.DivisionIds is { Length: > 0 } || !string.IsNullOrWhiteSpace(filter.Payroll))
         {
             var users = _dbContext.Users.AsNoTracking().AsQueryable();
             if (filter.BranchId.HasValue) users = users.Where(x => x.PrimaryBranchId == filter.BranchId.Value);
-            if (filter.DivisionId.HasValue) users = users.Where(x => x.DivisionId == filter.DivisionId.Value);
+            if (filter.DivisionIds is { Length: > 0 }) users = users.Where(x => x.DivisionId.HasValue && filter.DivisionIds.Contains(x.DivisionId.Value));
             if (!string.IsNullOrWhiteSpace(filter.Payroll)) users = users.Where(x => x.Payroll == filter.Payroll);
             var userIds = users.Select(x => x.Id);
             query = query.Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value));

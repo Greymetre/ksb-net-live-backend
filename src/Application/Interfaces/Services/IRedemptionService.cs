@@ -10,4 +10,6 @@ public interface IRedemptionService
     Task<MasterDataFileDto> ExportRedemptionsAsync(RedemptionFilterDto filter, CancellationToken cancellationToken);
     Task<LaravelApiResponse> GetCustomerOptionsAsync(string? search, ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> CreateRedemptionAsync(RedemptionCreateRequestDto request, ulong? actorUserId, CancellationToken cancellationToken, bool scopeInvoicesToActor = true);
+    Task<RedemptionImportResultDto> ImportRedemptionsAsync(Stream fileStream, ulong? actorUserId, bool scopeInvoicesToActor, CancellationToken cancellationToken);
+    MasterDataFileDto GetImportTemplate();
 }

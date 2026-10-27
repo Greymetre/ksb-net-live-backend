@@ -71,7 +71,7 @@ public sealed class UserTargetService : IUserTargetService
         {
             BranchId = filter.BranchId,
             UserId = filter.UserId,
-            DivisionId = filter.DivisionId,
+            DivisionIds = filter.DivisionIds,
             Type = filter.Type,
             Month = filter.Month,
             Search = filter.Search

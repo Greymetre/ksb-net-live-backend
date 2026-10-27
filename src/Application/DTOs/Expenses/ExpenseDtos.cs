@@ -7,7 +7,7 @@ public sealed class ExpenseFilterDto
     public ulong? ExecutiveId { get; set; }
     public ulong? ExpensesType { get; set; }
     public ulong? BranchId { get; set; }
-    public ulong? DivisionId { get; set; }
+    public ulong[] DivisionIds { get; set; } = [];
     public string? Payroll { get; set; }
     public int? Status { get; set; }
     public string? StartDate { get; set; }

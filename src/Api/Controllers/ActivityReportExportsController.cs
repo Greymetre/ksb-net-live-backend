@@ -115,7 +115,7 @@ public sealed class ActivityReportExportsController : ControllerBase
             join branch in _db.Branches.AsNoTracking() on (ulong?)a.BranchId equals (ulong?)branch.Id into branches from branch in branches.DefaultIfEmpty()
             select new ActivityRawRow(a.Id, division == null ? null : division.Id, division == null ? "Unassigned" : division.DivisionName, a.BranchId, branch == null ? "Unassigned" : branch.BranchName,
                 a.DistributorId, a.DistributorName ?? "Unassigned", creator.Id, creator.Name, user.Id, user.Name, user.Active, a.Participants.Count, a.GiftCount, a.TotalExpense)).ToListAsync(ct);
-        if (filter.ZoneId.HasValue) result = result.Where(x => x.DivisionId == filter.ZoneId).ToList();
+        if (filter.ZoneIds.Length > 0) result = result.Where(x => x.DivisionId.HasValue && filter.ZoneIds.Contains(x.DivisionId.Value)).ToList();
         // A meet held by someone since switched off still happened, so the row stays; the
         // Employee Status filter narrows to one side when asked.
         var employeeStatus = EmployeeStatus.Read(filter.EmployeeStatus);
@@ -148,7 +148,7 @@ public sealed class ActivityReportFilter {
     // on both the preview and the exports.
     [FromQuery(Name = "start_date")] public DateTime? StartDate { get; set; }
     [FromQuery(Name = "end_date")] public DateTime? EndDate { get; set; }
-    [FromQuery(Name = "zone_id")] public ulong? ZoneId { get; set; }
+    [FromQuery(Name = "zone_id")] public ulong[] ZoneIds { get; set; } = [];
     [FromQuery(Name = "branch_id")] public ulong? BranchId { get; set; }
     [FromQuery(Name = "meet")] public string? Meet { get; set; }
     /// <summary>"Y", "N" or nothing at all - see Domain.Services.EmployeeStatus.</summary>

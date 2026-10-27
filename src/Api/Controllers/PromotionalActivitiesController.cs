@@ -60,7 +60,7 @@ public sealed class PromotionalActivitiesController : ControllerBase
     }
 
     [HttpGet]
-    public async Task<IActionResult> List([FromQuery] int page=1, [FromQuery] int per_page=20, [FromQuery] string? activity_type=null, [FromQuery] string? date_range=null, [FromQuery] ulong? user=null, [FromQuery] DateTime? start_date=null, [FromQuery] DateTime? end_date=null, CancellationToken ct=default)
+    public async Task<IActionResult> List([FromQuery] int page=1, [FromQuery] int per_page=20, [FromQuery] string? activity_type=null, [FromQuery] string? date_range=null, [FromQuery] ulong? user=null, [FromQuery(Name = "zone_id")] ulong[]? zone_id=null, [FromQuery] DateTime? start_date=null, [FromQuery] DateTime? end_date=null, CancellationToken ct=default)
     {
         page=Math.Max(1,page); per_page=Math.Clamp(per_page,1,100); var current=CurrentUserId();
         var activityUserId=checked((long)(user??current));
@@ -69,6 +69,11 @@ public sealed class PromotionalActivitiesController : ControllerBase
         var q=_db.PromotionalActivities.AsNoTracking().Where(x=>x.DeletedAt==null);
         q=q.Where(x=>visibleActivityUserIds.Contains(x.CreatedById)||visibleActivityUserIds.Contains(x.UserId));
         if(user.HasValue&&visibleUserIds.Contains(user.Value))q=q.Where(x=>x.CreatedById==activityUserId||x.UserId==activityUserId);
+        if(zone_id is {Length:>0})
+        {
+            var zoneNames=await _db.Divisions.AsNoTracking().Where(z=>zone_id.Contains(z.Id)).Select(z=>z.DivisionName).ToListAsync(ct);
+            q=q.Where(x=>x.Zone!=null&&zoneNames.Contains(x.Zone));
+        }
         var today=DateTime.UtcNow.Date;
         if (date_range=="today") q=q.Where(x=>x.ActivityDate==today);
         else if(date_range=="year") q=q.Where(x=>x.ActivityDate.Year==today.Year);

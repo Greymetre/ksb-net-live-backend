@@ -176,10 +176,10 @@ public sealed class UserTargetRepository : IUserTargetRepository
         if (!string.IsNullOrWhiteSpace(filter.Type)) query = query.Where(x => x.Type == filter.Type);
         if (!string.IsNullOrWhiteSpace(filter.Month)) query = query.Where(x => x.Month == filter.Month);
 
-        if (filter.DivisionId.HasValue)
+        if (filter.DivisionIds is { Length: > 0 })
         {
             var userIds = _dbContext.Users.AsNoTracking()
-                .Where(x => x.DivisionId == filter.DivisionId.Value)
+                .Where(x => x.DivisionId.HasValue && filter.DivisionIds.Contains(x.DivisionId.Value))
                 .Select(x => x.Id);
             query = query.Where(x => x.UserId.HasValue && userIds.Contains(x.UserId.Value));
         }

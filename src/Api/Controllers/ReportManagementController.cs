@@ -112,7 +112,7 @@ public sealed class ReportManagementController : ControllerBase
         var users = await _db.Users.AsNoTracking()
             .Where(x => visibleIds.Contains(x.Id) && !x.IsDeleted && x.DeletedAt == null && x.DesignationId == filter.DesignationId)
             .ToListAsync(ct);
-        users = users.Where(x => (!filter.DivisionId.HasValue || x.DivisionId == filter.DivisionId)
+        users = users.Where(x => (filter.DivisionIds.Length == 0 || (x.DivisionId.HasValue && filter.DivisionIds.Contains(x.DivisionId.Value)))
             && (!filter.BranchId.HasValue || UserHasBranch(x, filter.BranchId.Value))
             && Domain.Services.EmployeeStatus.Matches(employeeStatus, x.Active)).ToList();
 
@@ -388,12 +388,12 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
     [RequirePermission("retailer_performance_report.export")]
     public async Task<IActionResult> ExportRetailerPerformance([FromQuery] ProductivityFilter filter, CancellationToken ct)
     {
-        if (!filter.DivisionId.HasValue) return BadRequest(new { status = false, message = "Please select a zone before downloading the report." });
+        if (filter.DivisionIds.Length == 0) return BadRequest(new { status = false, message = "Please select a zone before downloading the report." });
         var actor = CurrentUserId();
         var employeeStatus = Domain.Services.EmployeeStatus.Read(filter.EmployeeStatus);
         var visible = (await _hr.GetVisibleUserIdsAsync(actor, includeInactive: true, ct)).Distinct().ToHashSet();
         var users = await _db.Users.AsNoTracking().Where(x => visible.Contains(x.Id) && !x.IsDeleted && x.DeletedAt == null).ToListAsync(ct);
-        users = users.Where(x => (!filter.EmployeeId.HasValue || x.Id == filter.EmployeeId) && x.DivisionId == filter.DivisionId && (filter.DesignationIds.Length == 0 || (x.DesignationId.HasValue && filter.DesignationIds.Contains(x.DesignationId.Value))) && Domain.Services.EmployeeStatus.Matches(employeeStatus, x.Active)).ToList();
+        users = users.Where(x => (!filter.EmployeeId.HasValue || x.Id == filter.EmployeeId) && (x.DivisionId.HasValue && filter.DivisionIds.Contains(x.DivisionId.Value)) && (filter.DesignationIds.Length == 0 || (x.DesignationId.HasValue && filter.DesignationIds.Contains(x.DesignationId.Value))) && Domain.Services.EmployeeStatus.Matches(employeeStatus, x.Active)).ToList();
         var userIds = users.Select(x => x.Id).ToArray();
         var retailers = await _db.Customers.AsNoTracking().Where(x => x.DeletedAt == null && x.Active == "Y" && x.CustomerType == 2 && (!filter.RetailerId.HasValue || x.Id == filter.RetailerId)).ToListAsync(ct);
         retailers = retailers.Where(x => (x.ExecutiveId.HasValue && userIds.Contains(x.ExecutiveId.Value)) || userIds.Contains(x.CreatedBy ?? 0)).ToList();
@@ -1055,7 +1055,7 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
         var visible = (await _customers.FilterVisibleCustomerIdsAsync(actor, retailers.Select(x => x.Id).ToArray(), ct)).ToHashSet();
         retailers = retailers.Where(x => visible.Contains(x.Id)).ToList();
 
-        if (filter.ZoneId.HasValue || filter.BranchId.HasValue)
+        if (filter.ZoneIds.Length > 0 || filter.BranchId.HasValue)
         {
             var employees = (await _db.Users.AsNoTracking().Where(x => x.DeletedAt == null)
                 .Select(x => new { x.Id, x.DivisionId, x.PrimaryBranchId, x.BranchId }).ToListAsync(ct))
@@ -1064,7 +1064,7 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
             {
                 var employeeId = AssignedEmployee(customer);
                 if (!employeeId.HasValue || !employees.TryGetValue(employeeId.Value, out var employee)) return false;
-                if (filter.ZoneId.HasValue && employee.DivisionId != filter.ZoneId) return false;
+                if (filter.ZoneIds.Length > 0 && !(employee.DivisionId.HasValue && filter.ZoneIds.Contains(employee.DivisionId.Value))) return false;
                 return !filter.BranchId.HasValue || EmployeeBranchIds(employee.PrimaryBranchId, employee.BranchId).Contains(filter.BranchId.Value);
             }).ToList();
         }
@@ -1476,7 +1476,7 @@ INNER JOIN (SELECT customer_id, MIN(id) AS id FROM addresses WHERE deleted_at IS
         var employeeStatus = Domain.Services.EmployeeStatus.Read(filter.EmployeeStatus);
         var visible = (await _hr.GetVisibleUserIdsAsync(actor, includeInactive: true, ct)).Distinct().ToHashSet();
         var users = await _db.Users.AsNoTracking().Where(x => visible.Contains(x.Id) && !x.IsDeleted && x.DeletedAt == null).ToListAsync(ct);
-        users = users.Where(x => (!filter.EmployeeId.HasValue || x.Id == filter.EmployeeId) && (!filter.DivisionId.HasValue || x.DivisionId == filter.DivisionId) && (!filter.BranchId.HasValue || UserHasBranch(x, filter.BranchId.Value)) && (filter.DesignationIds.Length == 0 || (x.DesignationId.HasValue && filter.DesignationIds.Contains(x.DesignationId.Value))) && Domain.Services.EmployeeStatus.Matches(employeeStatus, x.Active)).ToList();
+        users = users.Where(x => (!filter.EmployeeId.HasValue || x.Id == filter.EmployeeId) && (filter.DivisionIds.Length == 0 || (x.DivisionId.HasValue && filter.DivisionIds.Contains(x.DivisionId.Value))) && (!filter.BranchId.HasValue || UserHasBranch(x, filter.BranchId.Value)) && (filter.DesignationIds.Length == 0 || (x.DesignationId.HasValue && filter.DesignationIds.Contains(x.DesignationId.Value))) && Domain.Services.EmployeeStatus.Matches(employeeStatus, x.Active)).ToList();
         var userIds = users.Select(x => x.Id).ToArray(); var assignments = await DealerAssignments(userIds, ct);
         var dealerIds = assignments.Keys.ToArray();
         var dealers = await _db.Customers.AsNoTracking().Where(x => x.CustomerType == 1 && x.DeletedAt == null && x.Active == "Y" && dealerIds.Contains(x.Id) && (!filter.DealerId.HasValue || x.Id == filter.DealerId)).ToListAsync(ct);
@@ -1530,7 +1530,7 @@ INNER JOIN (SELECT customer_id, MIN(id) AS id FROM addresses WHERE deleted_at IS
         var allUsers = await _db.Users.AsNoTracking().Where(x => visibleIds.Contains(x.Id) && !x.IsDeleted && x.DeletedAt == null)
             .ToListAsync(cancellationToken);
         var users = allUsers.Where(x => (!filter.EmployeeId.HasValue || x.Id == filter.EmployeeId)
-                && (!filter.DivisionId.HasValue || x.DivisionId == filter.DivisionId)
+                && (filter.DivisionIds.Length == 0 || (x.DivisionId.HasValue && filter.DivisionIds.Contains(x.DivisionId.Value)))
                 && (!filter.DesignationId.HasValue || x.DesignationId == filter.DesignationId)
                 && (!filter.BranchId.HasValue || UserHasBranch(x, filter.BranchId.Value))
                 && Domain.Services.EmployeeStatus.Matches(employeeStatus, x.Active))
@@ -1866,7 +1866,7 @@ assigned_at, unassigned_at FROM (
         var users = await _db.Users.AsNoTracking()
             .Where(x => visibleIds.Contains(x.Id) && !x.IsDeleted && x.DeletedAt == null && x.DesignationId == filter.DesignationId)
             .ToListAsync(ct);
-        users = users.Where(x => (!filter.DivisionId.HasValue || x.DivisionId == filter.DivisionId)
+        users = users.Where(x => (filter.DivisionIds.Length == 0 || (x.DivisionId.HasValue && filter.DivisionIds.Contains(x.DivisionId.Value)))
             && (!filter.BranchId.HasValue || UserHasBranch(x, filter.BranchId.Value))
             && Domain.Services.EmployeeStatus.Matches(employeeStatus, x.Active)).ToList();
 
@@ -2173,7 +2173,7 @@ WHERE customertype = 2 AND deleted_at IS NULL AND executive_id IN ({zoneEmpCsv})
         var allRetailerIds = assignedRetailerIds.Concat(invoices.Select(x => x.SecondaryCustomerId)).Distinct().ToArray();
         var retailers = await _db.Customers.AsNoTracking()
             .Where(x => x.CustomerType == 2 && allRetailerIds.Contains(x.Id))
-            .Select(x => new { x.Id, x.Name, x.CustomFields, x.ExecutiveId })
+            .Select(x => new { x.Id, x.Name, x.CustomFields, x.ExecutiveId, x.ParentId })
             .ToListAsync(cancellationToken);
 
         // A retailer's employee, resolved the one way the customer master and the CRM invoice
@@ -2208,6 +2208,28 @@ WHERE customertype = 2 AND deleted_at IS NULL AND executive_id IN ({zoneEmpCsv})
             .ToDictionary(x => x.BuyerId, x => x.Total);
         // Each retailer's KYC standing, worded exactly as the customer export's KYC Status column.
         var kycStates = await _customers.GetKycExportStatesAsync(retailerIds, cancellationToken);
+        var designations = await _db.Designations.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.DesignationName, cancellationToken);
+        // Each retailer's dealer is the distributor assigned on its own master record - custom_fields
+        // distributor_name, then agri_distributor, then the parent - the same resolver the invoice
+        // screen uses; its code and name come from that distributor (kept past a soft-delete).
+        ulong DistributorId(string? customFields, ulong? parentId)
+        {
+            var fields = CustomFieldsJson.Read(customFields);
+            var id = ReadIdList(fields.GetValueOrDefault("distributor_name")).FirstOrDefault();
+            if (id == 0) id = ReadIdList(fields.GetValueOrDefault("agri_distributor")).FirstOrDefault();
+            return id != 0 ? id : (parentId ?? 0);
+        }
+        var distributorByRetailer = retailers.ToDictionary(x => x.Id, x => DistributorId(x.CustomFields, x.ParentId));
+        var distributorIds = distributorByRetailer.Values.Where(x => x > 0).Distinct().ToArray();
+        var dealers = (await _db.Customers.AsNoTracking().IgnoreQueryFilters()
+                .Where(x => x.CustomerType == 1 && distributorIds.Contains(x.Id))
+                .Select(x => new { x.Id, x.Name, x.CustomerCode, x.CustomFields })
+                .ToListAsync(cancellationToken))
+            .ToDictionary(x => x.Id, x => (
+                Name: x.Name ?? "",
+                Code: !string.IsNullOrWhiteSpace(x.CustomerCode)
+                    ? x.CustomerCode
+                    : CustomFieldsJson.Read(x.CustomFields).GetValueOrDefault("distributor_code") ?? ""));
 
         var rows = retailers
             // Keep a retailer when its assigned employee is in a selected zone, or when it raised
@@ -2235,10 +2257,15 @@ WHERE customertype = 2 AND deleted_at IS NULL AND executive_id IN ({zoneEmpCsv})
                         ? Math.Round(approvedValue * achieved.RewardValue / 100, 2)
                         : achieved.RewardValue;
                 var zoneName = x.InZone && emp?.DivisionId is { } div && zoneNames.TryGetValue(div, out var zn) ? zn : "";
+                dealers.TryGetValue(distributorByRetailer.GetValueOrDefault(x.Retailer.Id), out var dealer);
                 return new RetailerLoyaltyRow(
                     zoneName,
                     x.InZone && emp is not null ? BranchName(emp, branches) : "",
+                    dealer.Code ?? "",
+                    dealer.Name ?? "",
                     emp?.Name ?? "-",
+                    emp?.DesignationId is { } did && designations.TryGetValue(did, out var dn) ? dn : "",
+                    emp?.ReportingId is { } rid && allUsers.TryGetValue(rid, out var mgr) ? mgr.Name : "",
                     Name(retailerName, x.Retailer.Id),
                     KycStatusText(kycStates.GetValueOrDefault(x.Retailer.Id)),
                     scheme.SchemeName,
@@ -2257,24 +2284,26 @@ WHERE customertype = 2 AND deleted_at IS NULL AND executive_id IN ({zoneEmpCsv})
 
         using var workbook = new XLWorkbook();
         var sheet = workbook.Worksheets.Add("Retailer Wise");
-        var headers = new[] { "Branch", "Employee Name", "Retailer Name", "KYC Status", "Scheme Name", "Slab Qualified", "Incentive %", "Act Sec Sales (Lac)", "Incentive Amount", "Total Invoice Amount (Lac)", "Approved Invoice Val (Lac)" };
-        const int labelColumns = 7; // up to and including "Incentive %"; the figures sit to the right
+        var headers = new[] { "Zone", "Branch", "Dealer Code", "Dealer", "Employee Name", "Deg", "Reporting Manager", "Retailer Name", "Scheme Name", "Slab Qualified", "Incentive %", "ASR /DSR Act Sec Sales", "Incentive Amount", "Total Invoice Amount", "Approved Invoice Val", "KYC Status" };
+        const int labelColumns = 11; // Zone .. Incentive %; the four figures sit to the right, KYC Status last
         for (var i = 0; i < headers.Length; i++) sheet.Cell(1, i + 1).Value = headers[i];
 
-        void WriteRetailerLine(int row, IEnumerable<object?> label, IReadOnlyCollection<RetailerLoyaltyRow> figures)
+        // Figures are full rupees (not lakhs); KYC Status is the last column, after them.
+        void WriteRetailerLine(int row, IEnumerable<object?> label, IReadOnlyCollection<RetailerLoyaltyRow> figures, object? kyc)
         {
             WriteRow(sheet, row, label.Concat(new object?[]
             {
-                ToLakh(figures.Sum(x => x.SecondarySales)),
+                figures.Sum(x => x.SecondarySales),
                 figures.Sum(x => x.IncentiveAmount),
-                ToLakh(figures.Sum(x => x.TotalInvoiceAmount)),
-                ToLakh(figures.Sum(x => x.ApprovedInvoiceValue))
+                figures.Sum(x => x.TotalInvoiceAmount),
+                figures.Sum(x => x.ApprovedInvoiceValue),
+                kyc
             }).ToList());
         }
 
         void WriteRetailerTotal(int row, string label, IReadOnlyCollection<RetailerLoyaltyRow> figures, XLColor color, bool whiteText)
         {
-            WriteRetailerLine(row, new object?[] { label }.Concat(Enumerable.Repeat<object?>("", labelColumns - 1)), figures);
+            WriteRetailerLine(row, new object?[] { label }.Concat(Enumerable.Repeat<object?>("", labelColumns - 1)), figures, "");
             var range = sheet.Range(row, 1, row, headers.Length);
             range.Style.Fill.BackgroundColor = color; range.Style.Font.Bold = true;
             if (whiteText) range.Style.Font.FontColor = XLColor.White;
@@ -2288,8 +2317,8 @@ WHERE customertype = 2 AND deleted_at IS NULL AND executive_id IN ({zoneEmpCsv})
                 foreach (var row in branchGroup)
                 {
                     WriteRetailerLine(outputRow++,
-                        new object?[] { row.Branch, row.AsrName, row.RetailerName, row.KycStatus, row.SchemeName, row.SlabQualified, row.IncentivePercent },
-                        new[] { row });
+                        new object?[] { row.Zone, row.Branch, row.DealerCode, row.DealerName, row.AsrName, row.Designation, row.ReportingManager, row.RetailerName, row.SchemeName, row.SlabQualified, row.IncentivePercent },
+                        new[] { row }, row.KycStatus);
                 }
                 WriteRetailerTotal(outputRow++, "SUBTOTAL - " + (string.IsNullOrWhiteSpace(branchGroup.Key) ? "No Branch" : branchGroup.Key), branchGroup.ToList(), XLColor.Yellow, whiteText: false);
             }
@@ -2309,7 +2338,8 @@ WHERE customertype = 2 AND deleted_at IS NULL AND executive_id IN ({zoneEmpCsv})
         if (usedRange is not null)
         {
             usedRange.Style.Font.FontName = "Calibri"; usedRange.Style.Font.FontSize = 9;
-            sheet.Range(2, labelColumns + 1, Math.Max(2, outputRow - 1), headers.Length).Style.NumberFormat.Format = "#,##0.00";
+            // Only the four figure columns are numbers; KYC Status (the last column) stays text.
+            sheet.Range(2, labelColumns + 1, Math.Max(2, outputRow - 1), labelColumns + 4).Style.NumberFormat.Format = "#,##0.00";
         }
         sheet.SheetView.FreezeRows(1); sheet.Columns().AdjustToContents(1, Math.Max(1, outputRow - 1), 8, 45);
         using var stream = new MemoryStream(); workbook.SaveAs(stream);
@@ -2702,7 +2732,7 @@ public sealed record RfmScore<T>(T Row, int R, int F, int M,
 
 public class RfmFilter
 {
-    [FromQuery(Name = "zone_id")] public ulong? ZoneId { get; set; }
+    [FromQuery(Name = "zone_id")] public ulong[] ZoneIds { get; set; } = [];
     [FromQuery(Name = "branch_id")] public ulong? BranchId { get; set; }
     [FromQuery(Name = "state_id")] public ulong? StateId { get; set; }
     [FromQuery(Name = "district_id")] public ulong? DistrictId { get; set; }
@@ -2723,7 +2753,7 @@ public sealed class RfmMovementFilter : RfmFilter
 
 public sealed record LoyaltyReportRow(string Zone, string Branch, string? DealerName, string AsrName, string Designation, string EmployeeStatus, string ReportingManager, decimal SecondarySales, decimal TotalInvoiceAmount, decimal ApprovedInvoiceValue, int ActiveRetailers, int KycPending, string SlabQualified, string IncentivePercent, decimal IncentiveAmount);
 
-public sealed record RetailerLoyaltyRow(string Zone, string Branch, string AsrName, string RetailerName, string KycStatus, string SchemeName, string SlabQualified, string IncentivePercent, decimal SecondarySales, decimal IncentiveAmount, decimal TotalInvoiceAmount, decimal ApprovedInvoiceValue);
+public sealed record RetailerLoyaltyRow(string Zone, string Branch, string DealerCode, string DealerName, string AsrName, string Designation, string ReportingManager, string RetailerName, string KycStatus, string SchemeName, string SlabQualified, string IncentivePercent, decimal SecondarySales, decimal IncentiveAmount, decimal TotalInvoiceAmount, decimal ApprovedInvoiceValue);
 
 public sealed class LoyaltyPerformanceFilter
 {
@@ -2743,7 +2773,7 @@ public sealed class AsrPerformanceFilter
     /// <summary>"Y", "N" or nothing at all - see Domain.Services.EmployeeStatus.</summary>
     [FromQuery(Name = "employee_status")] public string? EmployeeStatus { get; set; }
     [FromQuery(Name = "employee_id")] public ulong? EmployeeId { get; set; }
-    [FromQuery(Name = "division_id")] public ulong? DivisionId { get; set; }
+    [FromQuery(Name = "division_id")] public ulong[] DivisionIds { get; set; } = [];
     [FromQuery(Name = "branch_id")] public ulong? BranchId { get; set; }
     [FromQuery(Name = "designation_id")] public ulong? DesignationId { get; set; }
     [FromQuery(Name = "start_date")] public DateOnly StartDate { get; set; }
@@ -2760,8 +2790,8 @@ public sealed class ProductivityFilter
     [FromQuery(Name = "dealer_id")] public ulong? DealerId { get; set; }
     [FromQuery(Name = "distributor_id")] public ulong? DistributorId { get => DealerId; set => DealerId = value; }
     [FromQuery(Name = "year")] public int? Year { get; set; }
-    [FromQuery(Name = "division_id")] public ulong? DivisionId { get; set; }
-    [FromQuery(Name = "zone_id")] public ulong? ZoneId { get => DivisionId; set => DivisionId = value; }
+    [FromQuery(Name = "division_id")] public ulong[] DivisionIds { get; set; } = [];
+    [FromQuery(Name = "zone_id")] public ulong[] ZoneIds { get => DivisionIds; set => DivisionIds = value; }
     [FromQuery(Name = "branch_id")] public ulong? BranchId { get; set; }
     [FromQuery(Name = "state_id")] public ulong? StateId { get; set; }
     [FromQuery(Name = "designation_id")] public ulong[] DesignationIds { get; set; } = [];
@@ -2776,8 +2806,8 @@ public sealed class RatingReportFilter
     [FromQuery(Name = "year")] public int? Year { get; set; }
     [FromQuery(Name = "month")] public int? Month { get; set; }
     [FromQuery(Name = "period")] public string? Period { get; set; }
-    [FromQuery(Name = "division_id")] public ulong? DivisionId { get; set; }
-    [FromQuery(Name = "zone_id")] public ulong? ZoneId { get => DivisionId; set => DivisionId = value; }
+    [FromQuery(Name = "division_id")] public ulong[] DivisionIds { get; set; } = [];
+    [FromQuery(Name = "zone_id")] public ulong[] ZoneIds { get => DivisionIds; set => DivisionIds = value; }
     [FromQuery(Name = "branch_id")] public ulong? BranchId { get; set; }
     [FromQuery(Name = "search")] public string? Search { get; set; }
     [FromQuery(Name = "page")] public int Page { get; set; } = 1;

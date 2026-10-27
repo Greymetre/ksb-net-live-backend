@@ -177,7 +177,11 @@ OUTER APPLY (SELECT SUM(o.total_qty) order_qty,SUM(o.grand_total) order_value,CO
         if(f.EndDate.HasValue){where.Add("ci.checkin_date<=@end");args.Add(("@end",f.EndDate.Value.Date));}
         if(f.UserId.HasValue){where.Add("ci.user_id=@user");args.Add(("@user",(decimal)f.UserId.Value));}
         if(f.CustomerId.HasValue){where.Add("COALESCE(ci.entity_id,ci.customer_id)=@customer");args.Add(("@customer",(decimal)f.CustomerId.Value));}
-        if(f.DivisionId.HasValue){where.Add("u.division_id=@division");args.Add(("@division",(decimal)f.DivisionId.Value));}
+        if(f.DivisionIds is { Count: > 0 })
+        {
+            var divisionParams=f.DivisionIds.Distinct().Select((id,index)=>(Name:$"@division{index}",Value:(object)(decimal)id)).ToArray();
+            where.Add($"u.division_id IN ({string.Join(',',divisionParams.Select(x=>x.Name))})");args.AddRange(divisionParams);
+        }
         if(f.BranchId.HasValue){where.Add("(u.primary_branch_id=@branch OR ','+REPLACE(COALESCE(u.branch_id,''),' ','')+',' LIKE @branchCsv)");args.Add(("@branch",(decimal)f.BranchId.Value));args.Add(("@branchCsv",$"%,{f.BranchId.Value},%"));}
         if(f.DesignationIds is { Count: > 0 })
         {
@@ -210,7 +214,7 @@ OUTER APPLY (SELECT SUM(o.total_qty) order_qty,SUM(o.grand_total) order_value,CO
         [FromQuery(Name = "start_date")] public DateTime? StartDate { get; set; }
         [FromQuery(Name = "end_date")] public DateTime? EndDate { get; set; }
         [FromQuery(Name = "user_id")] public ulong? UserId { get; set; }
-        [FromQuery(Name = "division_id")] public ulong? DivisionId { get; set; }
+        [FromQuery(Name = "division_id")] public List<ulong> DivisionIds { get; set; } = [];
         [FromQuery(Name = "branch_id")] public ulong? BranchId { get; set; }
         /// <summary>One customer's visits, for the customer page. Matches the same column the
         /// row is built from, so a check-in recorded against either entity_id or the older

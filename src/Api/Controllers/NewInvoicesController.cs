@@ -36,7 +36,7 @@ public sealed class NewInvoicesController : ControllerBase
         [FromQuery(Name = "approval_statuses")] int[]? approvalStatuses,
         [FromQuery(Name = "scheme_id")] ulong? schemeId,
         [FromQuery(Name = "branch_id")] ulong? branchId,
-        [FromQuery(Name = "zone_id")] ulong? zoneId,
+        [FromQuery(Name = "zone_id")] ulong[] zoneIds,
         [FromQuery(Name = "user_id")] ulong? userId,
         [FromQuery(Name = "dealer_id")] ulong? dealerId,
         [FromQuery(Name = "from_date")] DateTime? fromDate,
@@ -51,7 +51,7 @@ public sealed class NewInvoicesController : ControllerBase
         filter.ApprovalStatuses ??= approvalStatuses is { Length: > 0 } ? approvalStatuses : null;
         filter.SchemeId ??= schemeId;
         filter.BranchId ??= branchId;
-        filter.DivisionId ??= zoneId;
+        if (filter.DivisionIds.Length == 0) filter.DivisionIds = zoneIds;
         filter.AssignedUserId ??= userId;
         filter.DistributorCustomerId ??= dealerId;
         filter.FromDate ??= fromDate;
@@ -72,7 +72,7 @@ public sealed class NewInvoicesController : ControllerBase
         [FromQuery(Name = "approval_statuses")] int[]? approvalStatuses,
         [FromQuery(Name = "scheme_id")] ulong? schemeId,
         [FromQuery(Name = "branch_id")] ulong? branchId,
-        [FromQuery(Name = "zone_id")] ulong? zoneId,
+        [FromQuery(Name = "zone_id")] ulong[] zoneIds,
         [FromQuery(Name = "user_id")] ulong? userId,
         [FromQuery(Name = "dealer_id")] ulong? dealerId,
         [FromQuery(Name = "from_date")] DateTime? fromDate,
@@ -85,7 +85,7 @@ public sealed class NewInvoicesController : ControllerBase
         filter.ApprovalStatuses ??= approvalStatuses is { Length: > 0 } ? approvalStatuses : null;
         filter.SchemeId ??= schemeId;
         filter.BranchId ??= branchId;
-        filter.DivisionId ??= zoneId;
+        if (filter.DivisionIds.Length == 0) filter.DivisionIds = zoneIds;
         filter.AssignedUserId ??= userId;
         filter.DistributorCustomerId ??= dealerId;
         filter.FromDate ??= fromDate;

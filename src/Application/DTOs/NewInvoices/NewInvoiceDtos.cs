@@ -133,7 +133,7 @@ public sealed class NewInvoiceFilterDto
     /// <summary>Several stages at once, used by the customer view where SS and Sales collapse into In Process.</summary>
     public IReadOnlyCollection<int>? ApprovalStatuses { get; set; }
     public ulong? BranchId { get; set; }
-    public ulong? DivisionId { get; set; }
+    public ulong[] DivisionIds { get; set; } = [];
     /// <summary>One employee: the invoices of the retailers assigned to them.</summary>
     public ulong? AssignedUserId { get; set; }
     public DateTime? FromDate { get; set; }

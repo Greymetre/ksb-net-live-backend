@@ -78,6 +78,9 @@ public sealed class TeamDashboardController : ControllerBase
         var yearOrders = await Orders(allVisibleIds, yearStart, yearEnd, ct);
         var asrMonthOrders = await Orders(asrIds, monthStart, monthEnd, ct);
         var dsrMonthOrders = await Orders(dsrIds, monthStart, monthEnd, ct);
+        // The year's field-force secondary sale, for the target card's YTD achievement (kept on
+        // the field force, which is what the targets cover - not the all-visible year total above).
+        var ytdFieldOrders = await Orders(effectiveIds, yearStart, yearEnd, ct);
         // "Orders this month" counts the distinct retailers ordered from this month, not the
         // number of orders - a retailer ordering several times still counts once. Value and
         // quantity stay as the field-force totals (unchanged).
@@ -218,10 +221,10 @@ public sealed class TeamDashboardController : ControllerBase
             target = new
             {
                 month_label = now.ToString("MMMM yyyy", CultureInfo.InvariantCulture),
-                month = TargetBlock(monthTargets),
-                ytd = TargetBlock(ytdTargets),
-                asr = TargetBlock(monthTargets.Where(x => asrIds.Contains(x.UserId))),
-                dsr = TargetBlock(monthTargets.Where(x => dsrIds.Contains(x.UserId)))
+                month = TargetBlock(monthTargets, monthOrders),
+                ytd = TargetBlock(ytdTargets, ytdFieldOrders),
+                asr = TargetBlock(monthTargets.Where(x => asrIds.Contains(x.UserId)), asrMonthOrders),
+                dsr = TargetBlock(monthTargets.Where(x => dsrIds.Contains(x.UserId)), dsrMonthOrders)
             },
             orders = new
             {
@@ -763,18 +766,21 @@ public sealed class TeamDashboardController : ControllerBase
         };
     }
 
-    private static object TargetBlock(IEnumerable<TargetRow> rows)
+    private static object TargetBlock(IEnumerable<TargetRow> rows, OrderAggregate achievement)
     {
         var list = rows.ToList();
         var target = list.Sum(x => x.Target ?? 0);
-        var achievement = list.Sum(x => x.Achievement ?? 0);
         var quantityTarget = list.Sum(x => x.QuantityTarget ?? 0);
-        var quantityAchievement = list.Sum(x => x.QuantityAchievement ?? 0);
+        // Achievement is the live secondary sale of the period, not the stored column, so it
+        // matches the SFA app and never reads zero while orders exist. Order value is rupees and
+        // the targets are in lakhs, so the value is brought to lakhs; quantity is a plain count.
+        var achievementValue = achievement.Value / 100000m;
+        var quantityAchievement = (decimal)achievement.Quantity;
         return new
         {
             target = Math.Round(target, 2),
-            achievement = Math.Round(achievement, 2),
-            achievement_percent = target > 0 ? Math.Round(achievement / target * 100, 2) : 0,
+            achievement = Math.Round(achievementValue, 2),
+            achievement_percent = target > 0 ? Math.Round(achievementValue / target * 100, 2) : 0,
             quantity_target = Math.Round(quantityTarget, 2),
             quantity_achievement = Math.Round(quantityAchievement, 2),
             quantity_achievement_percent = quantityTarget > 0 ? Math.Round(quantityAchievement / quantityTarget * 100, 2) : 0,

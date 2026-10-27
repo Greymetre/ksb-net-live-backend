@@ -287,7 +287,9 @@ public static class PermissionCatalog
         new("scheme.export", "Export", "scheme", "Scheme Creation", "loyalty", "Loyalty Management", "export", 2010, ["scheme_export"], []),
         // Redemption
         new("redemption.view", "View Listing", "redemption", "Redemption", "loyalty", "Loyalty Management", "view", 2010, ["redemption_access"], []),
+        new("redemption.create", "Create", "redemption", "Redemption", "loyalty", "Loyalty Management", "create", 2015, [], ["redemption_access"]),
         new("redemption.export", "Export", "redemption", "Redemption", "loyalty", "Loyalty Management", "export", 2020, ["redemption_download"], []),
+        new("redemption.import", "Import", "redemption", "Redemption", "loyalty", "Loyalty Management", "import", 2025, [], []),
         // ---------- Beats Management ----------
         // Beats
         new("beat.view", "View Listing", "beat", "Beats", "beats", "Beats Management", "view", 2030, ["beat_access"], []),

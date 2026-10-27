@@ -477,7 +477,9 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
     public async Task<Customer?> GetRetailerAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken)
     {
         var distributorCustomerId = await GetDistributorCustomerIdAsync(actorUserId, cancellationToken);
-        var query = _dbContext.Customers.Where(x => x.Id == id && x.Active == "Y" && (x.CustomerType == RetailerCustomerType || x.CustomerType == InfluencerCustomerType));
+        // Active/rejected are not filtered here: the service returns a specific message for each,
+        // so the row must come back even when inactive or rejected (type and access scope still apply).
+        var query = _dbContext.Customers.Where(x => x.Id == id && (x.CustomerType == RetailerCustomerType || x.CustomerType == InfluencerCustomerType));
         query = ApplyDistributorRetailerScope(query, distributorCustomerId);
         query = await ApplyRetailerReportingScopeAsync(query, actorUserId, distributorCustomerId, cancellationToken);
         return await query.FirstOrDefaultAsync(cancellationToken);
@@ -783,10 +785,10 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
                 .Select(x => x.Id);
             query = ApplyAssignedEmployeeFilter(query, employeeIds);
         }
-        if (filter.DivisionId.HasValue)
+        if (filter.DivisionIds is { Length: > 0 })
         {
             var employeeIds = _dbContext.Users.AsNoTracking()
-                .Where(x => x.DivisionId == filter.DivisionId.Value)
+                .Where(x => x.DivisionId.HasValue && filter.DivisionIds.Contains(x.DivisionId.Value))
                 .Select(x => x.Id);
             query = ApplyAssignedEmployeeFilter(query, employeeIds);
         }

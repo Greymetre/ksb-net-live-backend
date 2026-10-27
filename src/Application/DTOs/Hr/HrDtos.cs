@@ -18,7 +18,7 @@ public sealed class HolidayListFilterDto
     public string? Search { get; init; }
     public string? HolidayFor { get; init; }
     public ulong? BranchId { get; init; }
-    public ulong? DivisionId { get; init; }
+    public ulong[] DivisionIds { get; init; } = [];
 }
 
 public sealed class HolidayDto
@@ -118,7 +118,7 @@ public sealed class CompOffRequestDto
 public sealed class TourListFilterDto
 {
     public ulong? ExecutiveId { get; init; }
-    public ulong? DivisionId { get; init; }
+    public ulong[] DivisionIds { get; init; } = [];
     public ulong? DesignationId { get; init; }
     public DateTime? StartDate { get; init; }
     public DateTime? EndDate { get; init; }

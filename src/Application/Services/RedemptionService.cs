@@ -45,30 +45,45 @@ public sealed class RedemptionService : IRedemptionService
     public async Task<MasterDataFileDto> ExportRedemptionsAsync(RedemptionFilterDto filter, CancellationToken cancellationToken)
     {
         var redemptions = await _repository.GetRedemptionsAsync(filter, cancellationToken);
-        return CreateWorkbook("redemptions.xlsx",
-            ["id", "date", "transaction_id", "customer_id", "customer", "type", "city", "mobile", "mode", "dealer", "wallet", "scheme", "points", "status", "created_by"],
+        return CreateWorkbook("Redemption Report.xlsx",
+            ["Zone", "Branch", "Dealer Code", "Dealer Name", "Customer Code", "Customer Shop Name", "Type", "City", "Mobile",
+             "GST No", "Aadhaar Number", "Pan Number", "Bank Account Type", "Bank Account Number", "IFSC Code", "Account Holder Name",
+             "Bank Name", "Mode", "Redeem Point", "Status", "Transaction Id", "Scheme Type", "Redeem Date", "Transaction Date", "Created By"],
             redemptions.Select(x => new object?[]
             {
-                x.Id,
-                x.CreatedAt,
-                x.TransactionNo,
-                x.CustomerId,
-                x.CustomerName,
+                x.Zone,
+                x.Branch,
+                x.DealerCode,
+                x.DistributorName,
+                x.CustomerCode,
+                x.ShopName,
                 x.CustomerTypeName,
                 x.CityName,
                 x.MobileNumber,
+                x.GstNo,
+                x.AadhaarNumber,
+                x.PanNumber,
+                x.BankAccountType,
+                x.AccountNumber,
+                x.IfscCode,
+                x.AccountHolder,
+                x.BankName,
                 x.RedeemMode,
-                x.DistributorName,
-                x.WalletType,
-                x.SchemeName,
                 x.Points,
                 x.StatusLabel,
-                x.CreatedBy
+                x.TransactionNo,
+                x.WalletType,
+                x.CreatedAt,
+                x.ApprovedAt ?? x.CreatedAt,
+                x.CreatedByName
             }));
     }
 
     public async Task<LaravelApiResponse> GetCustomerOptionsAsync(string? search, ulong? actorUserId, CancellationToken cancellationToken)
     {
+        // The dropdown searches server-side, so a search returns only its matches and the cap is
+        // rarely hit; it just bounds the unsearched first view. Invoices are then loaded only for
+        // the customers actually shown, not the whole table.
         var customers = (await _customerRepository.GetCustomersAsync(new CustomerListFilterDto
         {
             Active = "Y",
@@ -76,11 +91,15 @@ public sealed class RedemptionService : IRedemptionService
             Unpaged = true
         }, cancellationToken)).Items
             .Where(customer => customer.CustomerType is 2 or 3)
+            .Take(100)
             .ToList();
 
-        var invoices = (await _newInvoiceRepository.GetInvoicesAsync(new NewInvoiceFilterDto { Unpaged = true }, actorUserId, cancellationToken)).Items;
+        var customerIds = customers.Select(customer => customer.Id).ToList();
+        var invoices = customerIds.Count == 0
+            ? []
+            : (await _newInvoiceRepository.GetInvoicesAsync(new NewInvoiceFilterDto { Unpaged = true, SecondaryCustomerIds = customerIds }, actorUserId, cancellationToken)).Items;
         var options = new List<RedemptionCustomerOptionDto>();
-        foreach (var customer in customers.Take(50))
+        foreach (var customer in customers)
         {
             options.Add(await BuildCustomerOptionAsync(customer, invoices.Where(x => x.SecondaryCustomerId == customer.Id).ToList(), cancellationToken));
         }
@@ -99,8 +118,15 @@ public sealed class RedemptionService : IRedemptionService
         var walletType = NormalizeWalletType(request.WalletType);
         var redeemMode = NormalizeRedeemMode(request.RedeemMode);
         var customer = await _customerRepository.GetCustomerAsync(request.CustomerId, null, cancellationToken) ?? throw Http(LaravelStatusCodes.NotFound, "Customer not found.");
+
+        // The scheme must have redemption turned on (the on/off toggle from scheme creation).
+        // Enforced here so the CRM form, the import and the Vriddhi app - all three go through this
+        // method - are blocked the same way, not only the app's display.
+        var schemeFlags = await _repository.GetSchemeFlagsAsync(new[] { request.LoyaltySchemeId!.Value }, cancellationToken);
+        if (schemeFlags.TryGetValue(request.LoyaltySchemeId.Value, out var requestedScheme) && !requestedScheme.RedemptionEnabled)
+            throw Http(LaravelStatusCodes.NoContentLikeValidation, $"Redemption is turned off for the scheme \"{requestedScheme.Name}\".");
         var invoiceActorUserId = scopeInvoicesToActor ? actorUserId : null;
-        var invoices = (await _newInvoiceRepository.GetInvoicesAsync(new NewInvoiceFilterDto { Unpaged = true }, invoiceActorUserId, cancellationToken)).Items;
+        var invoices = (await _newInvoiceRepository.GetInvoicesAsync(new NewInvoiceFilterDto { Unpaged = true, SecondaryCustomerIds = new[] { customer.Id } }, invoiceActorUserId, cancellationToken)).Items;
         var option = await BuildCustomerOptionAsync(customer, invoices.Where(x => x.SecondaryCustomerId == customer.Id).ToList(), cancellationToken);
 
         if (!option.KycApproved) throw Http(LaravelStatusCodes.NoContentLikeValidation, option.KycMessage);
@@ -112,7 +138,7 @@ public sealed class RedemptionService : IRedemptionService
         var scheme = (walletType == "Booster" ? option.BoosterSchemes : option.RegularSchemes)
             .FirstOrDefault(x => x.SchemeId == request.LoyaltySchemeId);
         if (scheme is null) throw Http(LaravelStatusCodes.NoContentLikeValidation, "Selected scheme is not available in this wallet.");
-        if (request.Points > scheme.AvailablePoints) throw Http(LaravelStatusCodes.NoContentLikeValidation, "Redeem points cannot be greater than available points.");
+        if (request.Points > scheme.AvailablePoints) throw Http(LaravelStatusCodes.NoContentLikeValidation, $"Redeem points ({request.Points:0}) cannot be more than the available {scheme.AvailablePoints:0} points for {scheme.SchemeName} ({walletType}).");
 
         var now = DateTime.UtcNow;
         var redemption = new LoyaltyRedemption
@@ -147,6 +173,71 @@ public sealed class RedemptionService : IRedemptionService
         }, "Redemption request submitted successfully");
     }
 
+    public MasterDataFileDto GetImportTemplate() =>
+        CreateWorkbook("Redemption Import Template.xlsx",
+            ["Customer ID", "Scheme Code", "Redeem Points", "Redeem Mode"],
+            Enumerable.Empty<object?[]>());
+
+    public async Task<RedemptionImportResultDto> ImportRedemptionsAsync(Stream fileStream, ulong? actorUserId, bool scopeInvoicesToActor, CancellationToken cancellationToken)
+    {
+        var result = new RedemptionImportResultDto();
+        using var workbook = new XLWorkbook(fileStream);
+        var sheet = workbook.Worksheets.First();
+        // Header in row 1; data from row 2. A row whose Customer ID is not a number (a blank line
+        // or the template's hint row) is skipped, so the same template file can be filled and sent back.
+        var dataRows = sheet.RowsUsed().Skip(1).ToList();
+
+        var codes = dataRows.Select(r => r.Cell(2).GetString().Trim()).Where(x => x.Length > 0).Distinct().ToList();
+        var schemesByCode = await _repository.GetSchemesByCodeAsync(codes, cancellationToken);
+
+        foreach (var row in dataRows)
+        {
+            var customerText = row.Cell(1).GetString().Trim();
+            if (!ulong.TryParse(customerText, out var customerId) || customerId == 0) continue;
+
+            result.Total++;
+            var schemeCode = row.Cell(2).GetString().Trim();
+            var pointsText = row.Cell(3).GetString().Trim();
+            var mode = row.Cell(4).GetString().Trim();
+            var rowResult = new RedemptionImportRowResultDto { Row = row.RowNumber(), CustomerId = customerId };
+            try
+            {
+                if (schemeCode.Length == 0) throw Http(LaravelStatusCodes.NoContentLikeValidation, "Scheme Code is required.");
+                if (!schemesByCode.TryGetValue(schemeCode, out var scheme)) throw Http(LaravelStatusCodes.NoContentLikeValidation, $"Scheme code '{schemeCode}' was not found.");
+                if (!decimal.TryParse(pointsText, out var points)) throw Http(LaravelStatusCodes.NoContentLikeValidation, "Redeem Points must be a number.");
+
+                await CreateRedemptionAsync(new RedemptionCreateRequestDto
+                {
+                    CustomerId = customerId,
+                    LoyaltySchemeId = scheme.Id,
+                    WalletType = IsBooster(scheme.Tag) ? "Booster" : "Regular",
+                    RedeemMode = mode,
+                    Points = points,
+                    BankConfirmed = true
+                }, actorUserId, cancellationToken, scopeInvoicesToActor);
+
+                rowResult.Success = true;
+                rowResult.Message = "Redemption created (Pending).";
+                result.Created++;
+            }
+            catch (LaravelHttpException ex)
+            {
+                rowResult.Success = false;
+                rowResult.Message = ex.ResponseMessage?.ToString() ?? "Validation failed.";
+                result.Failed++;
+            }
+            catch (Exception)
+            {
+                rowResult.Success = false;
+                rowResult.Message = "Could not process this row.";
+                result.Failed++;
+            }
+            result.Rows.Add(rowResult);
+        }
+
+        return result;
+    }
+
     private async Task<RedemptionCustomerOptionDto> BuildCustomerOptionAsync(CustomerDto customer, IReadOnlyCollection<NewInvoiceDto> invoices, CancellationToken cancellationToken)
     {
         var redemptions = await _repository.GetCustomerRedemptionsAsync(customer.Id, cancellationToken);
@@ -172,6 +263,12 @@ public sealed class RedemptionService : IRedemptionService
             .Where(x => x.AvailablePoints > 0)
             .OrderBy(x => x.SchemeName)
             .ToList();
+
+        // Drop schemes whose redemption toggle is off, so the create form never lists them and
+        // their points are not shown as redeemable.
+        var schemeIds = schemes.Where(x => x.SchemeId.HasValue).Select(x => x.SchemeId!.Value).Distinct().ToList();
+        var schemeFlags = await _repository.GetSchemeFlagsAsync(schemeIds, cancellationToken);
+        schemes = schemes.Where(x => x.SchemeId.HasValue && schemeFlags.TryGetValue(x.SchemeId.Value, out var f) && f.RedemptionEnabled).ToList();
 
         var kyc = KycApproved(customer);
         return new RedemptionCustomerOptionDto
@@ -273,8 +370,6 @@ public sealed class RedemptionService : IRedemptionService
         _ => "CUS"
     };
 
-    private static string TitleCase(string value) =>
-        System.Globalization.CultureInfo.InvariantCulture.TextInfo.ToTitleCase(value.Replace("_", " ").ToLowerInvariant());
 
     private static string JoinLabels(IReadOnlyList<string> values) =>
         values.Count switch
@@ -300,7 +395,7 @@ public sealed class RedemptionService : IRedemptionService
 
         for (var column = 0; column < headings.Length; column++)
         {
-            worksheet.Cell(1, column + 1).Value = TitleCase(headings[column].Replace("_", " "));
+            worksheet.Cell(1, column + 1).Value = headings[column];
             worksheet.Cell(1, column + 1).Style.Font.Bold = true;
         }
 

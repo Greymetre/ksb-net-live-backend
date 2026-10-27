@@ -6,6 +6,7 @@ using Application.Interfaces.Services;
 using ClosedXML.Excel;
 using Domain.Entities;
 using Shared.Exceptions;
+using Shared.Json;
 using Shared.Responses;
 using System.Globalization;
 
@@ -31,7 +32,7 @@ public sealed class NewInvoiceService : INewInvoiceService
             DistributorCustomerId = filter.DistributorCustomerId, SecondaryCustomerIds = filter.SecondaryCustomerIds,
             SchemeId = filter.SchemeId, RetailerSearch = filter.RetailerSearch, InvoiceNumber = filter.InvoiceNumber,
             ApprovalStatus = filter.ApprovalStatus, ApprovalStatuses = filter.ApprovalStatuses,
-            BranchId = filter.BranchId, DivisionId = filter.DivisionId,
+            BranchId = filter.BranchId, DivisionIds = filter.DivisionIds,
             FromDate = filter.FromDate, ToDate = filter.ToDate, Search = filter.Search, Unpaged = true
         };
         var summaryInvoices = (await _repository.GetInvoicesAsync(summaryFilter, actorUserId, cancellationToken)).Items;
@@ -44,7 +45,7 @@ public sealed class NewInvoiceService : INewInvoiceService
         {
             DistributorCustomerId = filter.DistributorCustomerId, SecondaryCustomerIds = filter.SecondaryCustomerIds,
             SchemeId = filter.SchemeId, RetailerSearch = filter.RetailerSearch, InvoiceNumber = filter.InvoiceNumber,
-            BranchId = filter.BranchId, DivisionId = filter.DivisionId,
+            BranchId = filter.BranchId, DivisionIds = filter.DivisionIds,
             FromDate = filter.FromDate, ToDate = filter.ToDate, Search = filter.Search, Unpaged = true
         };
         var stageCounts = await _repository.GetInvoiceSummaryAsync(stageFilter, actorUserId, cancellationToken);
@@ -462,7 +463,14 @@ public sealed class NewInvoiceService : INewInvoiceService
         if (errors.Count > 0) throw Http(LaravelStatusCodes.NoContentLikeValidation, errors);
 
         var retailer = await _repository.GetRetailerAsync(request.SecondaryCustomerId, actorUserId, cancellationToken);
-        if (retailer is null) throw Http(LaravelStatusCodes.NoContentLikeValidation, new { secondary_customer_id = new[] { "Only active retailer customers can be selected." } });
+        if (retailer is null) throw Http(LaravelStatusCodes.NoContentLikeValidation, new { secondary_customer_id = new[] { "Only a retailer customer within your access can be selected." } });
+        // Two independent guards - a customer may be inactive, or rejected, or both - and an invoice
+        // must not be raised in either case. This one place covers the CRM, the SFA app and the
+        // Vriddhi app, on both create and edit, since all of them validate through here.
+        if (!string.Equals(retailer.Active, "Y", StringComparison.OrdinalIgnoreCase))
+            throw Http(LaravelStatusCodes.NoContentLikeValidation, new { secondary_customer_id = new[] { "This customer is inactive. An invoice cannot be created for an inactive customer." } });
+        if (IsRejectedCustomer(retailer))
+            throw Http(LaravelStatusCodes.NoContentLikeValidation, new { secondary_customer_id = new[] { "This customer is rejected. An invoice cannot be created for a rejected customer." } });
 
         if (await _repository.InvoiceNumberExistsAsync(request.InvoiceNumber!.Trim(), request.SecondaryCustomerId, request.DealerCustomerId, exceptId, cancellationToken))
         {
@@ -628,4 +636,9 @@ public sealed class NewInvoiceService : INewInvoiceService
     }
 
     private static LaravelHttpException Http(int statusCode, object message) => new(statusCode, message);
+
+    // A customer counts as rejected when its approval status (custom_fields.status, stored upper
+    // or lower case) reads "rejected" - rejecting it does not change its Active flag.
+    private static bool IsRejectedCustomer(Customer customer) =>
+        string.Equals(CustomFieldsJson.Read(customer.CustomFields).GetValueOrDefault("status")?.Trim(), "rejected", StringComparison.OrdinalIgnoreCase);
 }

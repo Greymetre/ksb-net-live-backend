@@ -26,6 +26,16 @@ public sealed class RedemptionDto
     public ulong? CreatedBy { get; set; }
     public string? CreatedByName { get; set; }
     public DateTime? CreatedAt { get; set; }
+    // Extra customer/employee detail carried for the Redemption Report export.
+    public string Zone { get; set; } = string.Empty;
+    public string Branch { get; set; } = string.Empty;
+    public string DealerCode { get; set; } = string.Empty;
+    public string ShopName { get; set; } = string.Empty;
+    public string GstNo { get; set; } = string.Empty;
+    public string AadhaarNumber { get; set; } = string.Empty;
+    public string PanNumber { get; set; } = string.Empty;
+    public string BankAccountType { get; set; } = string.Empty;
+    public DateTime? ApprovedAt { get; set; }
 }
 
 public sealed class RedemptionFilterDto
@@ -99,4 +109,21 @@ public sealed class RedemptionSchemeOptionDto
     public decimal EarnedPoints { get; set; }
     public decimal RedeemedPoints { get; set; }
     public decimal AvailablePoints { get; set; }
+}
+
+public sealed class RedemptionImportResultDto
+{
+    public int Total { get; set; }
+    public int Created { get; set; }
+    public int Failed { get; set; }
+    public List<RedemptionImportRowResultDto> Rows { get; set; } = [];
+}
+
+public sealed class RedemptionImportRowResultDto
+{
+    public int Row { get; set; }
+    public bool Success { get; set; }
+    public ulong CustomerId { get; set; }
+    public string? TransactionNo { get; set; }
+    public string Message { get; set; } = string.Empty;
 }

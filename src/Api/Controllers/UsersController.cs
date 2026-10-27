@@ -30,7 +30,7 @@ public sealed class UsersController : ControllerBase
         [FromQuery] string? search,
         [FromQuery(Name = "user_type")] string? userType,
         [FromQuery] string? active,
-        [FromQuery(Name = "division_id")] ulong? divisionId,
+        [FromQuery(Name = "division_id")] ulong[] divisionIds,
         [FromQuery(Name = "branch_id")] string? branchId,
         [FromQuery(Name = "department_id")] ulong? departmentId,
         [FromQuery(Name = "designation_id")] ulong? designationId,
@@ -42,7 +42,7 @@ public sealed class UsersController : ControllerBase
             Search = search,
             UserType = userType,
             Active = active,
-            DivisionId = divisionId,
+            DivisionIds = divisionIds,
             BranchId = branchId,
             DepartmentId = departmentId,
             DesignationId = designationId
@@ -187,14 +187,14 @@ public sealed class UsersController : ControllerBase
     [RequirePermission("user.export")]
     [HttpGet("users-download")]
     [HttpGet("users/export")]
-    public async Task<IActionResult> ExportUsers([FromQuery(Name = "user_type")] string? userType, [FromQuery] string? active, [FromQuery(Name = "division_id")] ulong? divisionId, [FromQuery(Name = "branch_id")] string? branchId, [FromQuery(Name = "department_id")] ulong? departmentId, [FromQuery(Name = "designation_id")] ulong? designationId, CancellationToken cancellationToken)
+    public async Task<IActionResult> ExportUsers([FromQuery(Name = "user_type")] string? userType, [FromQuery] string? active, [FromQuery(Name = "division_id")] ulong[] divisionIds, [FromQuery(Name = "branch_id")] string? branchId, [FromQuery(Name = "department_id")] ulong? departmentId, [FromQuery(Name = "designation_id")] ulong? designationId, CancellationToken cancellationToken)
     {
         var file = await _userService.ExportUsersAsync(new UserExportFiltersDto
         {
             ActorUserId = CurrentUserId(),
             UserType = userType,
             Active = active,
-            DivisionId = divisionId,
+            DivisionIds = divisionIds,
             BranchId = branchId,
             DepartmentId = departmentId,
             DesignationId = designationId

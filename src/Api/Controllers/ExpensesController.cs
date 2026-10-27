@@ -24,9 +24,9 @@ public sealed class ExpensesController : ControllerBase
 
     [HttpGet]
     [RequirePermission("expense.view")]
-    public async Task<IActionResult> GetExpenses([FromQuery(Name = "executive_id")] ulong? executiveId, [FromQuery(Name = "expenses_type")] ulong? expensesType, [FromQuery(Name = "branch_id")] ulong? branchId, [FromQuery(Name = "division_id")] ulong? divisionId, [FromQuery] string? payroll, [FromQuery] int? status, [FromQuery(Name = "start_date")] string? startDate, [FromQuery(Name = "end_date")] string? endDate, [FromQuery(Name = "expense_id")] ulong? expenseId, [FromQuery] string? search, [FromQuery(Name = "employee_status")] string? employeeStatus, CancellationToken cancellationToken)
+    public async Task<IActionResult> GetExpenses([FromQuery(Name = "executive_id")] ulong? executiveId, [FromQuery(Name = "expenses_type")] ulong? expensesType, [FromQuery(Name = "branch_id")] ulong? branchId, [FromQuery(Name = "division_id")] ulong[] divisionIds, [FromQuery] string? payroll, [FromQuery] int? status, [FromQuery(Name = "start_date")] string? startDate, [FromQuery(Name = "end_date")] string? endDate, [FromQuery(Name = "expense_id")] ulong? expenseId, [FromQuery] string? search, [FromQuery(Name = "employee_status")] string? employeeStatus, CancellationToken cancellationToken)
     {
-        var response = await _service.GetExpensesAsync(new ExpenseFilterDto { ExecutiveId = executiveId, ExpensesType = expensesType, BranchId = branchId, DivisionId = divisionId, Payroll = payroll, Status = status, StartDate = startDate, EndDate = endDate, ExpenseId = expenseId, Search = search, EmployeeStatus = employeeStatus, ActorUserId = CurrentUserId() }, cancellationToken);
+        var response = await _service.GetExpensesAsync(new ExpenseFilterDto { ExecutiveId = executiveId, ExpensesType = expensesType, BranchId = branchId, DivisionIds = divisionIds, Payroll = payroll, Status = status, StartDate = startDate, EndDate = endDate, ExpenseId = expenseId, Search = search, EmployeeStatus = employeeStatus, ActorUserId = CurrentUserId() }, cancellationToken);
         NormalizeAttachmentUrls(response);
         return Ok(response);
     }
@@ -34,8 +34,8 @@ public sealed class ExpensesController : ControllerBase
     /// <summary>Status counts and amounts for the same scope and filters the list uses.</summary>
     [HttpGet("summary")]
     [RequirePermission("expense.view")]
-    public async Task<IActionResult> GetSummary([FromQuery(Name = "executive_id")] ulong? executiveId, [FromQuery(Name = "expenses_type")] ulong? expensesType, [FromQuery(Name = "branch_id")] ulong? branchId, [FromQuery(Name = "division_id")] ulong? divisionId, [FromQuery] string? payroll, [FromQuery] int? status, [FromQuery(Name = "start_date")] string? startDate, [FromQuery(Name = "end_date")] string? endDate, CancellationToken cancellationToken) =>
-        Ok(await _service.GetSummaryAsync(new ExpenseFilterDto { ExecutiveId = executiveId, ExpensesType = expensesType, BranchId = branchId, DivisionId = divisionId, Payroll = payroll, Status = status, StartDate = startDate, EndDate = endDate, ActorUserId = CurrentUserId() }, cancellationToken));
+    public async Task<IActionResult> GetSummary([FromQuery(Name = "executive_id")] ulong? executiveId, [FromQuery(Name = "expenses_type")] ulong? expensesType, [FromQuery(Name = "branch_id")] ulong? branchId, [FromQuery(Name = "division_id")] ulong[] divisionIds, [FromQuery] string? payroll, [FromQuery] int? status, [FromQuery(Name = "start_date")] string? startDate, [FromQuery(Name = "end_date")] string? endDate, CancellationToken cancellationToken) =>
+        Ok(await _service.GetSummaryAsync(new ExpenseFilterDto { ExecutiveId = executiveId, ExpensesType = expensesType, BranchId = branchId, DivisionIds = divisionIds, Payroll = payroll, Status = status, StartDate = startDate, EndDate = endDate, ActorUserId = CurrentUserId() }, cancellationToken));
 
     [HttpGet("options")]
     public async Task<IActionResult> GetOptions(CancellationToken cancellationToken)

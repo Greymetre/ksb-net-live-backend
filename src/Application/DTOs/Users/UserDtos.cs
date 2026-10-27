@@ -10,7 +10,7 @@ public sealed class UserExportFiltersDto
     public ulong? ActorUserId { get; set; }
     public string? UserType { get; set; }
     public string? Active { get; set; }
-    public ulong? DivisionId { get; set; }
+    public ulong[] DivisionIds { get; set; } = [];
     public string? BranchId { get; set; }
     public ulong? DepartmentId { get; set; }
     public ulong? DesignationId { get; set; }
@@ -23,7 +23,7 @@ public sealed class UserListFiltersDto
     public string? Search { get; set; }
     public string? UserType { get; set; }
     public string? Active { get; set; }
-    public ulong? DivisionId { get; set; }
+    public ulong[] DivisionIds { get; set; } = [];
     public string? BranchId { get; set; }
     public ulong? DepartmentId { get; set; }
     public ulong? DesignationId { get; set; }

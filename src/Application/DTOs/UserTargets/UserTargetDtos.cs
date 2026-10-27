@@ -6,7 +6,7 @@ public sealed class UserTargetFilterDto
 {
     public ulong? BranchId { get; set; }
     public ulong? UserId { get; set; }
-    public ulong? DivisionId { get; set; }
+    public ulong[] DivisionIds { get; set; } = [];
     public string? Type { get; set; }
     public string? Month { get; set; }
     public string? FinancialYear { get; set; }

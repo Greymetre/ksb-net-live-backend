@@ -676,9 +676,9 @@ public sealed class OrderRepository : IOrderRepository
             query = query.Where(x => _dbContext.OrderDetails.Any(line => line.OrderId == x.Id
                 && _dbContext.Products.IgnoreQueryFilters().Any(product => product.Id == line.ProductId && product.CategoryId == filter.SegmentId.Value)));
 
-        if (filter.DivisionId.HasValue)
+        if (filter.DivisionIds is { Length: > 0 })
         {
-            var userIds = _dbContext.Users.AsNoTracking().Where(x => x.DivisionId == filter.DivisionId.Value).Select(x => x.Id);
+            var userIds = _dbContext.Users.AsNoTracking().Where(x => x.DivisionId.HasValue && filter.DivisionIds.Contains(x.DivisionId.Value)).Select(x => x.Id);
             query = query.Where(x => x.CreatedBy.HasValue && userIds.Contains(x.CreatedBy.Value));
         }
 

@@ -35,7 +35,7 @@ public sealed class UserRepository : IUserRepository
             ActorUserId = filters.ActorUserId,
             UserType = filters.UserType,
             Active = filters.Active,
-            DivisionId = filters.DivisionId,
+            DivisionIds = filters.DivisionIds,
             BranchId = filters.BranchId,
             DepartmentId = filters.DepartmentId,
             DesignationId = filters.DesignationId
@@ -343,9 +343,9 @@ public sealed class UserRepository : IUserRepository
             query = query.Where(x => x.Active == filters.Active.Trim());
         }
 
-        if (filters.DivisionId.HasValue)
+        if (filters.DivisionIds is { Length: > 0 })
         {
-            query = query.Where(x => x.DivisionId == filters.DivisionId);
+            query = query.Where(x => x.DivisionId.HasValue && filters.DivisionIds.Contains(x.DivisionId.Value));
         }
 
         if (!string.IsNullOrWhiteSpace(filters.BranchId))
