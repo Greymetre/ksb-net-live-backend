@@ -1419,6 +1419,14 @@ WHERE customer_id IN ({customerIdCsv})
 
     private sealed record CustomerExportLookup(string Name, string? Code);
 
+    public async Task<CustomerDto> GetPointSummaryAsync(ulong customerId, CancellationToken cancellationToken)
+    {
+        var dto = new CustomerDto { Id = customerId };
+        var customer = await _dbContext.Customers.AsNoTracking().FirstOrDefaultAsync(x => x.Id == customerId, cancellationToken);
+        if (customer is not null) await AttachPointSummaryAsync(dto, customer, cancellationToken);
+        return dto;
+    }
+
     private async Task AttachPointSummaryAsync(CustomerDto customerDto, Customer customer, CancellationToken cancellationToken)
     {
         // Approved invoices earn points; the ones still moving through approval are what the
@@ -1518,8 +1526,12 @@ WHERE customer_id IN ({customerIdCsv})
             .Select(x => new { Status = x.Key, Points = x.Sum(row => row.Points) })
             .ToListAsync(cancellationToken);
 
+        // Redeemed points subtract from the balance for EVERY redemption that is not Rejected
+        // - pending, approved or hold all hold the points. Only a rejected request gives them
+        // back. The same rule applies everywhere: these cards, the CRM "available to redeem",
+        // the app wallet and the Wallet Report export.
         customerDto.TotalRedeemPoints = redemptionRows
-            .Where(x => x.Status is LoyaltyRedemption.StatusPending or LoyaltyRedemption.StatusApproved)
+            .Where(x => x.Status != LoyaltyRedemption.StatusRejected)
             .Sum(x => x.Points);
         customerDto.TotalRejectedPoints = redemptionRows
             .Where(x => x.Status == LoyaltyRedemption.StatusRejected)

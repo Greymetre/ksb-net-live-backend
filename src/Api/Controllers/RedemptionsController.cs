@@ -71,7 +71,7 @@ public sealed class RedemptionsController : ControllerBase
             return StatusCode(StatusCodes.Status403Forbidden, LaravelApiResponse.MessageOnly("error", "403 Forbidden"));
         }
 
-        var response = await _service.CreateRedemptionAsync(request, currentUserId, cancellationToken, scopeInvoicesToActor: !isCustomerProvider);
+        var response = await _service.CreateRedemptionAsync(request, currentUserId, cancellationToken, scopeInvoicesToActor: !isCustomerProvider, isAppChannel: isCustomerProvider);
         return StatusCode(StatusCodes.Status201Created, response);
     }
 

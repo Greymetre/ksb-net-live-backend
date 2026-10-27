@@ -20,7 +20,13 @@ public sealed class LoyaltyScheme : BaseEntity
     public DateOnly EndDate { get; set; }
     public string SchemeType { get; set; } = "Invoice";
     public string BasedOn { get; set; } = "Value";
+    /// <summary>"Redemption App" toggle: redemption raised through the apps (the Vriddhi
+    /// loyalty app's self-redeem and every app-facing wallet/eligibility display). The column
+    /// name stays <c>redemption_enabled</c> so the existing app reads are unchanged.</summary>
     public bool RedemptionEnabled { get; set; }
+    /// <summary>"Redemption CRM" toggle: redemption raised from the CRM (the create form and
+    /// the bulk import). Independent of <see cref="RedemptionEnabled"/>; defaults off.</summary>
+    public bool RedemptionCrmEnabled { get; set; }
     public string Status { get; set; } = "Draft";
     public string? BrochurePath { get; set; }
     public DateTime? SubmittedAt { get; set; }

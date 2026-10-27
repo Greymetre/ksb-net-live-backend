@@ -101,13 +101,13 @@ public sealed class RedemptionService : IRedemptionService
         var options = new List<RedemptionCustomerOptionDto>();
         foreach (var customer in customers)
         {
-            options.Add(await BuildCustomerOptionAsync(customer, invoices.Where(x => x.SecondaryCustomerId == customer.Id).ToList(), cancellationToken));
+            options.Add(await BuildCustomerOptionAsync(customer, invoices.Where(x => x.SecondaryCustomerId == customer.Id).ToList(), cancellationToken, isAppChannel: false));
         }
 
         return LaravelApiResponse.Success("customers", options);
     }
 
-    public async Task<LaravelApiResponse> CreateRedemptionAsync(RedemptionCreateRequestDto request, ulong? actorUserId, CancellationToken cancellationToken, bool scopeInvoicesToActor = true)
+    public async Task<LaravelApiResponse> CreateRedemptionAsync(RedemptionCreateRequestDto request, ulong? actorUserId, CancellationToken cancellationToken, bool scopeInvoicesToActor = true, bool isAppChannel = false)
     {
         if (!actorUserId.HasValue) throw Http(LaravelStatusCodes.Unauthorized, "Unauthenticated.");
         if (request.CustomerId == 0) throw Http(LaravelStatusCodes.NoContentLikeValidation, "Customer is required.");
@@ -119,15 +119,17 @@ public sealed class RedemptionService : IRedemptionService
         var redeemMode = NormalizeRedeemMode(request.RedeemMode);
         var customer = await _customerRepository.GetCustomerAsync(request.CustomerId, null, cancellationToken) ?? throw Http(LaravelStatusCodes.NotFound, "Customer not found.");
 
-        // The scheme must have redemption turned on (the on/off toggle from scheme creation).
-        // Enforced here so the CRM form, the import and the Vriddhi app - all three go through this
-        // method - are blocked the same way, not only the app's display.
+        // The scheme must have redemption turned on. There are two independent toggles from
+        // scheme creation: "Redemption App" (the Vriddhi app / any app channel) and
+        // "Redemption CRM" (the create form and the import). The CRM form, the import and the
+        // app all go through this method, so the right toggle is checked per channel.
         var schemeFlags = await _repository.GetSchemeFlagsAsync(new[] { request.LoyaltySchemeId!.Value }, cancellationToken);
-        if (schemeFlags.TryGetValue(request.LoyaltySchemeId.Value, out var requestedScheme) && !requestedScheme.RedemptionEnabled)
+        if (schemeFlags.TryGetValue(request.LoyaltySchemeId.Value, out var requestedScheme)
+            && !(isAppChannel ? requestedScheme.RedemptionEnabled : requestedScheme.RedemptionCrmEnabled))
             throw Http(LaravelStatusCodes.NoContentLikeValidation, $"Redemption is turned off for the scheme \"{requestedScheme.Name}\".");
         var invoiceActorUserId = scopeInvoicesToActor ? actorUserId : null;
         var invoices = (await _newInvoiceRepository.GetInvoicesAsync(new NewInvoiceFilterDto { Unpaged = true, SecondaryCustomerIds = new[] { customer.Id } }, invoiceActorUserId, cancellationToken)).Items;
-        var option = await BuildCustomerOptionAsync(customer, invoices.Where(x => x.SecondaryCustomerId == customer.Id).ToList(), cancellationToken);
+        var option = await BuildCustomerOptionAsync(customer, invoices.Where(x => x.SecondaryCustomerId == customer.Id).ToList(), cancellationToken, isAppChannel);
 
         if (!option.KycApproved) throw Http(LaravelStatusCodes.NoContentLikeValidation, option.KycMessage);
         if (string.IsNullOrWhiteSpace(option.AccountHolder) || string.IsNullOrWhiteSpace(option.AccountNumber) || string.IsNullOrWhiteSpace(option.BankName) || string.IsNullOrWhiteSpace(option.IfscCode))
@@ -238,7 +240,7 @@ public sealed class RedemptionService : IRedemptionService
         return result;
     }
 
-    private async Task<RedemptionCustomerOptionDto> BuildCustomerOptionAsync(CustomerDto customer, IReadOnlyCollection<NewInvoiceDto> invoices, CancellationToken cancellationToken)
+    private async Task<RedemptionCustomerOptionDto> BuildCustomerOptionAsync(CustomerDto customer, IReadOnlyCollection<NewInvoiceDto> invoices, CancellationToken cancellationToken, bool isAppChannel)
     {
         var redemptions = await _repository.GetCustomerRedemptionsAsync(customer.Id, cancellationToken);
         var schemes = invoices
@@ -264,11 +266,12 @@ public sealed class RedemptionService : IRedemptionService
             .OrderBy(x => x.SchemeName)
             .ToList();
 
-        // Drop schemes whose redemption toggle is off, so the create form never lists them and
-        // their points are not shown as redeemable.
+        // Drop schemes whose redemption toggle is off for this channel, so the list never shows
+        // them and their points are not shown as redeemable. The CRM form reads the "Redemption
+        // CRM" toggle; an app channel reads "Redemption App".
         var schemeIds = schemes.Where(x => x.SchemeId.HasValue).Select(x => x.SchemeId!.Value).Distinct().ToList();
         var schemeFlags = await _repository.GetSchemeFlagsAsync(schemeIds, cancellationToken);
-        schemes = schemes.Where(x => x.SchemeId.HasValue && schemeFlags.TryGetValue(x.SchemeId.Value, out var f) && f.RedemptionEnabled).ToList();
+        schemes = schemes.Where(x => x.SchemeId.HasValue && schemeFlags.TryGetValue(x.SchemeId.Value, out var f) && (isAppChannel ? f.RedemptionEnabled : f.RedemptionCrmEnabled)).ToList();
 
         var kyc = KycApproved(customer);
         return new RedemptionCustomerOptionDto

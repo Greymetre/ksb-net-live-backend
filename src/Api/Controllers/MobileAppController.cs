@@ -1912,7 +1912,7 @@ public sealed class MobileAppController : ControllerBase
     private async Task<WalletPair> BuildWallet(ulong customerId, IReadOnlyCollection<NewInvoiceDto> invoices, CancellationToken cancellationToken)
     {
         var redemptions = await _dbContext.LoyaltyRedemptions.AsNoTracking()
-            .Where(x => x.CustomerId == customerId && x.DeletedAt == null && (x.Status == LoyaltyRedemption.StatusPending || x.Status == LoyaltyRedemption.StatusApproved))
+            .Where(x => x.CustomerId == customerId && x.DeletedAt == null && x.Status != LoyaltyRedemption.StatusRejected)
             .ToListAsync(cancellationToken);
         var schemeIds = invoices.Where(x => x.SchemeId.HasValue).Select(x => x.SchemeId!.Value).Distinct().ToArray();
         // A scheme that was deleted, deactivated or pulled back from Published must not

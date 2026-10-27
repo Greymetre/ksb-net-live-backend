@@ -71,7 +71,10 @@ public sealed class ReportManagementController : ControllerBase
             .OrderByDescending(x => x.StartDate).ThenBy(x => x.SchemeName)
             .Select(x => new { id = x.Id, name = x.SchemeName, code = x.SchemeCode, start_date = x.StartDate, end_date = x.EndDate })
             .ToListAsync(cancellationToken);
-        return Ok(new { segments, zones, schemes });
+        // Branches (each with its zone) feed the Wallet Report's Branch filter; the other
+        // Loyalty Performance sheets ignore them.
+        var branches = await BranchOptionRowsAsync(cancellationToken);
+        return Ok(new { segments, zones, schemes, branches });
     }
 
     [HttpGet("rating-report/options")]
@@ -2346,6 +2349,161 @@ WHERE customertype = 2 AND deleted_at IS NULL AND executive_id IN ({zoneEmpCsv})
         return File(stream.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "Loyalty_Performance_Retailer_Wise.xlsx");
     }
 
+    [HttpGet("loyalty-performance/wallet-export")]
+    [RequirePermission("loyalty_performance_report.export_wallet")]
+    public async Task<IActionResult> ExportWalletReport([FromQuery] WalletReportFilter filter, CancellationToken cancellationToken)
+    {
+        if (filter.ZoneIds.Length == 0) return BadRequest(new { status = false, message = "Zone is required." });
+        if (!filter.SchemeId.HasValue) return BadRequest(new { status = false, message = "Scheme is required." });
+
+        var zoneNames = await _db.Divisions.AsNoTracking().Where(x => filter.ZoneIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, x => x.DivisionName, cancellationToken);
+        if (zoneNames.Count != filter.ZoneIds.Distinct().Count()) return BadRequest(new { status = false, message = "One or more selected zones were not found." });
+
+        var scheme = await _db.LoyaltySchemes.AsNoTracking().FirstOrDefaultAsync(x => x.Id == filter.SchemeId && x.DeletedAt == null, cancellationToken);
+        if (scheme is null) return BadRequest(new { status = false, message = "The selected scheme was not found." });
+
+        var employeeStatus = Domain.Services.EmployeeStatus.Read(filter.EmployeeStatus);
+        var visibleIds = (await _hr.GetVisibleUserIdsAsync(CurrentUserId(), includeInactive: true, cancellationToken)).ToHashSet();
+        var allUsers = (await _db.Users.AsNoTracking().Where(x => !x.IsDeleted && x.DeletedAt == null).ToListAsync(cancellationToken)).ToDictionary(x => x.Id);
+        var zoneEmployees = allUsers.Values
+            .Where(x => x.DivisionId.HasValue && filter.ZoneIds.Contains(x.DivisionId.Value)
+                && visibleIds.Contains(x.Id) && Domain.Services.EmployeeStatus.Matches(employeeStatus, x.Active)
+                && (!filter.BranchId.HasValue || UserHasBranch(x, filter.BranchId.Value)))
+            .ToDictionary(x => x.Id);
+
+        // Retailers that raised at least one invoice under the selected scheme.
+        var invoicedRetailerIds = (await _db.NewInvoices.AsNoTracking()
+            .Where(x => x.LoyaltySchemeId == filter.SchemeId)
+            .Select(x => x.SecondaryCustomerId).Distinct().ToListAsync(cancellationToken)).ToHashSet();
+
+        // Retailers assigned to a selected-zone/branch employee (junction or executive_id column),
+        // kept to the ones that actually invoiced under the scheme.
+        var zoneEmpCsv = string.Join(',', zoneEmployees.Keys);
+        var assignRows = zoneEmployees.Count == 0 ? [] : await Query($@"
+SELECT CAST(ed.customer_id AS bigint) rid FROM employee_details ed
+JOIN customers c ON c.id = ed.customer_id AND c.customertype = 2 AND c.deleted_at IS NULL
+WHERE ed.deleted_at IS NULL AND ed.active = 'Y' AND ed.user_id IN ({zoneEmpCsv})
+UNION SELECT CAST(id AS bigint) rid FROM customers WHERE customertype = 2 AND deleted_at IS NULL AND executive_id IN ({zoneEmpCsv})", cancellationToken);
+        var retailerIds = assignRows.Select(r => ULong(r, "rid")).Where(invoicedRetailerIds.Contains).Distinct().ToList();
+
+        var retailers = await _db.Customers.AsNoTracking()
+            .Where(x => x.CustomerType == 2 && retailerIds.Contains(x.Id))
+            .Select(x => new { x.Id, x.Name, x.CustomFields, x.ExecutiveId, x.ParentId })
+            .ToListAsync(cancellationToken);
+
+        ulong AssignedEmployeeId(string? customFields, ulong? executiveId)
+        {
+            var fields = CustomFieldsJson.Read(customFields);
+            var id = ReadIdList(fields.GetValueOrDefault("employee_id")).FirstOrDefault();
+            if (id == 0) id = ReadIdList(fields.GetValueOrDefault("sales_executive_id")).FirstOrDefault();
+            return id != 0 ? id : (executiveId ?? 0);
+        }
+        ulong DistributorId(string? customFields, ulong? parentId)
+        {
+            var fields = CustomFieldsJson.Read(customFields);
+            var id = ReadIdList(fields.GetValueOrDefault("distributor_name")).FirstOrDefault();
+            if (id == 0) id = ReadIdList(fields.GetValueOrDefault("agri_distributor")).FirstOrDefault();
+            return id != 0 ? id : (parentId ?? 0);
+        }
+        var distributorByRetailer = retailers.ToDictionary(x => x.Id, x => DistributorId(x.CustomFields, x.ParentId));
+        var distributorIds = distributorByRetailer.Values.Where(x => x > 0).Distinct().ToArray();
+        var dealers = (await _db.Customers.AsNoTracking().IgnoreQueryFilters()
+                .Where(x => x.CustomerType == 1 && distributorIds.Contains(x.Id))
+                .Select(x => new { x.Id, x.Name, x.CustomerCode, x.CustomFields })
+                .ToListAsync(cancellationToken))
+            .ToDictionary(x => x.Id, x => (
+                Name: x.Name ?? "",
+                Code: !string.IsNullOrWhiteSpace(x.CustomerCode) ? x.CustomerCode : CustomFieldsJson.Read(x.CustomFields).GetValueOrDefault("distributor_code") ?? ""));
+        var designations = await _db.Designations.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.DesignationName, cancellationToken);
+        var branches = await _db.Branches.AsNoTracking().ToDictionaryAsync(x => x.Id, x => x.BranchName, cancellationToken);
+
+        var rows = new List<WalletReportRow>();
+        foreach (var r in retailers)
+        {
+            var empId = AssignedEmployeeId(r.CustomFields, r.ExecutiveId);
+            if (!zoneEmployees.TryGetValue(empId, out var emp)) continue; // keep to the selected zone/branch's retailers
+            var zoneName = emp.DivisionId is { } div && zoneNames.TryGetValue(div, out var zn) ? zn : "";
+            dealers.TryGetValue(distributorByRetailer.GetValueOrDefault(r.Id), out var dealer);
+            // Whole-wallet points, computed exactly as the customer detail page's cards
+            // (redeemed = APPROVED redemptions only).
+            var p = await _customers.GetPointSummaryAsync(r.Id, cancellationToken);
+            rows.Add(new WalletReportRow(
+                zoneName,
+                BranchName(emp, branches),
+                dealer.Code ?? "",
+                dealer.Name ?? "",
+                emp.Name,
+                emp.DesignationId is { } did && designations.TryGetValue(did, out var dn) ? dn : "",
+                emp.ReportingId is { } rid && allUsers.TryGetValue(rid, out var mgr) ? mgr.Name : "",
+                r.Name,
+                p.TotalPoints, p.TotalRegularPoints, p.TotalBoosterPoints,
+                p.TotalRedeemPoints, p.TotalRejectedPoints, p.TotalBalancePoints));
+        }
+        rows = rows
+            .OrderBy(x => string.IsNullOrWhiteSpace(x.Branch) ? 1 : 0)
+            .ThenBy(x => x.Branch, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.EmployeeName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.RetailerName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        using var workbook = new XLWorkbook();
+        var sheet = workbook.Worksheets.Add("Wallet Report");
+        var headers = new[] { "Zone", "Branch", "Dealer Code", "Dealer", "Employee Name", "Deg", "Reporting Manager", "Retailer Name",
+            "Total Points Earned", "Total Regular Earned", "Total Booster Earned", "Total Redeem Point", "Total Reject Point", "Total Balance Point" };
+        const int labelColumns = 8;
+        for (var i = 0; i < headers.Length; i++) sheet.Cell(1, i + 1).Value = headers[i];
+
+        void WriteWalletLine(int row, IEnumerable<object?> label, IReadOnlyCollection<WalletReportRow> figures)
+        {
+            WriteRow(sheet, row, label.Concat(new object?[]
+            {
+                figures.Sum(x => x.EarnedTotal), figures.Sum(x => x.EarnedRegular), figures.Sum(x => x.EarnedBooster),
+                figures.Sum(x => x.Redeem), figures.Sum(x => x.Rejected), figures.Sum(x => x.Balance)
+            }).ToList());
+        }
+        void WriteWalletTotal(int row, string label, IReadOnlyCollection<WalletReportRow> figures, XLColor color, bool whiteText)
+        {
+            WriteWalletLine(row, new object?[] { label }.Concat(Enumerable.Repeat<object?>("", labelColumns - 1)), figures);
+            var range = sheet.Range(row, 1, row, headers.Length);
+            range.Style.Fill.BackgroundColor = color; range.Style.Font.Bold = true;
+            if (whiteText) range.Style.Font.FontColor = XLColor.White;
+        }
+
+        var outputRow = 2;
+        foreach (var zoneGroup in rows.GroupBy(x => x.Zone).ByZone(x => x.Key))
+        {
+            foreach (var branchGroup in zoneGroup.GroupBy(x => x.Branch))
+            {
+                foreach (var row in branchGroup)
+                    WriteWalletLine(outputRow++,
+                        new object?[] { row.Zone, row.Branch, row.DealerCode, row.DealerName, row.EmployeeName, row.Designation, row.ReportingManager, row.RetailerName },
+                        new[] { row });
+                WriteWalletTotal(outputRow++, "SUBTOTAL - " + (string.IsNullOrWhiteSpace(branchGroup.Key) ? "No Branch" : branchGroup.Key), branchGroup.ToList(), XLColor.Yellow, false);
+            }
+            WriteWalletTotal(outputRow++, "ZONE TOTAL - " + (string.IsNullOrWhiteSpace(zoneGroup.Key) ? "No Zone" : zoneGroup.Key), zoneGroup.ToList(), XLColor.FromHtml("E53935"), true);
+        }
+        if (rows.Select(x => x.Zone).Distinct().Count() > 1)
+            WriteWalletTotal(outputRow++, "GRAND TOTAL", rows, XLColor.FromHtml("B71C1C"), true);
+
+        var headerRange = sheet.Range(1, 1, 1, headers.Length);
+        headerRange.Style.Fill.BackgroundColor = XLColor.FromHtml("1E88E5");
+        headerRange.Style.Font.Bold = true; headerRange.Style.Font.FontColor = XLColor.White;
+        headerRange.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+        headerRange.Style.Alignment.Vertical = XLAlignmentVerticalValues.Center;
+        headerRange.Style.Alignment.WrapText = true;
+        sheet.Row(1).Height = 30;
+        var usedRange = sheet.RangeUsed();
+        if (usedRange is not null)
+        {
+            usedRange.Style.Font.FontName = "Calibri"; usedRange.Style.Font.FontSize = 9;
+            sheet.Range(2, labelColumns + 1, Math.Max(2, outputRow - 1), headers.Length).Style.NumberFormat.Format = "#,##0.##";
+        }
+        sheet.SheetView.FreezeRows(1); sheet.Columns().AdjustToContents(1, Math.Max(1, outputRow - 1), 8, 45);
+        using var stream = new MemoryStream(); workbook.SaveAs(stream);
+        return File(stream.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "Loyalty_Wallet_Report.xlsx");
+    }
+
     private async Task<IActionResult> ExportLoyaltyPerformance(LoyaltyPerformanceFilter filter, bool dealerWise, CancellationToken cancellationToken)
     {
         var validation = ValidateLoyaltyPerformanceFilter(filter);
@@ -2767,6 +2925,22 @@ public sealed class LoyaltyPerformanceFilter
     [FromQuery(Name = "start_date")] public DateOnly StartDate { get; set; }
     [FromQuery(Name = "end_date")] public DateOnly EndDate { get; set; }
 }
+
+/// <summary>Wallet Report filter: one or more zones (repeated zone_id), an optional branch,
+/// and the scheme that decides which retailers are listed (those with at least one invoice
+/// under it). The point columns are each retailer's whole wallet, as on its detail page.</summary>
+public sealed class WalletReportFilter
+{
+    [FromQuery(Name = "zone_id")] public ulong[] ZoneIds { get; set; } = [];
+    [FromQuery(Name = "branch_id")] public ulong? BranchId { get; set; }
+    [FromQuery(Name = "scheme_id")] public ulong? SchemeId { get; set; }
+    /// <summary>"Y", "N" or nothing at all - see Domain.Services.EmployeeStatus.</summary>
+    [FromQuery(Name = "employee_status")] public string? EmployeeStatus { get; set; }
+}
+
+public sealed record WalletReportRow(string Zone, string Branch, string DealerCode, string DealerName,
+    string EmployeeName, string Designation, string ReportingManager, string RetailerName,
+    decimal EarnedTotal, decimal EarnedRegular, decimal EarnedBooster, decimal Redeem, decimal Rejected, decimal Balance);
 
 public sealed class AsrPerformanceFilter
 {

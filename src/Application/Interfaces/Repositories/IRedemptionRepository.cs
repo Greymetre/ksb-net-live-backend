@@ -10,5 +10,5 @@ public interface IRedemptionRepository
     Task<LoyaltyRedemption> CreateAsync(LoyaltyRedemption redemption, CancellationToken cancellationToken);
     Task<bool> TransactionNoExistsAsync(string transactionNo, CancellationToken cancellationToken);
     Task<IReadOnlyDictionary<string, (ulong Id, string Tag)>> GetSchemesByCodeAsync(IReadOnlyCollection<string> codes, CancellationToken cancellationToken);
-    Task<IReadOnlyDictionary<ulong, (string Name, bool RedemptionEnabled)>> GetSchemeFlagsAsync(IReadOnlyCollection<ulong> schemeIds, CancellationToken cancellationToken);
+    Task<IReadOnlyDictionary<ulong, (string Name, bool RedemptionEnabled, bool RedemptionCrmEnabled)>> GetSchemeFlagsAsync(IReadOnlyCollection<ulong> schemeIds, CancellationToken cancellationToken);
 }

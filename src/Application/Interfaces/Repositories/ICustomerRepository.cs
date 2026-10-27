@@ -8,6 +8,11 @@ public interface ICustomerRepository
     Task<CustomerKycListResultDto> GetKycListAsync(CustomerKycFilterDto filter, CancellationToken cancellationToken);
     Task<IReadOnlyDictionary<ulong, CustomerKycExportStateDto>> GetKycExportStatesAsync(IReadOnlyCollection<ulong> customerIds, CancellationToken cancellationToken);
 
+    /// <summary>The wallet point figures for one customer - earned/expected (total, regular,
+    /// booster), redeemed (approved only), rejected and balance - computed exactly as the
+    /// customer detail page's point cards. Used by the Wallet Report so its numbers match.</summary>
+    Task<CustomerDto> GetPointSummaryAsync(ulong customerId, CancellationToken cancellationToken);
+
     /// <summary>Each retailer's most recent invoice's scheme name, for the retailer export's
     /// Last Scheme column. A retailer with no invoice, or whose last invoice carries no
     /// scheme, is absent.</summary>

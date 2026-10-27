@@ -120,7 +120,7 @@ public sealed class RedemptionRepository : IRedemptionRepository
         await _dbContext.LoyaltyRedemptions.AsNoTracking()
             .Where(x => x.DeletedAt == null
                 && x.CustomerId == customerId
-                && (x.Status == LoyaltyRedemption.StatusPending || x.Status == LoyaltyRedemption.StatusApproved))
+                && x.Status != LoyaltyRedemption.StatusRejected)
             .ToListAsync(cancellationToken);
 
     public async Task<LoyaltyRedemption> CreateAsync(LoyaltyRedemption redemption, CancellationToken cancellationToken)
@@ -146,15 +146,15 @@ public sealed class RedemptionRepository : IRedemptionRepository
             .ToDictionary(g => g.Key, g => (g.First().Id, g.First().SchemeTag ?? "Regular"), StringComparer.OrdinalIgnoreCase);
     }
 
-    public async Task<IReadOnlyDictionary<ulong, (string Name, bool RedemptionEnabled)>> GetSchemeFlagsAsync(IReadOnlyCollection<ulong> schemeIds, CancellationToken cancellationToken)
+    public async Task<IReadOnlyDictionary<ulong, (string Name, bool RedemptionEnabled, bool RedemptionCrmEnabled)>> GetSchemeFlagsAsync(IReadOnlyCollection<ulong> schemeIds, CancellationToken cancellationToken)
     {
         var ids = schemeIds.Where(x => x > 0).Distinct().ToArray();
-        if (ids.Length == 0) return new Dictionary<ulong, (string, bool)>();
+        if (ids.Length == 0) return new Dictionary<ulong, (string, bool, bool)>();
         return (await _dbContext.LoyaltySchemes.AsNoTracking()
                 .Where(x => ids.Contains(x.Id))
-                .Select(x => new { x.Id, x.SchemeName, x.RedemptionEnabled })
+                .Select(x => new { x.Id, x.SchemeName, x.RedemptionEnabled, x.RedemptionCrmEnabled })
                 .ToListAsync(cancellationToken))
-            .ToDictionary(x => x.Id, x => (x.SchemeName ?? "Scheme", x.RedemptionEnabled));
+            .ToDictionary(x => x.Id, x => (x.SchemeName ?? "Scheme", x.RedemptionEnabled, x.RedemptionCrmEnabled));
     }
 
     private async Task<Dictionary<ulong, string>> LoadCitiesAsync(IEnumerable<ulong?> cityIds, CancellationToken cancellationToken)

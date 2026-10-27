@@ -9,7 +9,7 @@ public interface IRedemptionService
     Task<LaravelApiResponse> GetRedemptionsAsync(RedemptionFilterDto filter, CancellationToken cancellationToken);
     Task<MasterDataFileDto> ExportRedemptionsAsync(RedemptionFilterDto filter, CancellationToken cancellationToken);
     Task<LaravelApiResponse> GetCustomerOptionsAsync(string? search, ulong? actorUserId, CancellationToken cancellationToken);
-    Task<LaravelApiResponse> CreateRedemptionAsync(RedemptionCreateRequestDto request, ulong? actorUserId, CancellationToken cancellationToken, bool scopeInvoicesToActor = true);
+    Task<LaravelApiResponse> CreateRedemptionAsync(RedemptionCreateRequestDto request, ulong? actorUserId, CancellationToken cancellationToken, bool scopeInvoicesToActor = true, bool isAppChannel = false);
     Task<RedemptionImportResultDto> ImportRedemptionsAsync(Stream fileStream, ulong? actorUserId, bool scopeInvoicesToActor, CancellationToken cancellationToken);
     MasterDataFileDto GetImportTemplate();
 }
