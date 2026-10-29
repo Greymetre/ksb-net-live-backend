@@ -6,6 +6,7 @@ namespace Application.Interfaces.Services;
 public interface IAuthService
 {
     Task<LaravelApiResponse> LoginAsync(LoginRequestDto request, CancellationToken cancellationToken);
+    Task<LaravelApiResponse> CompleteTwoFactorLoginAsync(string username, CancellationToken cancellationToken);
     Task<LaravelApiResponse> FieldKonnectLoginAsync(LoginRequestDto request, CancellationToken cancellationToken);
     Task<LaravelApiResponse> GetUserProfileAsync(ulong userId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> SignupAsync(SignupRequestDto request, CancellationToken cancellationToken);

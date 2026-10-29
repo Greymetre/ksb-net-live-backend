@@ -714,7 +714,7 @@ public sealed class MobileAppController : ControllerBase
             .Where(x => x.DeletedAt == null
                 && x.Active == "Y"
                 && (x.Status == "Published" || x.Status == "Live")
-                && x.SchemeType == "Invoice")
+                && (x.SchemeType == "Invoice" || x.SchemeType == "Quantity"))
             .ToListAsync(cancellationToken);
         if (schemes.Count == 0) return Ok(new { status = "success", data = Array.Empty<object>() });
 
@@ -785,7 +785,7 @@ public sealed class MobileAppController : ControllerBase
 
         var scheme = await _dbContext.LoyaltySchemes.AsNoTracking().Include(x => x.Slabs)
             .FirstOrDefaultAsync(x => x.Id == id && x.DeletedAt == null && x.Active == "Y"
-                && (x.Status == "Published" || x.Status == "Live") && x.SchemeType == "Invoice", cancellationToken);
+                && (x.Status == "Published" || x.Status == "Live") && (x.SchemeType == "Invoice" || x.SchemeType == "Quantity"), cancellationToken);
         if (scheme is null) return NotFound(new { status = "error", message = "Scheme not found." });
 
         var today = CurrentBusinessDate();
@@ -1077,6 +1077,47 @@ public sealed class MobileAppController : ControllerBase
         return Ok(new { status = "success", data = schemes });
     }
 
+    /// <summary>The products a Quantity Slab scheme covers, for the dealer app's invoice product dropdown.</summary>
+    [Authorize]
+    [HttpGet("dealer/scheme-products")]
+    public async Task<IActionResult> DealerSchemeProducts([FromQuery(Name = "scheme_id")] ulong schemeId, CancellationToken cancellationToken)
+    {
+        var dealer = await CurrentDealer(cancellationToken);
+        if (dealer.Result is not null) return dealer.Result;
+        var response = await _newInvoiceService.GetSchemeProductsAsync(schemeId, cancellationToken);
+        var products = response.Extra.TryGetValue("products", out var value) ? value : null;
+        return Ok(new { status = "success", products });
+    }
+
+    /// <summary>Live preview of the points the entered quantities would earn on a Quantity Slab scheme.</summary>
+    [Authorize]
+    [HttpPost("dealer/quantity-points")]
+    public async Task<IActionResult> DealerQuantityPoints([FromBody] Application.DTOs.NewInvoices.QuantityPointsPreviewRequest request, CancellationToken cancellationToken)
+    {
+        var dealer = await CurrentDealer(cancellationToken);
+        if (dealer.Result is not null) return dealer.Result;
+        var response = await _newInvoiceService.PreviewQuantityPointsAsync(request, cancellationToken);
+        var preview = response.Extra.TryGetValue("preview", out var value) ? value : null;
+        return Ok(new { status = "success", preview });
+    }
+
+    private static List<Application.DTOs.NewInvoices.InvoiceItemInput>? ParseInvoiceItems(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            return System.Text.Json.JsonSerializer.Deserialize<List<Application.DTOs.NewInvoices.InvoiceItemInput>>(json, new System.Text.Json.JsonSerializerOptions
+            {
+                PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.SnakeCaseLower,
+                PropertyNameCaseInsensitive = true
+            }) ?? [];
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return [];
+        }
+    }
+
     /// <summary>Whatever the dealer app sent, as one list - old builds send a single
     /// file, current ones a list.</summary>
     private static List<IFormFile> DealerIncomingFiles(DealerInvoiceForm form)
@@ -1129,7 +1170,8 @@ public sealed class MobileAppController : ControllerBase
                 Attachments = saved.Select(x => new InvoiceAttachmentInput
                 {
                     FilePath = x.FilePath, FileName = x.FileName, MimeType = x.MimeType, FileSize = x.FileSize
-                }).ToList()
+                }).ToList(),
+                Items = ParseInvoiceItems(form.Items)
             }, creatorUserId, cancellationToken);
             return StatusCode(StatusCodes.Status201Created, response);
         }
@@ -1175,7 +1217,8 @@ public sealed class MobileAppController : ControllerBase
                 {
                     FilePath = x.FilePath, FileName = x.FileName, MimeType = x.MimeType, FileSize = x.FileSize
                 }).ToList(),
-                RemovedAttachmentIds = form.RemovedAttachmentIds ?? []
+                RemovedAttachmentIds = form.RemovedAttachmentIds ?? [],
+                Items = ParseInvoiceItems(form.Items)
             }, existing.CreatedBy, cancellationToken);
 
             // Files the edit took off the invoice go once the change has stuck.
@@ -1960,7 +2003,7 @@ public sealed class MobileAppController : ControllerBase
             .Where(x => x.DeletedAt == null
                 && x.Active == "Y"
                 && (x.Status == "Published" || x.Status == "Live")
-                && x.SchemeType == "Invoice"
+                && (x.SchemeType == "Invoice" || x.SchemeType == "Quantity")
                 && x.StartDate <= today
                 && x.EndDate >= today)
             .ToListAsync(cancellationToken);
@@ -2147,7 +2190,7 @@ public sealed class MobileAppController : ControllerBase
             .Where(x => x.DeletedAt == null
                 && x.Active == "Y"
                 && (x.Status == "Published" || x.Status == "Live")
-                && x.SchemeType == "Invoice"
+                && (x.SchemeType == "Invoice" || x.SchemeType == "Quantity")
                 && x.StartDate <= today
                 && (includeEnded || x.EndDate >= today));
         if (walletType == "Booster") query = query.Where(x => x.SchemeTag == "Booster");
@@ -2180,15 +2223,21 @@ public sealed class MobileAppController : ControllerBase
                 .GroupBy(invoice => invoice.Id)
                 .Select(group => group.First())
                 .ToList() ?? [];
-            var achievementValue = schemeInvoices
-                .Where(invoice => invoice.ApprovalStatus == NewInvoice.StatusApprovedHo)
-                .Sum(invoice => invoice.HoApprovedAmount ?? invoice.Amount);
+            // A Quantity Slab scheme is read on product quantities, not a rupee turnover, so the
+            // rupee achievement and the "add Rs X more" slab progress do not apply. The points
+            // (from the invoices) and the quantity bands below are what it shows instead.
+            var isQuantityScheme = Domain.Services.SchemeKinds.IsQuantity(scheme.SchemeType);
+            var achievementValue = isQuantityScheme
+                ? 0m
+                : schemeInvoices
+                    .Where(invoice => invoice.ApprovalStatus == NewInvoice.StatusApprovedHo)
+                    .Sum(invoice => invoice.HoApprovedAmount ?? invoice.Amount);
             var pendingInvoices = schemeInvoices
                 .Where(invoice => invoice.ApprovalStatus != NewInvoice.StatusApprovedHo)
                 .ToList();
             var orderedSlabs = scheme.Slabs.OrderBy(slab => slab.ValueFrom).ThenBy(slab => slab.SortOrder).ToList();
-            var currentSlab = orderedSlabs.LastOrDefault(slab => achievementValue >= slab.ValueFrom);
-            var nextSlab = orderedSlabs.FirstOrDefault(slab => slab.ValueFrom > achievementValue);
+            var currentSlab = isQuantityScheme ? null : orderedSlabs.LastOrDefault(slab => achievementValue >= slab.ValueFrom);
+            var nextSlab = isQuantityScheme ? null : orderedSlabs.FirstOrDefault(slab => slab.ValueFrom > achievementValue);
             return new CurrentSchemeDto
             {
             Id = scheme.Id,
@@ -3314,5 +3363,8 @@ VALUES ('Y', {0}, {1}, {2}, {3}, {4}, {5}, {6}, SYSUTCDATETIME(), SYSUTCDATETIME
         /// <summary>Several files at once; the single field above still works for older builds.</summary>
         [FromForm(Name = "attachment_files")] public List<IFormFile>? Attachments { get; set; }
         [FromForm(Name = "removed_attachment_ids")] public List<long>? RemovedAttachmentIds { get; set; }
+        /// <summary>Quantity Slab product lines, as a JSON array string
+        /// [{"product_id":1,"quantity":3,"price":100}, ...]. Empty for other scheme types.</summary>
+        [FromForm(Name = "items")] public string? Items { get; set; }
     }
 }

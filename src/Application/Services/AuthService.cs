@@ -340,6 +340,10 @@ public sealed class AuthService : IAuthService
         return LaravelApiResponse.MessageOnly("success", "Logout Successfully");
     }
 
+    /// <summary>The login response status that tells the client a second factor is needed.
+    /// The controller then mails the code and the client posts it to verify-2fa.</summary>
+    public const string TwoFactorRequiredStatus = "mfa_required";
+
     private async Task<LaravelApiResponse> HandleUserLoginAsync(User user, LoginRequestDto request, CancellationToken cancellationToken)
     {
         if (user.Active != "Y")
@@ -357,12 +361,46 @@ public sealed class AuthService : IAuthService
         // cleared here and saved with the rest of the sign-in.
         if (user.IsDeleted && user.DeletedAt is null) user.IsDeleted = false;
 
+        var isMobileLogin = IsMobileLoginRequest(request);
+
+        // CRM (web) only: a user who turned 2FA on must still enter the current code from their
+        // authenticator app. The password is correct by here, so stop - no token is issued yet.
+        // The field apps (mobile) are never asked for a second factor.
+        if (!isMobileLogin && user.TwoFactorEnabled && !string.IsNullOrWhiteSpace(user.TwoFactorSecret))
+        {
+            await _repository.SaveChangesAsync(cancellationToken);
+            return LaravelApiResponse.MessageOnly(TwoFactorRequiredStatus, "Two-factor verification required.");
+        }
+
+        return await IssueUserSessionAsync(user, request, isMobileLogin, cancellationToken);
+    }
+
+    /// <summary>Step two of a 2FA web sign-in: the emailed code has already been verified by the
+    /// controller, so this just issues the web session for the same user.</summary>
+    public async Task<LaravelApiResponse> CompleteTwoFactorLoginAsync(string username, CancellationToken cancellationToken)
+    {
+        var user = await _repository.FindUserByUsernameAsync(username.Trim(), cancellationToken);
+        if (user is null)
+        {
+            throw new LaravelHttpException(LaravelStatusCodes.NotFound, "Invalid credentials or account not found");
+        }
+        if (user.Active != "Y")
+        {
+            throw new LaravelHttpException(LaravelStatusCodes.NotFound, "Account deactivated. Contact admin.");
+        }
+        if (user.IsDeleted && user.DeletedAt is null) user.IsDeleted = false;
+
+        // Always a web session - the second factor is a CRM feature.
+        return await IssueUserSessionAsync(user, new LoginRequestDto { Username = username, DeviceType = "web" }, isMobileLogin: false, cancellationToken);
+    }
+
+    private async Task<LaravelApiResponse> IssueUserSessionAsync(User user, LoginRequestDto request, bool isMobileLogin, CancellationToken cancellationToken)
+    {
         var roles = await _repository.GetUserRolesAsync(user.Id, cancellationToken);
         var permissions = await _repository.GetUserPermissionsAsync(user.Id, cancellationToken);
         var roleNames = roles.Select(role => role.Name).ToArray();
         var hasAdminRole = roleNames.Any(roleName =>
             !string.IsNullOrWhiteSpace(roleName) && roleName.Contains("admin", StringComparison.OrdinalIgnoreCase));
-        var isMobileLogin = IsMobileLoginRequest(request);
         var loginDetail = isMobileLogin
             ? await _repository.GetUserLoginDetailAsync(user.Id, cancellationToken)
             : null;
@@ -548,7 +586,8 @@ public sealed class AuthService : IAuthService
                 .ToArray(),
             UserType = roleNames,
             LeaveBalance = user.LeaveBalance,
-            Provider = roleNames.Contains("Customer Dealer") ? "retailers" : "users"
+            Provider = roleNames.Contains("Customer Dealer") ? "retailers" : "users",
+            TwoFactorEnabled = user.TwoFactorEnabled
         };
     }
 

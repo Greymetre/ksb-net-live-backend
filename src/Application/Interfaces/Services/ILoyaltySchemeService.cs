@@ -15,6 +15,11 @@ public interface ILoyaltySchemeService
     Task<MasterDataFileDto> ExportProductLinesAsync(ulong schemeId, CancellationToken cancellationToken);
     /// <summary>Reads an edited sheet into lines for the form. Saves nothing.</summary>
     Task<LaravelApiResponse> ImportProductLinesAsync(Stream stream, CancellationToken cancellationToken);
+    /// <summary>The blank quantity-slab template (Quantity Slab schemes), with an example filled in.</summary>
+    MasterDataFileDto QuantitySlabTemplate();
+    Task<MasterDataFileDto> ExportQuantitySlabsAsync(ulong schemeId, CancellationToken cancellationToken);
+    /// <summary>Reads an edited quantity-slab sheet into slab rows for the form. Saves nothing.</summary>
+    LaravelApiResponse ImportQuantitySlabs(Stream stream);
     Task<LaravelApiResponse> GetSchemeAsync(ulong id, CancellationToken cancellationToken);
     Task<LaravelApiResponse> GetOptionsAsync(CancellationToken cancellationToken);
     Task<LaravelApiResponse> GetDealerOptionsAsync(CancellationToken cancellationToken);

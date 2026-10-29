@@ -100,7 +100,7 @@ public sealed class DashboardController : ControllerBase
         var candidates = await _db.LoyaltySchemes.AsNoTracking()
             .Where(x => x.DeletedAt == null && x.Active == "Y"
                 && (x.Status == "Published" || x.Status == "Live")
-                && x.SchemeType == "Invoice")
+                && (x.SchemeType == "Invoice" || x.SchemeType == "Quantity"))
             .OrderBy(x => x.EndDate)
             .ToListAsync(ct);
 
@@ -199,7 +199,7 @@ public sealed class DashboardController : ControllerBase
 
         var scheme = await _db.LoyaltySchemes.AsNoTracking().Include(x => x.Slabs)
             .FirstOrDefaultAsync(x => x.Id == id && x.DeletedAt == null && x.Active == "Y"
-                && (x.Status == "Published" || x.Status == "Live") && x.SchemeType == "Invoice", ct);
+                && (x.Status == "Published" || x.Status == "Live") && (x.SchemeType == "Invoice" || x.SchemeType == "Quantity"), ct);
         if (scheme is null) return NotFound(new { status = "error", message = "Scheme not found." });
 
         // The same audience check the strip applies, so a scheme meant for another zone

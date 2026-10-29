@@ -46,6 +46,7 @@ builder.Services.AddScoped<Api.Services.SfaRetailerScope>();
 builder.Services.AddScoped<Api.Services.PushNotificationService>();
 builder.Services.AddSingleton<Api.Services.HrPushNotifications>();
 builder.Services.AddScoped<Api.Services.UserPasswordResetService>();
+builder.Services.AddScoped<Api.Services.TwoFactorAuthService>();
 builder.Services.AddHttpClient();
 
 var jwt = builder.Configuration.GetSection("Jwt");

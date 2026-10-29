@@ -146,6 +146,20 @@ public sealed class NewInvoicesController : ControllerBase
         return Ok(await _newInvoiceService.GetSchemeFilterOptionsAsync(cancellationToken));
     }
 
+    /// <summary>The products a Quantity Slab scheme covers, for the invoice table's product dropdown.</summary>
+    [HttpGet("scheme-products")]
+    public async Task<IActionResult> GetSchemeProducts([FromQuery(Name = "scheme_id")] ulong schemeId, CancellationToken cancellationToken)
+    {
+        return Ok(await _newInvoiceService.GetSchemeProductsAsync(schemeId, cancellationToken));
+    }
+
+    /// <summary>Live preview of the points the entered quantities would earn on a Quantity Slab scheme.</summary>
+    [HttpPost("quantity-points")]
+    public async Task<IActionResult> PreviewQuantityPoints([FromBody] Application.DTOs.NewInvoices.QuantityPointsPreviewRequest request, CancellationToken cancellationToken)
+    {
+        return Ok(await _newInvoiceService.PreviewQuantityPointsAsync(request, cancellationToken));
+    }
+
     [RequirePermission("invoice_transaction.detail")]
     [HttpGet("{id}")]
     public async Task<IActionResult> GetInvoice(ulong id, CancellationToken cancellationToken)
@@ -300,8 +314,26 @@ public sealed class NewInvoicesController : ControllerBase
             {
                 FilePath = x.FilePath, FileName = x.FileName, MimeType = x.MimeType, FileSize = x.FileSize
             }).ToList(),
-            RemovedAttachmentIds = form.RemovedAttachmentIds ?? []
+            RemovedAttachmentIds = form.RemovedAttachmentIds ?? [],
+            Items = ParseItems(form.Items)
         };
+    }
+
+    private static List<InvoiceItemInput>? ParseItems(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            return System.Text.Json.JsonSerializer.Deserialize<List<InvoiceItemInput>>(json, new System.Text.Json.JsonSerializerOptions
+            {
+                PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.SnakeCaseLower,
+                PropertyNameCaseInsensitive = true
+            }) ?? [];
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return [];
+        }
     }
 
     /// <summary>Whatever the caller sent, as one list, so the old single-file shape and the
@@ -384,4 +416,7 @@ public sealed class NewInvoiceFormRequest
     /// nothing that posts the old shape breaks.</summary>
     [FromForm(Name = "attachment_files")] public List<IFormFile>? AttachmentFiles { get; set; }
     [FromForm(Name = "removed_attachment_ids")] public List<long>? RemovedAttachmentIds { get; set; }
+    /// <summary>The Quantity Slab product lines, as a JSON array string:
+    /// [{"product_id":1,"quantity":3,"price":100}, ...]. Empty for other scheme types.</summary>
+    [FromForm(Name = "items")] public string? Items { get; set; }
 }

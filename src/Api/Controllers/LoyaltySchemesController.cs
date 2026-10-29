@@ -74,6 +74,39 @@ public sealed class LoyaltySchemesController : ControllerBase
         return Ok(response);
     }
 
+    /// <summary>The blank quantity-slab sheet for a Quantity Slab scheme (with an example row set).</summary>
+    [RequirePermission("scheme.create", "scheme.edit")]
+    [HttpGet("quantity-slabs/template")]
+    public IActionResult QuantitySlabTemplate()
+    {
+        var file = _loyaltySchemeService.QuantitySlabTemplate();
+        return File(file.Content, file.ContentType, file.FileName);
+    }
+
+    /// <summary>One scheme's quantity slabs, in the columns the import reads back.</summary>
+    [RequirePermission("scheme.detail", "scheme.edit", "scheme.export")]
+    [HttpGet("{id}/quantity-slabs/export")]
+    public async Task<IActionResult> ExportQuantitySlabs(ulong id, CancellationToken cancellationToken)
+    {
+        var file = await _loyaltySchemeService.ExportQuantitySlabsAsync(id, cancellationToken);
+        return File(file.Content, file.ContentType, file.FileName);
+    }
+
+    /// <summary>Reads an edited quantity-slab sheet back for the form. Saves nothing until the
+    /// scheme itself is saved.</summary>
+    [RequirePermission("scheme.create", "scheme.edit")]
+    [HttpPost("quantity-slabs/import")]
+    public async Task<IActionResult> ImportQuantitySlabs(CancellationToken cancellationToken)
+    {
+        var file = Request.HasFormContentType ? Request.Form.Files.FirstOrDefault() : null;
+        if (file is null || file.Length == 0) return BadRequest(new { message = "Please choose a file to import." });
+
+        using var stream = new MemoryStream();
+        await file.CopyToAsync(stream, cancellationToken);
+        stream.Position = 0;
+        return Ok(_loyaltySchemeService.ImportQuantitySlabs(stream));
+    }
+
     /// <summary>Every dealer, for the scheme form's dealer picker. Authentication only, like
     /// the other dropdown routes - a user who may open the scheme form needs its options.</summary>
     [HttpGet("dealer-options")]

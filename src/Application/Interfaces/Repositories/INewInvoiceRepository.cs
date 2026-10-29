@@ -20,6 +20,11 @@ public interface INewInvoiceRepository
     Task<FieldSchemeDetailDto?> GetFieldSchemeAsync(ulong id, ulong? actorUserId, DateOnly today, CancellationToken cancellationToken);
     Task<Customer?> GetRetailerAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
     Task<IReadOnlyCollection<InvoiceSchemeOptionDto>> GetEligibleSchemeOptionsAsync(ulong customerId, DateTime invoiceDate, CancellationToken cancellationToken);
+    Task<IReadOnlyCollection<SchemeProductOptionDto>> GetSchemeResolvedProductsAsync(ulong schemeId, CancellationToken cancellationToken);
+    Task<Domain.Entities.LoyaltyScheme?> GetSchemeWithSlabsAsync(ulong schemeId, CancellationToken cancellationToken);
+    Task<IReadOnlyDictionary<ulong, decimal>> GetCumulativeQuantitiesAsync(ulong schemeId, ulong customerId, DateTime periodStart, DateTime periodEnd, ulong? exceptInvoiceId, CancellationToken cancellationToken);
+    Task<IReadOnlyCollection<InvoiceItemDto>> GetInvoiceItemsAsync(ulong invoiceId, CancellationToken cancellationToken);
+    Task SaveInvoiceItemsAsync(ulong invoiceId, IReadOnlyList<InvoiceItemInput> items, CancellationToken cancellationToken);
     Task<IReadOnlyCollection<InvoiceSchemeOptionDto>> GetInvoiceSchemeFilterOptionsAsync(CancellationToken cancellationToken);
     Task<bool> InvoiceNumberExistsAsync(string invoiceNumber, ulong secondaryCustomerId, ulong? dealerCustomerId, ulong? exceptId, CancellationToken cancellationToken);
     Task<NewInvoiceDto> CreateInvoiceAsync(NewInvoice invoice, CancellationToken cancellationToken);

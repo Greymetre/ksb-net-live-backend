@@ -36,6 +36,9 @@ public sealed class NewInvoiceDto
     public string? Attachment { get; set; }
     /// <summary>Every file on the invoice - photographs and PDFs.</summary>
     public List<InvoiceAttachmentDto> Attachments { get; set; } = [];
+    /// <summary>The Quantity Slab product lines (product, quantity, price), for cross-checking
+    /// against the attachment. Empty for other scheme types.</summary>
+    public List<InvoiceItemDto> Items { get; set; } = [];
     public int ApprovalStatus { get; set; }
     public string ApprovalStatusLabel { get; set; } = string.Empty;
     public string? ApprovalRemark { get; set; }
@@ -103,6 +106,9 @@ public sealed class NewInvoiceRequestDto
     public List<InvoiceAttachmentInput>? Attachments { get; set; }
     /// <summary>Ids of attachments the caller removed while editing.</summary>
     public List<long>? RemovedAttachmentIds { get; set; }
+    /// <summary>The product lines of a Quantity Slab invoice (product, quantity, price). Empty or
+    /// null for every other scheme type, which carries a single amount instead.</summary>
+    public List<InvoiceItemInput>? Items { get; set; }
 }
 
 public sealed class InvoiceAttachmentInput
@@ -120,6 +126,9 @@ public sealed class InvoiceSchemeOptionDto
     public string Code { get; set; } = string.Empty;
     public DateOnly StartDate { get; set; }
     public DateOnly EndDate { get; set; }
+    /// <summary>"Invoice" or "Quantity". A Quantity Slab scheme makes the invoice form show the
+    /// product/quantity/price table instead of the single amount box.</summary>
+    public string SchemeType { get; set; } = "Invoice";
 }
 
 public sealed class NewInvoiceFilterDto

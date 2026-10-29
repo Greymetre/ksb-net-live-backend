@@ -122,6 +122,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         await ApplyCreatedByLabelsAsync([dto], [row.Creator], cancellationToken);
         await ApplyApproverNamesAsync([dto], cancellationToken);
         await ApplyAttachmentsAsync([dto], cancellationToken);
+        dto.Items = [.. await GetInvoiceItemsAsync(id, cancellationToken)];
         dto.ApprovalLogs = await GetApprovalLogsAsync(id, cancellationToken);
         return dto;
     }
@@ -250,7 +251,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
             .Where(x => x.DeletedAt == null
                 && x.Active == "Y"
                 && (x.Status == "Published" || x.Status == "Live")
-                && x.SchemeType == "Invoice")
+                && (x.SchemeType == "Invoice" || x.SchemeType == "Quantity"))
             .ToListAsync(cancellationToken);
         if (schemes.Count == 0) return [];
 
@@ -273,7 +274,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
     {
         var scheme = await _dbContext.LoyaltySchemes.AsNoTracking()
             .FirstOrDefaultAsync(x => x.Id == id && x.DeletedAt == null && x.Active == "Y"
-                && (x.Status == "Published" || x.Status == "Live") && x.SchemeType == "Invoice", cancellationToken);
+                && (x.Status == "Published" || x.Status == "Live") && (x.SchemeType == "Invoice" || x.SchemeType == "Quantity"), cancellationToken);
         if (scheme is null) return null;
 
         var audiences = await ResolveFieldAudiencesAsync(actorUserId, cancellationToken);
@@ -515,7 +516,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
             .Where(x => x.DeletedAt == null
                 && x.Active == "Y"
                 && (x.Status == "Published" || x.Status == "Live")
-                && x.SchemeType == "Invoice"
+                && (x.SchemeType == "Invoice" || x.SchemeType == "Quantity")
                 && x.StartDate <= date
                 && x.EndDate >= date)
             .OrderBy(x => x.SchemeName)
@@ -550,9 +551,112 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
 
         return schemes
             .Where(x => SchemeMatches(x, date, audience))
-            .Select(x => new InvoiceSchemeOptionDto { Id = x.Id, Name = x.SchemeName, Code = x.SchemeCode, StartDate = x.StartDate, EndDate = x.EndDate })
+            .Select(x => new InvoiceSchemeOptionDto { Id = x.Id, Name = x.SchemeName, Code = x.SchemeCode, StartDate = x.StartDate, EndDate = x.EndDate, SchemeType = SchemeKinds.IsQuantity(x.SchemeType) ? SchemeKinds.Quantity : SchemeKinds.Invoice })
             .ToList();
     }
+
+    /// <summary>The products a Quantity Slab scheme's lines resolve to, for the invoice form's
+    /// product dropdown. Narrowest wins per line: a line's own products, else every product of
+    /// its families, else every product of its segments; the union is offered.</summary>
+    public async Task<IReadOnlyCollection<SchemeProductOptionDto>> GetSchemeResolvedProductsAsync(ulong schemeId, CancellationToken cancellationToken)
+    {
+        var lines = await _dbContext.Set<LoyaltySchemeProduct>().AsNoTracking()
+            .Where(x => x.LoyaltySchemeId == schemeId && x.DeletedAt == null)
+            .ToListAsync(cancellationToken);
+
+        var directProducts = new HashSet<ulong>();
+        var families = new HashSet<ulong>();
+        var segments = new HashSet<ulong>();
+        foreach (var line in lines)
+        {
+            var products = ParseIdList(line.ProductIds);
+            var lineFamilies = ParseIdList(line.FamilyIds);
+            var lineSegments = ParseIdList(line.SegmentIds);
+            if (products.Count > 0) foreach (var id in products) directProducts.Add(id);
+            else if (lineFamilies.Count > 0) foreach (var id in lineFamilies) families.Add(id);
+            else foreach (var id in lineSegments) segments.Add(id);
+        }
+
+        if (directProducts.Count == 0 && families.Count == 0 && segments.Count == 0) return [];
+
+        return await _dbContext.Products.AsNoTracking()
+            .Where(p => p.DeletedAt == null && p.Active == "Y"
+                && (directProducts.Contains(p.Id)
+                    || (p.SubcategoryId != null && families.Contains(p.SubcategoryId.Value))
+                    || (p.CategoryId != null && segments.Contains(p.CategoryId.Value))))
+            .OrderBy(p => p.ProductName)
+            .Select(p => new SchemeProductOptionDto { Id = p.Id, Name = p.ProductName, Code = p.ProductCode })
+            .ToListAsync(cancellationToken);
+    }
+
+    /// <summary>Per product, the quantity already bought under this scheme by this customer inside
+    /// the scheme period (rejected invoices excluded; the invoice being edited optionally excluded).</summary>
+    public async Task<IReadOnlyDictionary<ulong, decimal>> GetCumulativeQuantitiesAsync(
+        ulong schemeId, ulong customerId, DateTime periodStart, DateTime periodEnd, ulong? exceptInvoiceId, CancellationToken cancellationToken)
+    {
+        var start = periodStart.Date;
+        var end = periodEnd.Date;
+        var rows = await (
+            from item in _dbContext.NewInvoiceItems.AsNoTracking()
+            join invoice in _dbContext.NewInvoices.AsNoTracking() on item.NewInvoiceId equals invoice.Id
+            where invoice.LoyaltySchemeId == schemeId
+                && invoice.SecondaryCustomerId == customerId
+                && invoice.ApprovalStatus != NewInvoice.StatusRejected
+                && invoice.InvoiceDate >= start && invoice.InvoiceDate <= end
+                && (!exceptInvoiceId.HasValue || invoice.Id != exceptInvoiceId.Value)
+            group item by item.ProductId into byProduct
+            select new { ProductId = byProduct.Key, Quantity = byProduct.Sum(x => x.Quantity) })
+            .ToListAsync(cancellationToken);
+        return rows.ToDictionary(x => x.ProductId, x => x.Quantity);
+    }
+
+    public async Task<IReadOnlyCollection<InvoiceItemDto>> GetInvoiceItemsAsync(ulong invoiceId, CancellationToken cancellationToken) =>
+        await (from item in _dbContext.NewInvoiceItems.AsNoTracking()
+               where item.NewInvoiceId == invoiceId
+               join product in _dbContext.Products.AsNoTracking() on item.ProductId equals product.Id into prod
+               from product in prod.DefaultIfEmpty()
+               orderby item.SortOrder
+               select new InvoiceItemDto
+               {
+                   ProductId = item.ProductId,
+                   ProductName = product != null ? product.ProductName : string.Empty,
+                   ProductCode = product != null ? product.ProductCode : null,
+                   Quantity = item.Quantity,
+                   Price = item.Price
+               }).ToListAsync(cancellationToken);
+
+    public async Task SaveInvoiceItemsAsync(ulong invoiceId, IReadOnlyList<InvoiceItemInput> items, CancellationToken cancellationToken)
+    {
+        var existing = await _dbContext.NewInvoiceItems.Where(x => x.NewInvoiceId == invoiceId).ToListAsync(cancellationToken);
+        if (existing.Count > 0) _dbContext.NewInvoiceItems.RemoveRange(existing);
+
+        var now = DateTime.UtcNow;
+        var order = 1;
+        foreach (var item in items)
+        {
+            _dbContext.NewInvoiceItems.Add(new NewInvoiceItem
+            {
+                NewInvoiceId = invoiceId,
+                ProductId = item.ProductId,
+                Quantity = item.Quantity,
+                Price = item.Price,
+                SortOrder = order++,
+                CreatedAt = now,
+                UpdatedAt = now
+            });
+        }
+        await _dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    public Task<LoyaltyScheme?> GetSchemeWithSlabsAsync(ulong schemeId, CancellationToken cancellationToken) =>
+        _dbContext.LoyaltySchemes.AsNoTracking()
+            .Include(x => x.Slabs)
+            .FirstOrDefaultAsync(x => x.Id == schemeId && x.DeletedAt == null, cancellationToken);
+
+    private static List<ulong> ParseIdList(string? value) =>
+        (value ?? string.Empty).Split([',', ';', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(part => ulong.TryParse(part, out var id) ? id : 0)
+            .Where(id => id > 0).Distinct().ToList();
 
     public async Task<IReadOnlyCollection<InvoiceSchemeOptionDto>> GetInvoiceSchemeFilterOptionsAsync(CancellationToken cancellationToken) =>
         await _dbContext.LoyaltySchemes.AsNoTracking()
@@ -1397,7 +1501,7 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
             .Where(x => x.DeletedAt == null
                 && x.Active == "Y"
                 && (x.Status == "Published" || x.Status == "Live")
-                && x.SchemeType == "Invoice"
+                && (x.SchemeType == "Invoice" || x.SchemeType == "Quantity")
                 && x.StartDate <= maxDate
                 && x.EndDate >= minDate)
             .ToListAsync(cancellationToken);
@@ -1480,7 +1584,12 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
         var rewardBaseAmount = invoice.ApprovalStatus == NewInvoice.StatusApprovedHo
             ? approvalSummary.HoApprovedAmount ?? invoice.Amount
             : invoice.Amount;
-        return [ToDto(invoice, customer, cityName, zoneName, branchName, assignedDistributorName, assignedEmployeeName, assignedEmployeeMobile, creator, branch, selectedScheme, CalculateSchemeResult(rewardBaseAmount, periodAmount, selectedScheme), approvalSummary)];
+        // A Quantity Slab invoice earns on its product quantities, worked out and stored when it
+        // was saved - the rupee slab calc does not apply, so the stored points are shown as is.
+        var schemeResult = SchemeKinds.IsQuantity(selectedScheme.SchemeType)
+            ? new SchemeResult(invoice.Points, null, null, null)
+            : CalculateSchemeResult(rewardBaseAmount, periodAmount, selectedScheme);
+        return [ToDto(invoice, customer, cityName, zoneName, branchName, assignedDistributorName, assignedEmployeeName, assignedEmployeeMobile, creator, branch, selectedScheme, schemeResult, approvalSummary)];
     }
 
     private static NewInvoiceDto ToDto(NewInvoice invoice, Customer customer, string? cityName, string? zoneName, string? branchName, string? assignedDistributorName, string? assignedEmployeeName, string? assignedEmployeeMobile, User? creator, Branch? branch, LoyaltyScheme? scheme, SchemeResult? schemeResult, ApprovalStageSummary approvalSummary)

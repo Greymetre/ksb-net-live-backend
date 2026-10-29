@@ -88,7 +88,24 @@ public sealed class CustomerRepository : ICustomerRepository
             // "status": "X"), so strip spaces before matching - otherwise the space-less LIKE
             // silently drops most rows (the listing read far fewer than the export derived).
             var status = filter.Status.Trim().ToUpperInvariant();
-            query = query.Where(x => x.CustomFields != null && EF.Functions.Like(x.CustomFields.Replace(" ", ""), $"%\"status\":\"{status}\"%"));
+            if (status == "PENDING")
+            {
+                // A retailer with no stored status - the "status" key missing, blank, or "-" -
+                // is Pending, the same default the export's status column uses (RetailerApprovalStatus)
+                // and the status a newly created retailer gets. Count those here too, otherwise the
+                // Pending filter under-reports every legacy retailer that was never reviewed (the
+                // listing showed 72 while the export derived far more for the same set).
+                query = query.Where(x =>
+                    x.CustomFields == null
+                    || !EF.Functions.Like(x.CustomFields.Replace(" ", ""), "%\"status\":%")
+                    || EF.Functions.Like(x.CustomFields.Replace(" ", ""), "%\"status\":\"\"%")
+                    || EF.Functions.Like(x.CustomFields.Replace(" ", ""), "%\"status\":\"-\"%")
+                    || EF.Functions.Like(x.CustomFields.Replace(" ", ""), "%\"status\":\"PENDING\"%"));
+            }
+            else
+            {
+                query = query.Where(x => x.CustomFields != null && EF.Functions.Like(x.CustomFields.Replace(" ", ""), $"%\"status\":\"{status}\"%"));
+            }
         }
         if (filter.StartDate.HasValue) query = query.Where(x => x.CreatedAt >= filter.StartDate.Value.Date);
         if (filter.EndDate.HasValue) query = query.Where(x => x.CreatedAt < filter.EndDate.Value.Date.AddDays(1));
@@ -1467,7 +1484,7 @@ WHERE customer_id IN ({customerIdCsv})
                 .Where(x => x.DeletedAt == null
                     && x.Active == "Y"
                     && (x.Status == "Published" || x.Status == "Live")
-                    && x.SchemeType == "Invoice"
+                    && (x.SchemeType == "Invoice" || x.SchemeType == "Quantity")
                     && x.StartDate <= maxDate
                     && x.EndDate >= minDate)
                 .ToListAsync(cancellationToken);
@@ -1501,9 +1518,19 @@ WHERE customer_id IN ({customerIdCsv})
                     : rows.Select(x => x.Invoice);
                 foreach (var scheme in matchingSchemes)
                 {
-                    var periodAmount = PeriodAmount(customer.Id, scheme, periodInvoices, hoApprovedAmounts);
-                    var approvedInvoiceAmount = hoApprovedAmounts.GetValueOrDefault(row.Invoice.Id) ?? row.Invoice.Amount;
-                    var points = CalculateSchemePoints(approvedInvoiceAmount, periodAmount, scheme);
+                    // A Quantity Slab invoice already carries its earned points (worked out on the
+                    // product quantities when it was saved); the rupee slab calc does not apply.
+                    decimal points;
+                    if (SchemeKinds.IsQuantity(scheme.SchemeType))
+                    {
+                        points = row.Invoice.Points;
+                    }
+                    else
+                    {
+                        var periodAmount = PeriodAmount(customer.Id, scheme, periodInvoices, hoApprovedAmounts);
+                        var approvedInvoiceAmount = hoApprovedAmounts.GetValueOrDefault(row.Invoice.Id) ?? row.Invoice.Amount;
+                        points = CalculateSchemePoints(approvedInvoiceAmount, periodAmount, scheme);
+                    }
                     if (points <= 0) continue;
 
                     var booster = string.Equals(scheme.SchemeTag, "Booster", StringComparison.OrdinalIgnoreCase);

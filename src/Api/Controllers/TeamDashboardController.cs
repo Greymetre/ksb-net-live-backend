@@ -341,7 +341,7 @@ public sealed class TeamDashboardController : ControllerBase
 
         var today = DateOnly.FromDateTime(now.Date);
         var schemeRows = await _db.LoyaltySchemes.AsNoTracking()
-            .Where(x => x.DeletedAt == null && x.SchemeType == "Invoice")
+            .Where(x => x.DeletedAt == null && (x.SchemeType == "Invoice" || x.SchemeType == "Quantity"))
             .Select(x => new { x.Id, x.SchemeName, x.SchemeCode, x.SchemeTag, x.Status, x.StartDate, x.EndDate })
             .ToListAsync(ct);
 

@@ -149,9 +149,11 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
         // A scheme keeps only what its own type is read on, so a type switched during
         // editing cannot leave slabs behind that still pay.
         var createBasedOn = NormalizeChoice(request.BasedOn, SchemeReward.Value, BasedOnOptions);
+        // Quantity Slab keeps both: product lines (which goods it covers) and slabs (the quantity
+        // bands with the per-unit reward). Invoice keeps slabs only, Product keeps lines only.
         if (SchemeKinds.ReadsProducts(scheme.SchemeType))
             scheme.Products = MapProductLines(request.Products, createBasedOn, now);
-        else
+        if (SchemeKinds.ReadsSlabs(scheme.SchemeType))
             scheme.Slabs = MapSlabs(request.Slabs, createBasedOn, now);
 
         var created = await _repository.CreateSchemeAsync(scheme, cancellationToken);
@@ -203,7 +205,7 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
         {
             foreach (var line in MapProductLines(request.Products, scheme.BasedOn, now)) scheme.Products.Add(line);
         }
-        else
+        if (SchemeKinds.ReadsSlabs(scheme.SchemeType))
         {
             foreach (var slab in MapSlabs(request.Slabs, scheme.BasedOn, now)) scheme.Slabs.Add(slab);
         }
@@ -370,53 +372,17 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
             errors["area_values"] = ["Select at least one area value."];
         }
 
-        if (!SchemeKinds.IsInvoice(schemeType))
+        // Product and Quantity Slab name the goods they cover. Invoice and Quantity Slab carry
+        // slabs - rupee bands for Invoice, quantity bands for Quantity Slab - so Quantity Slab
+        // validates both. The product line of a Quantity Slab is scope only (no per-line reward:
+        // the slab gives the per-unit rate).
+        if (SchemeKinds.ReadsProducts(schemeType))
         {
-            await ValidateProductLinesAsync(request, schemeType, errors, cancellationToken);
+            ValidateProductLines(request, schemeType, errors, await _repository.GetProductMasterIdsAsync(cancellationToken));
         }
-        else if (request.Slabs.Count == 0)
+        if (SchemeKinds.ReadsSlabs(schemeType))
         {
-            errors["slabs"] = ["At least one slab is required."];
-        }
-        else
-        {
-            decimal? previousTo = null;
-            for (var index = 0; index < request.Slabs.Count; index++)
-            {
-                var slab = request.Slabs[index];
-                var prefix = $"slabs.{index}";
-                if (string.IsNullOrWhiteSpace(slab.TierName)) errors[$"{prefix}.tier_name"] = ["Tier name is required."];
-                if (!slab.ValueFrom.HasValue || slab.ValueFrom.Value < 0) errors[$"{prefix}.value_from"] = ["Value from is required and cannot be negative."];
-                if (slab.ValueTo.HasValue && slab.ValueFrom.HasValue && slab.ValueTo.Value < slab.ValueFrom.Value) errors[$"{prefix}.value_to"] = ["Value to must be greater than or equal to value from."];
-                if (!slab.RewardValue.HasValue || slab.RewardValue.Value < 0) errors[$"{prefix}.reward_value"] = ["Reward value is required and cannot be negative."];
-                // A mixed scheme is checked slab by slab, since the one below it may be
-                // a flat amount and the one above a percentage.
-                var slabIsPercentage = SchemeReward.IsMixedScheme(request.BasedOn)
-                    ? SchemeReward.IsPercentage(slab.RewardType)
-                    : SchemeReward.IsPercentage(request.BasedOn);
-
-                if (SchemeReward.IsMixedScheme(request.BasedOn)
-                    && !string.IsNullOrWhiteSpace(slab.RewardType)
-                    && !SchemeReward.IsPercentage(slab.RewardType)
-                    && !string.Equals(slab.RewardType.Trim(), SchemeReward.Value, StringComparison.OrdinalIgnoreCase))
-                {
-                    errors[$"{prefix}.reward_type"] = ["Reward type must be Value or Percentage."];
-                }
-
-                if (slabIsPercentage && slab.RewardValue.HasValue && slab.RewardValue.Value > 99.9m)
-                {
-                    errors[$"{prefix}.reward_value"] = ["Reward percentage can contain a maximum of four characters including the decimal (maximum 99.9)."];
-                }
-                if (!slabIsPercentage && slab.RewardValue.HasValue && slab.RewardValue.Value > 10000000)
-                {
-                    errors[$"{prefix}.reward_value"] = ["Reward amount cannot be greater than 1,00,00,000."];
-                }
-                if (index > 0 && previousTo is null)
-                    errors[$"{prefix}.value_from"] = ["The previous slab must have a value to before another slab is added."];
-                else if (index > 0 && slab.ValueFrom.HasValue && slab.ValueFrom.Value != previousTo!.Value + 1)
-                    errors[$"{prefix}.value_from"] = [$"Value from must be {previousTo.Value + 1} to avoid overlaps or gaps."];
-                previousTo = slab.ValueTo;
-            }
+            ValidateSlabs(request, schemeType, errors);
         }
 
         if (errors.Count > 0) throw Http(LaravelStatusCodes.NoContentLikeValidation, errors);
@@ -433,6 +399,10 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
     /// a renamed product cannot break an import.</summary>
     private static readonly string[] ProductLineColumns =
         ["segment_ids", "segment_names", "family_ids", "family_names", "product_ids", "product_names", "reward"];
+
+    // The quantity-slab sheet for a Quantity Slab scheme: one band per row. qty_to blank on the
+    // last row means "no upper limit"; reward_per_unit is paid for each unit in that band.
+    private static readonly string[] SlabColumns = ["slab_name", "qty_from", "qty_to", "reward_per_unit"];
 
     /// <summary>
     /// The blank sheet the scheme form hands out, with a second tab listing every segment
@@ -503,6 +473,112 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
             }));
     }
 
+    /// <summary>The blank quantity-slab sheet for a Quantity Slab scheme, pre-filled with an
+    /// example so the shape is obvious (3-4 -> 500/unit, 5-10 -> 800/unit, 11+ -> 1500/unit).</summary>
+    public MasterDataFileDto QuantitySlabTemplate() =>
+        ExportWorkbook.Create($"scheme-quantity-slabs-template-{IndiaToday():yyyy-MM-dd}.xlsx", SlabColumns,
+            new List<object?[]>
+            {
+                new object?[] { "Slab 1", 3, 4, 500 },
+                new object?[] { "Slab 2", 5, 10, 800 },
+                new object?[] { "Slab 3", 11, null, 1500 }
+            });
+
+    /// <summary>One scheme's quantity slabs, in the columns the import reads back.</summary>
+    public async Task<MasterDataFileDto> ExportQuantitySlabsAsync(ulong schemeId, CancellationToken cancellationToken)
+    {
+        var scheme = await _repository.GetSchemeAsync(schemeId, cancellationToken)
+            ?? throw Http(LaravelStatusCodes.NotFound, "Scheme not found.");
+
+        return ExportWorkbook.Create(
+            $"{scheme.SchemeCode}-quantity-slabs-{IndiaToday():yyyy-MM-dd}.xlsx",
+            SlabColumns,
+            scheme.Slabs.Select(slab => new object?[] { slab.TierName, slab.ValueFrom, slab.ValueTo, slab.RewardValue }));
+    }
+
+    /// <summary>Reads an edited quantity-slab sheet back for the form. Nothing is saved until the
+    /// scheme itself is saved; the form merges these rows into its slab table. Contiguity (no gaps
+    /// or overlaps) is checked at save, so the import only validates each row on its own.</summary>
+    public LaravelApiResponse ImportQuantitySlabs(Stream stream)
+    {
+        XLWorkbook workbook;
+        try { workbook = new XLWorkbook(stream); }
+        catch (Exception) { throw Http(LaravelStatusCodes.BadRequest, "That file could not be read as an Excel workbook."); }
+
+        using (workbook)
+        {
+            var sheet = workbook.Worksheets.FirstOrDefault()
+                ?? throw Http(LaravelStatusCodes.BadRequest, "The workbook has no sheet in it.");
+            var headerRow = sheet.FirstRowUsed()
+                ?? throw Http(LaravelStatusCodes.BadRequest, "The sheet is empty.");
+            var headings = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var cell in headerRow.CellsUsed())
+            {
+                var key = cell.GetString().Trim().ToLowerInvariant().Replace(" ", "_");
+                if (key.Length > 0) headings.TryAdd(key, cell.Address.ColumnNumber);
+            }
+
+            var slabs = new List<LoyaltySchemeSlabDto>();
+            var problems = new List<string>();
+
+            foreach (var row in sheet.RowsUsed().Where(x => x.RowNumber() > headerRow.RowNumber()))
+            {
+                string Text(params string[] keys)
+                {
+                    foreach (var key in keys)
+                    {
+                        if (headings.TryGetValue(key, out var column)) return row.Cell(column).GetString().Trim();
+                    }
+                    return string.Empty;
+                }
+
+                var name = Text("slab_name", "tier_name", "slab", "name");
+                var fromText = Text("qty_from", "quantity_from", "value_from", "from");
+                var toText = Text("qty_to", "quantity_to", "value_to", "to");
+                var rewardText = Text("reward_per_unit", "reward", "reward_value");
+                if (name.Length == 0 && fromText.Length == 0 && toText.Length == 0 && rewardText.Length == 0) continue;
+
+                if (!decimal.TryParse(fromText, NumberStyles.Any, CultureInfo.InvariantCulture, out var from) || from < 0)
+                {
+                    problems.Add($"Row {row.RowNumber()}: Qty From must be a number of 0 or more.");
+                    continue;
+                }
+                decimal? to = null;
+                if (toText.Length > 0)
+                {
+                    if (!decimal.TryParse(toText, NumberStyles.Any, CultureInfo.InvariantCulture, out var parsedTo) || parsedTo < from)
+                    {
+                        problems.Add($"Row {row.RowNumber()}: Qty To must be a number greater than or equal to Qty From (leave blank for no limit).");
+                        continue;
+                    }
+                    to = parsedTo;
+                }
+                if (!decimal.TryParse(rewardText, NumberStyles.Any, CultureInfo.InvariantCulture, out var reward) || reward < 0)
+                {
+                    problems.Add($"Row {row.RowNumber()}: Reward per Unit must be a number of 0 or more.");
+                    continue;
+                }
+
+                slabs.Add(new LoyaltySchemeSlabDto
+                {
+                    TierName = name.Length > 0 ? name : $"Slab {slabs.Count + 1}",
+                    ValueFrom = from,
+                    ValueTo = to,
+                    RewardValue = reward,
+                    RewardType = null,
+                    SortOrder = slabs.Count + 1
+                });
+            }
+
+            return LaravelApiResponse.Success("slabs", new
+            {
+                slabs,
+                problems,
+                message = $"{slabs.Count} slab(s) read." + (problems.Count > 0 ? $" {problems.Count} row(s) skipped." : string.Empty)
+            });
+        }
+    }
+
     /// <summary>
     /// Reads an edited sheet back into lines the form can show.
     ///
@@ -566,9 +642,14 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
                 unknown = products.FirstOrDefault(id => !master.Products.Contains(id));
                 if (unknown != 0) { problems.Add($"Row {row.RowNumber()}: product {unknown} does not exist."); continue; }
 
-                if (!decimal.TryParse(rewardText, NumberStyles.Any, CultureInfo.InvariantCulture, out var reward) || reward <= 0)
+                // A Quantity Slab line carries no reward (the slab gives the per-unit rate), so a
+                // blank reward is allowed and read as 0; a Product line's reward is checked when the
+                // scheme is saved. A present-but-invalid reward is still a problem.
+                decimal reward = 0;
+                if (rewardText.Length > 0
+                    && (!decimal.TryParse(rewardText, NumberStyles.Any, CultureInfo.InvariantCulture, out reward) || reward < 0))
                 {
-                    problems.Add($"Row {row.RowNumber()}: reward must be a number greater than 0.");
+                    problems.Add($"Row {row.RowNumber()}: reward must be a number of 0 or more.");
                     continue;
                 }
 
@@ -609,8 +690,8 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
     /// pays. The narrowest naming wins when the reward is worked out, so a line may name a
     /// whole family and no product at all; what it may not do is name nothing.
     /// </summary>
-    private async Task ValidateProductLinesAsync(
-        LoyaltySchemeRequestDto request, string schemeType, Dictionary<string, string[]> errors, CancellationToken cancellationToken)
+    private static void ValidateProductLines(
+        LoyaltySchemeRequestDto request, string schemeType, Dictionary<string, string[]> errors, ProductMasterIdsDto master)
     {
         if (request.Products.Count == 0)
         {
@@ -618,7 +699,9 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
             return;
         }
 
-        var master = await _repository.GetProductMasterIdsAsync(cancellationToken);
+        // A Quantity Slab line only names the goods the slabs apply to - the per-unit rate comes
+        // from the slabs, so no reward is entered on the line.
+        var rewardOnLine = !SchemeKinds.IsQuantity(schemeType);
         var basedOn = NormalizeChoice(request.BasedOn, SchemeReward.Value, BasedOnOptions);
 
         for (var index = 0; index < request.Products.Count; index++)
@@ -640,6 +723,8 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
             if (unknownFamily != 0) errors[$"{prefix}.family_ids"] = [$"Family {unknownFamily} does not exist."];
             var unknownProduct = products.FirstOrDefault(id => !master.Products.Contains(id));
             if (unknownProduct != 0) errors[$"{prefix}.product_ids"] = [$"Product {unknownProduct} does not exist."];
+
+            if (!rewardOnLine) continue;
 
             if (!line.RewardValue.HasValue || line.RewardValue.Value <= 0)
             {
@@ -668,6 +753,58 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
             {
                 errors[$"{prefix}.reward_value"] = ["Reward amount cannot be greater than 1,00,00,000."];
             }
+        }
+    }
+
+    /// <summary>Validates the slab rows. For Invoice these are rupee bands; for Quantity Slab they
+    /// are quantity bands whose reward is the per-unit rate. The From/To contiguity rule is the
+    /// same either way (no gaps, no overlaps; only the top slab may be open-ended).</summary>
+    private static void ValidateSlabs(LoyaltySchemeRequestDto request, string schemeType, Dictionary<string, string[]> errors)
+    {
+        var isQuantity = SchemeKinds.IsQuantity(schemeType);
+        if (request.Slabs.Count == 0)
+        {
+            errors["slabs"] = [isQuantity ? "Add at least one quantity slab." : "At least one slab is required."];
+            return;
+        }
+
+        decimal? previousTo = null;
+        for (var index = 0; index < request.Slabs.Count; index++)
+        {
+            var slab = request.Slabs[index];
+            var prefix = $"slabs.{index}";
+            if (string.IsNullOrWhiteSpace(slab.TierName)) errors[$"{prefix}.tier_name"] = ["Tier name is required."];
+            if (!slab.ValueFrom.HasValue || slab.ValueFrom.Value < 0) errors[$"{prefix}.value_from"] = [isQuantity ? "Quantity from is required and cannot be negative." : "Value from is required and cannot be negative."];
+            if (slab.ValueTo.HasValue && slab.ValueFrom.HasValue && slab.ValueTo.Value < slab.ValueFrom.Value) errors[$"{prefix}.value_to"] = [isQuantity ? "Quantity to must be greater than or equal to quantity from." : "Value to must be greater than or equal to value from."];
+            if (!slab.RewardValue.HasValue || slab.RewardValue.Value < 0) errors[$"{prefix}.reward_value"] = [isQuantity ? "Reward per unit is required and cannot be negative." : "Reward value is required and cannot be negative."];
+
+            // A Quantity Slab is always a flat per-unit amount (Based On is forced to Value), so the
+            // mixed/percentage path only applies to Invoice schemes.
+            var slabIsPercentage = SchemeReward.IsMixedScheme(request.BasedOn)
+                ? SchemeReward.IsPercentage(slab.RewardType)
+                : SchemeReward.IsPercentage(request.BasedOn);
+
+            if (SchemeReward.IsMixedScheme(request.BasedOn)
+                && !string.IsNullOrWhiteSpace(slab.RewardType)
+                && !SchemeReward.IsPercentage(slab.RewardType)
+                && !string.Equals(slab.RewardType.Trim(), SchemeReward.Value, StringComparison.OrdinalIgnoreCase))
+            {
+                errors[$"{prefix}.reward_type"] = ["Reward type must be Value or Percentage."];
+            }
+
+            if (slabIsPercentage && slab.RewardValue.HasValue && slab.RewardValue.Value > 99.9m)
+            {
+                errors[$"{prefix}.reward_value"] = ["Reward percentage can contain a maximum of four characters including the decimal (maximum 99.9)."];
+            }
+            if (!slabIsPercentage && slab.RewardValue.HasValue && slab.RewardValue.Value > 10000000)
+            {
+                errors[$"{prefix}.reward_value"] = [isQuantity ? "Reward per unit cannot be greater than 1,00,00,000." : "Reward amount cannot be greater than 1,00,00,000."];
+            }
+            if (index > 0 && previousTo is null)
+                errors[$"{prefix}.value_from"] = ["The previous slab must have a value to before another slab is added."];
+            else if (index > 0 && slab.ValueFrom.HasValue && slab.ValueFrom.Value != previousTo!.Value + 1)
+                errors[$"{prefix}.value_from"] = [$"{(isQuantity ? "Quantity from" : "Value from")} must be {previousTo.Value + 1} to avoid overlaps or gaps."];
+            previousTo = slab.ValueTo;
         }
     }
 

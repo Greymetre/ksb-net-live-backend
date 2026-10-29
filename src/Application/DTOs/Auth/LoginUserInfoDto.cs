@@ -62,6 +62,9 @@ public sealed class LoginUserInfoDto
     [JsonPropertyName("provider")]
     public string Provider { get; set; } = "users";
 
+    [JsonPropertyName("two_factor_enabled")]
+    public bool TwoFactorEnabled { get; set; }
+
     [JsonPropertyName("todayBeatSchedule")]
     public bool TodayBeatSchedule { get; set; }
 

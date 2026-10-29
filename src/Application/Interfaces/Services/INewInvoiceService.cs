@@ -16,6 +16,8 @@ public interface INewInvoiceService
     Task<LaravelApiResponse> GetRetailerDealersAsync(ulong customerId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> GetSchemeOptionsAsync(ulong customerId, DateTime? invoiceDate, CancellationToken cancellationToken);
     Task<LaravelApiResponse> GetSchemeFilterOptionsAsync(CancellationToken cancellationToken);
+    Task<LaravelApiResponse> GetSchemeProductsAsync(ulong schemeId, CancellationToken cancellationToken);
+    Task<LaravelApiResponse> PreviewQuantityPointsAsync(Application.DTOs.NewInvoices.QuantityPointsPreviewRequest request, CancellationToken cancellationToken);
     Task<LaravelApiResponse> CreateInvoiceAsync(NewInvoiceRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> UpdateInvoiceAsync(ulong id, NewInvoiceRequestDto request, ulong? actorUserId, CancellationToken cancellationToken);
     Task<LaravelApiResponse> DeleteInvoiceAsync(ulong id, InvoiceDeletePolicy policy, ulong? actorUserId, CancellationToken cancellationToken);

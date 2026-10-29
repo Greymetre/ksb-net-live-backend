@@ -12,6 +12,11 @@ public sealed class User : BaseEntity
     public string Password { get; set; } = string.Empty;
     public string? PasswordString { get; set; }
     public string? RememberToken { get; set; }
+    // CRM two-factor (TOTP authenticator app): the on/off switch, the confirmed Base32 secret
+    // the app shares with the server, and the pending secret during setup ("setup:{base32}").
+    public bool TwoFactorEnabled { get; set; }
+    public string? TwoFactorSecret { get; set; }
+    public string? TwoFactorState { get; set; }
     public string NotificationId { get; set; } = string.Empty;
     public string DeviceType { get; set; } = string.Empty;
     public string Gender { get; set; } = string.Empty;

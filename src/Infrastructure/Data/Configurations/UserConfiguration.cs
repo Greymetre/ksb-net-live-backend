@@ -21,6 +21,9 @@ public sealed class UserConfiguration : IEntityTypeConfiguration<User>
         builder.Property(x => x.Password).HasColumnName("password").HasMaxLength(255);
         builder.Property(x => x.PasswordString).HasColumnName("password_string").HasMaxLength(255);
         builder.Property(x => x.RememberToken).HasColumnName("remember_token").HasMaxLength(100);
+        builder.Property(x => x.TwoFactorEnabled).HasColumnName("two_factor_enabled").HasDefaultValue(false);
+        builder.Property(x => x.TwoFactorSecret).HasColumnName("two_factor_secret").HasMaxLength(64);
+        builder.Property(x => x.TwoFactorState).HasColumnName("two_factor_state").HasMaxLength(255);
         builder.Property(x => x.NotificationId).HasColumnName("notification_id").HasMaxLength(450).HasDefaultValue("");
         builder.Property(x => x.DeviceType).HasColumnName("device_type").HasMaxLength(50).HasDefaultValue("");
         builder.Property(x => x.Gender).HasColumnName("gender").HasMaxLength(20).HasDefaultValue("");

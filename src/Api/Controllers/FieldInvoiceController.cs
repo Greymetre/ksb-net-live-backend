@@ -243,6 +243,24 @@ public sealed class FieldInvoiceController : ControllerBase
         return Ok(new { status = "success", schemes });
     }
 
+    /// <summary>The products a Quantity Slab scheme covers, for the app's invoice product dropdown.</summary>
+    [HttpGet("scheme-products")]
+    public async Task<IActionResult> GetSchemeProducts([FromQuery(Name = "scheme_id")] ulong schemeId, CancellationToken cancellationToken)
+    {
+        var response = await _newInvoiceService.GetSchemeProductsAsync(schemeId, cancellationToken);
+        var products = response.Extra.TryGetValue("products", out var value) ? value : null;
+        return Ok(new { status = "success", products });
+    }
+
+    /// <summary>Live preview of the points the entered quantities would earn on a Quantity Slab scheme.</summary>
+    [HttpPost("quantity-points")]
+    public async Task<IActionResult> PreviewQuantityPoints([FromBody] Application.DTOs.NewInvoices.QuantityPointsPreviewRequest request, CancellationToken cancellationToken)
+    {
+        var response = await _newInvoiceService.PreviewQuantityPointsAsync(request, cancellationToken);
+        var preview = response.Extra.TryGetValue("preview", out var value) ? value : null;
+        return Ok(new { status = "success", preview });
+    }
+
     [HttpPost("invoices")]
     [RequestSizeLimit(15_000_000)]
     public async Task<IActionResult> CreateInvoice([FromForm] FieldInvoiceForm form, CancellationToken cancellationToken)
@@ -276,7 +294,8 @@ public sealed class FieldInvoiceController : ControllerBase
                 Attachments = saved.Select(x => new InvoiceAttachmentInput
                 {
                     FilePath = x.FilePath, FileName = x.FileName, MimeType = x.MimeType, FileSize = x.FileSize
-                }).ToList()
+                }).ToList(),
+                Items = ParseItems(form.Items)
             }, CurrentUserId(), cancellationToken);
             return StatusCode(StatusCodes.Status201Created, response);
         }
@@ -320,7 +339,8 @@ public sealed class FieldInvoiceController : ControllerBase
                 {
                     FilePath = x.FilePath, FileName = x.FileName, MimeType = x.MimeType, FileSize = x.FileSize
                 }).ToList(),
-                RemovedAttachmentIds = form.RemovedAttachmentIds ?? []
+                RemovedAttachmentIds = form.RemovedAttachmentIds ?? [],
+                Items = ParseItems(form.Items)
             }, CurrentUserId(), cancellationToken);
 
             // Files the edit took off the invoice go once the change has stuck.
@@ -338,6 +358,23 @@ public sealed class FieldInvoiceController : ControllerBase
             // Only the files this request uploaded go; the ones already on the invoice stay.
             _attachments.DeleteAll(saved.Select(x => x.FilePath));
             throw;
+        }
+    }
+
+    private static List<Application.DTOs.NewInvoices.InvoiceItemInput>? ParseItems(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            return System.Text.Json.JsonSerializer.Deserialize<List<Application.DTOs.NewInvoices.InvoiceItemInput>>(json, new System.Text.Json.JsonSerializerOptions
+            {
+                PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.SnakeCaseLower,
+                PropertyNameCaseInsensitive = true
+            }) ?? [];
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return [];
         }
     }
 
@@ -476,4 +513,7 @@ public sealed class FieldInvoiceForm
     /// read, so an app build from before this change keeps working.</summary>
     [FromForm(Name = "attachments")] public List<IFormFile>? Attachments { get; set; }
     [FromForm(Name = "removed_attachment_ids")] public List<long>? RemovedAttachmentIds { get; set; }
+    /// <summary>Quantity Slab product lines, as a JSON array string:
+    /// [{"product_id":1,"quantity":3,"price":100}, ...]. Empty for other scheme types.</summary>
+    [FromForm(Name = "items")] public string? Items { get; set; }
 }

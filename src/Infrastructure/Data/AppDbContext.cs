@@ -14,6 +14,7 @@ public sealed class AppDbContext : DbContext
     public DbSet<NewInvoice> NewInvoices => Set<NewInvoice>();
     public DbSet<NewInvoiceApprovalLog> NewInvoiceApprovalLogs => Set<NewInvoiceApprovalLog>();
     public DbSet<NewInvoiceAttachment> NewInvoiceAttachments => Set<NewInvoiceAttachment>();
+    public DbSet<NewInvoiceItem> NewInvoiceItems => Set<NewInvoiceItem>();
     public DbSet<AppDocument> AppDocuments => Set<AppDocument>();
     public DbSet<Role> Roles => Set<Role>();
     public DbSet<Permission> Permissions => Set<Permission>();

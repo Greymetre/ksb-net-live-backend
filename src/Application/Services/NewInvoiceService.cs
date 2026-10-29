@@ -5,6 +5,7 @@ using Application.Interfaces.Repositories;
 using Application.Interfaces.Services;
 using ClosedXML.Excel;
 using Domain.Entities;
+using Domain.Services;
 using Shared.Exceptions;
 using Shared.Json;
 using Shared.Responses;
@@ -148,10 +149,98 @@ public sealed class NewInvoiceService : INewInvoiceService
     public async Task<LaravelApiResponse> GetSchemeFilterOptionsAsync(CancellationToken cancellationToken) =>
         LaravelApiResponse.Success("schemes", await _repository.GetInvoiceSchemeFilterOptionsAsync(cancellationToken));
 
+    /// <summary>The products a Quantity Slab scheme covers, for the invoice table's product dropdown.</summary>
+    public async Task<LaravelApiResponse> GetSchemeProductsAsync(ulong schemeId, CancellationToken cancellationToken) =>
+        LaravelApiResponse.Success("products", await _repository.GetSchemeResolvedProductsAsync(schemeId, cancellationToken));
+
+    /// <summary>Live preview: what the entered quantities would earn on a Quantity Slab scheme,
+    /// using each product's cumulative quantity in the scheme period, with a per-line hint.</summary>
+    public async Task<LaravelApiResponse> PreviewQuantityPointsAsync(QuantityPointsPreviewRequest request, CancellationToken cancellationToken)
+    {
+        var dto = await ComputeQuantityPointsAsync(
+            request.SchemeId, request.CustomerId, request.InvoiceDate,
+            request.Lines.Select(line => new InvoiceItemInput { ProductId = line.ProductId, Quantity = line.Quantity }).ToList(),
+            request.ExceptInvoiceId, cancellationToken);
+        return LaravelApiResponse.Success("preview", dto);
+    }
+
+    /// <summary>Works out, for a save, whether the chosen scheme is a Quantity Slab and if so the
+    /// cleaned product lines, the invoice amount (sum of quantity x price) and the points earned.
+    /// For every other scheme type the amount is the entered one and points stay 0 (read-time
+    /// calc, unchanged).</summary>
+    private async Task<(bool QuantitySlab, List<InvoiceItemInput> Items, decimal Amount, decimal Points)> ResolveQuantitySlabAsync(
+        NewInvoiceRequestDto request, ulong? exceptInvoiceId, CancellationToken cancellationToken)
+    {
+        var scheme = request.SchemeId.HasValue
+            ? await _repository.GetSchemeWithSlabsAsync(request.SchemeId.Value, cancellationToken)
+            : null;
+        if (scheme is null || !SchemeKinds.IsQuantity(scheme.SchemeType))
+        {
+            return (false, [], request.Amount ?? 0, 0);
+        }
+
+        var items = (request.Items ?? [])
+            .Where(x => x.ProductId > 0 && x.Quantity > 0)
+            .Select(x => new InvoiceItemInput { ProductId = x.ProductId, Quantity = x.Quantity, Price = x.Price })
+            .ToList();
+        if (items.Count == 0)
+        {
+            throw Http(LaravelStatusCodes.NoContentLikeValidation, new { items = new[] { "Add at least one product line with a quantity." } });
+        }
+
+        var amount = items.Sum(x => decimal.Round(x.Quantity * x.Price, 2));
+        var preview = await ComputeQuantityPointsAsync(
+            request.SchemeId!.Value, request.SecondaryCustomerId, request.InvoiceDate, items, exceptInvoiceId, cancellationToken);
+        return (true, items, amount, preview.TotalPoints);
+    }
+
+    /// <summary>Shared by the preview and the save path: matches each product's cumulative period
+    /// quantity (prior invoices + what is on this one) to the scheme's quantity slabs.</summary>
+    private async Task<QuantityPointsPreviewDto> ComputeQuantityPointsAsync(
+        ulong schemeId, ulong customerId, DateTime? invoiceDate, IReadOnlyList<InvoiceItemInput> lines, ulong? exceptInvoiceId, CancellationToken cancellationToken)
+    {
+        var result = new QuantityPointsPreviewDto();
+        if (schemeId == 0 || customerId == 0 || lines.Count == 0) return result;
+
+        var scheme = await _repository.GetSchemeWithSlabsAsync(schemeId, cancellationToken);
+        if (scheme is null || !SchemeKinds.IsQuantity(scheme.SchemeType)) return result;
+
+        var prior = await _repository.GetCumulativeQuantitiesAsync(
+            schemeId, customerId, scheme.StartDate.ToDateTime(TimeOnly.MinValue), scheme.EndDate.ToDateTime(TimeOnly.MinValue), exceptInvoiceId, cancellationToken);
+
+        var names = (await _repository.GetSchemeResolvedProductsAsync(schemeId, cancellationToken))
+            .ToDictionary(x => x.Id, x => x.Name);
+
+        // Several lines can name the same product; the cumulative is read on the product, so the
+        // quantities are summed first.
+        foreach (var group in lines.Where(x => x.ProductId > 0 && x.Quantity > 0).GroupBy(x => x.ProductId))
+        {
+            var productId = group.Key;
+            var quantity = group.Sum(x => x.Quantity);
+            var cumulativeBefore = prior.GetValueOrDefault(productId, 0);
+            var line = QuantitySlabReward.ForLine(cumulativeBefore, quantity, scheme.Slabs);
+            result.Lines.Add(new QuantityPointsLineDto
+            {
+                ProductId = productId,
+                ProductName = names.GetValueOrDefault(productId, string.Empty),
+                Quantity = quantity,
+                CumulativeQuantity = cumulativeBefore + quantity,
+                Rate = line.Rate,
+                Points = line.Points,
+                TierName = line.TierName,
+                Hint = line.Hint
+            });
+        }
+        result.TotalPoints = result.Lines.Sum(x => x.Points);
+        return result;
+    }
+
     public async Task<LaravelApiResponse> CreateInvoiceAsync(NewInvoiceRequestDto request, ulong? actorUserId, CancellationToken cancellationToken)
     {
         if (!actorUserId.HasValue) throw Http(LaravelStatusCodes.Unauthorized, "Unauthenticated.");
         await ValidateRequestAsync(request, null, actorUserId, cancellationToken);
+
+        var (quantitySlab, items, amount, points) = await ResolveQuantitySlabAsync(request, null, cancellationToken);
 
         var now = DateTime.UtcNow;
         var invoice = new NewInvoice
@@ -161,8 +250,8 @@ public sealed class NewInvoiceService : INewInvoiceService
             LoyaltySchemeId = request.SchemeId,
             InvoiceNumber = request.InvoiceNumber!.Trim(),
             InvoiceDate = request.InvoiceDate!.Value.Date,
-            Amount = request.Amount!.Value,
-            Points = 0,
+            Amount = amount,
+            Points = points,
             Attachment = NormalizeText(request.Attachment),
             ApprovalStatus = NewInvoice.StatusPending,
             CreatedBy = actorUserId.Value,
@@ -171,6 +260,10 @@ public sealed class NewInvoiceService : INewInvoiceService
         };
 
         var created = await _repository.CreateInvoiceAsync(invoice, cancellationToken);
+        if (quantitySlab)
+        {
+            await _repository.SaveInvoiceItemsAsync(created.Id, items, cancellationToken);
+        }
         if (request.Attachments is { Count: > 0 })
         {
             await _repository.SaveAttachmentsAsync(created.Id, request.Attachments, [], cancellationToken);
@@ -211,8 +304,9 @@ public sealed class NewInvoiceService : INewInvoiceService
         invoice.LoyaltySchemeId = request.SchemeId;
         invoice.InvoiceNumber = request.InvoiceNumber!.Trim();
         invoice.InvoiceDate = request.InvoiceDate!.Value.Date;
-        invoice.Amount = request.Amount!.Value;
-        invoice.Points = 0;
+        var (quantitySlab, items, amount, points) = await ResolveQuantitySlabAsync(request, id, cancellationToken);
+        invoice.Amount = amount;
+        invoice.Points = points;
         if (request.Attachment is not null) invoice.Attachment = NormalizeText(request.Attachment);
 
         // Back to pending: an edited invoice has to be looked at again, and a hold is
@@ -225,6 +319,9 @@ public sealed class NewInvoiceService : INewInvoiceService
             : string.Join("\n", changes);
 
         var updated = await _repository.SaveInvoiceAsync(invoice, "edited", fromStatus, NewInvoice.StatusPending, actorUserId.Value, remark, null, cancellationToken);
+        // Replace the product lines (empty when the scheme is no longer a Quantity Slab, which
+        // also clears any lines left over from before the edit).
+        await _repository.SaveInvoiceItemsAsync(id, quantitySlab ? items : [], cancellationToken);
 
         var addedFiles = request.Attachments ?? [];
         var removedIds = request.RemovedAttachmentIds ?? [];
@@ -450,7 +547,10 @@ public sealed class NewInvoiceService : INewInvoiceService
         {
             errors["invoice_date"] = ["Invoice date cannot be in the future."];
         }
-        if (!request.Amount.HasValue || request.Amount.Value <= 0) errors["amount"] = ["Amount must be greater than 0."];
+        // A Quantity Slab invoice derives its amount from the product lines (sum of quantity x
+        // price), so the single Amount field is not required; its lines are validated instead.
+        var hasItems = request.Items?.Any(x => x.ProductId > 0 && x.Quantity > 0) ?? false;
+        if (!hasItems && (!request.Amount.HasValue || request.Amount.Value <= 0)) errors["amount"] = ["Amount must be greater than 0."];
         if (request.Points.HasValue && request.Points.Value < 0) errors["points"] = ["Points cannot be negative."];
         // An invoice must end up holding at least one file. On an edit that means counting
         // what it already has, minus what is being removed, plus what is being added - the
