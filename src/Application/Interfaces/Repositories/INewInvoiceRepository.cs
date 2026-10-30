@@ -35,7 +35,7 @@ public interface INewInvoiceRepository
     /// <summary>How many files the invoice currently holds.</summary>
     Task<int> CountAttachmentsAsync(ulong invoiceId, CancellationToken cancellationToken);
     Task<NewInvoice?> FindInvoiceEntityAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
-    Task<NewInvoiceDto> SaveInvoiceAsync(NewInvoice invoice, string statusType, int? fromStatus, int toStatus, ulong actorUserId, string? remark, decimal? approvedAmount, CancellationToken cancellationToken);
+    Task<NewInvoiceDto> SaveInvoiceAsync(NewInvoice invoice, string statusType, int? fromStatus, int toStatus, ulong actorUserId, string? remark, decimal? approvedAmount, decimal? approvedQuantity, CancellationToken cancellationToken);
     /// <summary>
     /// Removes the invoice with everything hanging off it - approval log, attachment
     /// rows and the retailer's loyalty points for it. Returns the stored file paths

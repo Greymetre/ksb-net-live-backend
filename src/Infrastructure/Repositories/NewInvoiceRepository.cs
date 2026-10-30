@@ -123,6 +123,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         await ApplyApproverNamesAsync([dto], cancellationToken);
         await ApplyAttachmentsAsync([dto], cancellationToken);
         dto.Items = [.. await GetInvoiceItemsAsync(id, cancellationToken)];
+        dto.TotalQuantity = dto.Items.Sum(x => x.Quantity);
         dto.ApprovalLogs = await GetApprovalLogsAsync(id, cancellationToken);
         return dto;
     }
@@ -783,7 +784,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         return await _dbContext.NewInvoices.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
     }
 
-    public async Task<NewInvoiceDto> SaveInvoiceAsync(NewInvoice invoice, string statusType, int? fromStatus, int toStatus, ulong actorUserId, string? remark, decimal? approvedAmount, CancellationToken cancellationToken)
+    public async Task<NewInvoiceDto> SaveInvoiceAsync(NewInvoice invoice, string statusType, int? fromStatus, int toStatus, ulong actorUserId, string? remark, decimal? approvedAmount, decimal? approvedQuantity, CancellationToken cancellationToken)
     {
         invoice.UpdatedAt = DateTime.UtcNow;
         await _dbContext.NewInvoiceApprovalLogs.AddAsync(new NewInvoiceApprovalLog
@@ -795,6 +796,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
             FromStatus = fromStatus,
             ToStatus = toStatus,
             ApprovedAmount = approvedAmount,
+            ApprovedQuantity = approvedQuantity,
             Remark = string.IsNullOrWhiteSpace(remark) ? null : remark.Trim(),
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
@@ -1428,6 +1430,7 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
                   FromStatus = log.FromStatus,
                   ToStatus = log.ToStatus,
                   ApprovedAmount = log.ApprovedAmount,
+                  ApprovedQuantity = log.ApprovedQuantity,
                   Remark = log.Remark,
                   CreatedAt = log.CreatedAt
               }).ToListAsync(cancellationToken);
@@ -1455,6 +1458,7 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
                 InvoiceId = x.NewInvoiceId!.Value,
                 ToStatus = x.ToStatus!.Value,
                 x.ApprovedAmount,
+                x.ApprovedQuantity,
                 x.Remark
             })
             .ToListAsync(cancellationToken);
@@ -1463,19 +1467,22 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
         foreach (var log in logs)
         {
             var summary = summaries[log.InvoiceId];
-            if (log.ToStatus == NewInvoice.StatusApprovedSs && !summary.SsApprovedAmount.HasValue)
+            if (log.ToStatus == NewInvoice.StatusApprovedSs && !summary.SsApprovedAmount.HasValue && !summary.SsApprovedQuantity.HasValue)
             {
                 summary.SsApprovedAmount = log.ApprovedAmount;
+                summary.SsApprovedQuantity = log.ApprovedQuantity;
                 summary.SsApprovalRemark = log.Remark;
             }
-            if (log.ToStatus == NewInvoice.StatusApprovedSales && !summary.SalesApprovedAmount.HasValue)
+            if (log.ToStatus == NewInvoice.StatusApprovedSales && !summary.SalesApprovedAmount.HasValue && !summary.SalesApprovedQuantity.HasValue)
             {
                 summary.SalesApprovedAmount = log.ApprovedAmount;
+                summary.SalesApprovedQuantity = log.ApprovedQuantity;
                 summary.SalesApprovalRemark = log.Remark;
             }
-            if (log.ToStatus == NewInvoice.StatusApprovedHo && !summary.HoApprovedAmount.HasValue)
+            if (log.ToStatus == NewInvoice.StatusApprovedHo && !summary.HoApprovedAmount.HasValue && !summary.HoApprovedQuantity.HasValue)
             {
                 summary.HoApprovedAmount = log.ApprovedAmount;
+                summary.HoApprovedQuantity = log.ApprovedQuantity;
                 summary.HoApprovalRemark = log.Remark;
             }
             // Blank counts as no remark, so a hold submitted without a reason does not
@@ -1634,18 +1641,22 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
             ApprovalStatusLabel = StatusLabel(invoice.ApprovalStatus),
             ApprovalRemark = invoice.ApprovalRemark,
             SsApprovedAmount = approvalSummary.SsApprovedAmount,
+            SsApprovedQuantity = approvalSummary.SsApprovedQuantity,
             SsApprovalRemark = approvalSummary.SsApprovalRemark,
             SsApprovedBy = invoice.ApprovedSsBy,
             SsApprovedAt = invoice.ApprovedSsAt,
             SalesApprovedAmount = approvalSummary.SalesApprovedAmount,
+            SalesApprovedQuantity = approvalSummary.SalesApprovedQuantity,
             SalesApprovalRemark = approvalSummary.SalesApprovalRemark,
             SalesApprovedBy = invoice.ApprovedSalesBy,
             SalesApprovedAt = invoice.ApprovedSalesAt,
             HoApprovedAmount = approvalSummary.HoApprovedAmount,
+            HoApprovedQuantity = approvalSummary.HoApprovedQuantity,
             HoApprovalRemark = approvalSummary.HoApprovalRemark,
             HoApprovedBy = invoice.ApprovedHoBy,
             HoApprovedAt = invoice.ApprovedHoAt,
             HoldRemark = approvalSummary.HoldRemark,
+            IsQuantityScheme = scheme is not null && SchemeKinds.IsQuantity(scheme.SchemeType),
             CreatedBy = invoice.CreatedBy,
             CreatedByName = creator?.Name,
             CreatedAt = invoice.CreatedAt,
@@ -1846,10 +1857,13 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
     private sealed class ApprovalStageSummary
     {
         public decimal? SsApprovedAmount { get; set; }
+        public decimal? SsApprovedQuantity { get; set; }
         public string? SsApprovalRemark { get; set; }
         public decimal? SalesApprovedAmount { get; set; }
+        public decimal? SalesApprovedQuantity { get; set; }
         public string? SalesApprovalRemark { get; set; }
         public decimal? HoApprovedAmount { get; set; }
+        public decimal? HoApprovedQuantity { get; set; }
         public string? HoApprovalRemark { get; set; }
         public string? HoldRemark { get; set; }
     }

@@ -251,7 +251,7 @@ public sealed class NewInvoicesController : ControllerBase
     [HttpPost("{id}/approve/ss")]
     public async Task<IActionResult> ApproveSs(ulong id, [FromBody] NewInvoiceApprovalRequestDto request, CancellationToken cancellationToken)
     {
-        var response = await _newInvoiceService.ApproveInvoiceAsync(id, "ss", request.Remark, request.ApprovedAmount, CurrentUserId(), cancellationToken);
+        var response = await _newInvoiceService.ApproveInvoiceAsync(id, "ss", request.Remark, request.ApprovedAmount, request.ApprovedQuantity, CurrentUserId(), cancellationToken);
         return Ok(response);
     }
 
@@ -259,7 +259,7 @@ public sealed class NewInvoicesController : ControllerBase
     [HttpPost("{id}/approve/sales")]
     public async Task<IActionResult> ApproveSales(ulong id, [FromBody] NewInvoiceApprovalRequestDto request, CancellationToken cancellationToken)
     {
-        var response = await _newInvoiceService.ApproveInvoiceAsync(id, "sales", request.Remark, request.ApprovedAmount, CurrentUserId(), cancellationToken);
+        var response = await _newInvoiceService.ApproveInvoiceAsync(id, "sales", request.Remark, request.ApprovedAmount, request.ApprovedQuantity, CurrentUserId(), cancellationToken);
         return Ok(response);
     }
 
@@ -267,7 +267,7 @@ public sealed class NewInvoicesController : ControllerBase
     [HttpPost("{id}/approve/ho")]
     public async Task<IActionResult> ApproveHo(ulong id, [FromBody] NewInvoiceApprovalRequestDto request, CancellationToken cancellationToken)
     {
-        var response = await _newInvoiceService.ApproveInvoiceAsync(id, "ho", request.Remark, request.ApprovedAmount, CurrentUserId(), cancellationToken);
+        var response = await _newInvoiceService.ApproveInvoiceAsync(id, "ho", request.Remark, request.ApprovedAmount, request.ApprovedQuantity, CurrentUserId(), cancellationToken);
         return Ok(response);
     }
 

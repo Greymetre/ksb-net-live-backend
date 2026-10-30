@@ -43,20 +43,27 @@ public sealed class NewInvoiceDto
     public string ApprovalStatusLabel { get; set; } = string.Empty;
     public string? ApprovalRemark { get; set; }
     public decimal? SsApprovedAmount { get; set; }
+    public decimal? SsApprovedQuantity { get; set; }
     public string? SsApprovalRemark { get; set; }
     public ulong? SsApprovedBy { get; set; }
     public string? SsApprovedByName { get; set; }
     public DateTime? SsApprovedAt { get; set; }
     public decimal? SalesApprovedAmount { get; set; }
+    public decimal? SalesApprovedQuantity { get; set; }
     public string? SalesApprovalRemark { get; set; }
     public ulong? SalesApprovedBy { get; set; }
     public string? SalesApprovedByName { get; set; }
     public DateTime? SalesApprovedAt { get; set; }
     public decimal? HoApprovedAmount { get; set; }
+    public decimal? HoApprovedQuantity { get; set; }
     public string? HoApprovalRemark { get; set; }
     public ulong? HoApprovedBy { get; set; }
     public string? HoApprovedByName { get; set; }
     public DateTime? HoApprovedAt { get; set; }
+    /// <summary>True for a Quantity Slab invoice: the approve popup collects a quantity, not an amount.</summary>
+    public bool IsQuantityScheme { get; set; }
+    /// <summary>The invoice's total quantity (all product lines summed) - what the slab is read on.</summary>
+    public decimal TotalQuantity { get; set; }
 
     /// <summary>Reason given the last time the invoice was put on hold. Kept even
     /// after the hold is released, so the export still explains the delay.</summary>
@@ -84,6 +91,7 @@ public sealed class NewInvoiceApprovalLogDto
     public int? FromStatus { get; set; }
     public int? ToStatus { get; set; }
     public decimal? ApprovedAmount { get; set; }
+    public decimal? ApprovedQuantity { get; set; }
     public string? Remark { get; set; }
     public DateTime? CreatedAt { get; set; }
 }
@@ -219,6 +227,8 @@ public sealed class NewInvoiceApprovalRequestDto
 {
     public string? Remark { get; set; }
     public decimal? ApprovedAmount { get; set; }
+    /// <summary>Quantity Slab invoices are approved on a total quantity instead of an amount.</summary>
+    public decimal? ApprovedQuantity { get; set; }
 }
 
 public sealed class InvoiceAttachmentDto

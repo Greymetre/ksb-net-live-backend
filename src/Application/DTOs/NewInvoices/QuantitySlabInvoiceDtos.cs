@@ -50,6 +50,13 @@ public sealed class QuantityPointsLineDto
 public sealed class QuantityPointsPreviewDto
 {
     public decimal TotalPoints { get; set; }
+    /// <summary>The whole invoice's quantity (all product lines summed) - the number the slab is read on.</summary>
+    public decimal TotalQuantity { get; set; }
+    /// <summary>That total plus the customer's other non-rejected quantity in the scheme period.</summary>
+    public decimal CumulativeQuantity { get; set; }
+    public decimal? Rate { get; set; }
+    public string? TierName { get; set; }
+    public string? Hint { get; set; }
     public List<QuantityPointsLineDto> Lines { get; set; } = [];
 }
 
