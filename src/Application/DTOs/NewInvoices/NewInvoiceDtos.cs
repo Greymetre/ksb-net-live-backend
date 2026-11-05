@@ -13,6 +13,8 @@ public sealed class NewInvoiceDto
     public string? BranchName { get; set; }
     public ulong? AssignedDistributorId { get; set; }
     public string? AssignedDistributorName { get; set; }
+    /// <summary>The assigned dealer's (distributor's) own customer code, for the export.</summary>
+    public string? AssignedDistributorCode { get; set; }
     public string? AssignedEmployeeName { get; set; }
     public string? AssignedEmployeeMobile { get; set; }
     public string InvoiceNumber { get; set; } = string.Empty;
@@ -92,6 +94,9 @@ public sealed class NewInvoiceApprovalLogDto
     public int? ToStatus { get; set; }
     public decimal? ApprovedAmount { get; set; }
     public decimal? ApprovedQuantity { get; set; }
+    /// <summary>Per-group approved quantity for a GROUP Quantity Slab invoice (group_no -> qty).
+    /// Null for amount schemes and single-ladder quantity schemes.</summary>
+    public Dictionary<int, decimal>? ApprovedQuantities { get; set; }
     public string? Remark { get; set; }
     public DateTime? CreatedAt { get; set; }
 }
@@ -229,6 +234,9 @@ public sealed class NewInvoiceApprovalRequestDto
     public decimal? ApprovedAmount { get; set; }
     /// <summary>Quantity Slab invoices are approved on a total quantity instead of an amount.</summary>
     public decimal? ApprovedQuantity { get; set; }
+    /// <summary>A GROUP Quantity Slab invoice is approved per group: { "&lt;group_no&gt;": &lt;qty&gt;, ... }.
+    /// When present it overrides <see cref="ApprovedQuantity"/>.</summary>
+    public Dictionary<int, decimal>? ApprovedQuantities { get; set; }
 }
 
 public sealed class InvoiceAttachmentDto

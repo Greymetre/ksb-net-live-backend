@@ -13,6 +13,8 @@ public sealed class FieldSchemeDto
     public string? Tag { get; set; }
     /// <summary>Regular or Booster, which is the wallet the points land in.</summary>
     public string WalletType { get; set; } = "Regular";
+    /// <summary>Invoice, Product or Quantity - the app shows a Quantity Slab scheme's groups.</summary>
+    public string? SchemeType { get; set; }
     public string? BasedOn { get; set; }
     public DateOnly StartDate { get; set; }
     public DateOnly EndDate { get; set; }

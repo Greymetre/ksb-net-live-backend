@@ -61,6 +61,7 @@ public sealed class LoyaltySchemeSlabConfiguration : IEntityTypeConfiguration<Lo
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
         builder.Property(x => x.LoyaltySchemeId).HasColumnName("loyalty_scheme_id");
+        builder.Property(x => x.GroupNo).HasColumnName("group_no").HasDefaultValue(1);
         builder.Property(x => x.TierName).HasColumnName("tier_name").HasMaxLength(150);
         builder.Property(x => x.ValueFrom).HasColumnName("value_from").HasPrecision(15, 2);
         builder.Property(x => x.ValueTo).HasColumnName("value_to").HasPrecision(15, 2);
@@ -84,6 +85,7 @@ public sealed class LoyaltySchemeProductConfiguration : IEntityTypeConfiguration
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
         builder.Property(x => x.LoyaltySchemeId).HasColumnName("loyalty_scheme_id");
+        builder.Property(x => x.GroupNo).HasColumnName("group_no").HasDefaultValue(1);
         builder.Property(x => x.SegmentIds).HasColumnName("segment_ids").HasColumnType("nvarchar(max)");
         builder.Property(x => x.FamilyIds).HasColumnName("family_ids").HasColumnType("nvarchar(max)");
         builder.Property(x => x.ProductIds).HasColumnName("product_ids").HasColumnType("nvarchar(max)");

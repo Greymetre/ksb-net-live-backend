@@ -21,6 +21,14 @@ public interface INewInvoiceRepository
     Task<Customer?> GetRetailerAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
     Task<IReadOnlyCollection<InvoiceSchemeOptionDto>> GetEligibleSchemeOptionsAsync(ulong customerId, DateTime invoiceDate, CancellationToken cancellationToken);
     Task<IReadOnlyCollection<SchemeProductOptionDto>> GetSchemeResolvedProductsAsync(ulong schemeId, CancellationToken cancellationToken);
+    /// <summary>Each covered product mapped to the group it belongs to (Quantity Slab). A product is
+    /// assigned to exactly one group, narrowest naming first (a direct product line beats a family,
+    /// a family beats a segment), so a quantity is never counted toward two groups' ladders.</summary>
+    Task<IReadOnlyDictionary<ulong, int>> GetSchemeProductGroupMapAsync(ulong schemeId, CancellationToken cancellationToken);
+
+    /// <summary>A Quantity Slab scheme's groups for the app detail screen: each group's quantity ladder
+    /// and the goods it covers (named by product, else family, else segment). Empty for other schemes.</summary>
+    Task<IReadOnlyList<SchemeGroupDisplayDto>> GetSchemeGroupDisplayAsync(ulong schemeId, CancellationToken cancellationToken);
     Task<Domain.Entities.LoyaltyScheme?> GetSchemeWithSlabsAsync(ulong schemeId, CancellationToken cancellationToken);
     Task<IReadOnlyDictionary<ulong, decimal>> GetCumulativeQuantitiesAsync(ulong schemeId, ulong customerId, DateTime periodStart, DateTime periodEnd, ulong? exceptInvoiceId, CancellationToken cancellationToken);
     Task<IReadOnlyCollection<InvoiceItemDto>> GetInvoiceItemsAsync(ulong invoiceId, CancellationToken cancellationToken);
@@ -35,7 +43,7 @@ public interface INewInvoiceRepository
     /// <summary>How many files the invoice currently holds.</summary>
     Task<int> CountAttachmentsAsync(ulong invoiceId, CancellationToken cancellationToken);
     Task<NewInvoice?> FindInvoiceEntityAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
-    Task<NewInvoiceDto> SaveInvoiceAsync(NewInvoice invoice, string statusType, int? fromStatus, int toStatus, ulong actorUserId, string? remark, decimal? approvedAmount, decimal? approvedQuantity, CancellationToken cancellationToken);
+    Task<NewInvoiceDto> SaveInvoiceAsync(NewInvoice invoice, string statusType, int? fromStatus, int toStatus, ulong actorUserId, string? remark, decimal? approvedAmount, decimal? approvedQuantity, string? approvedQuantities, CancellationToken cancellationToken);
     /// <summary>
     /// Removes the invoice with everything hanging off it - approval log, attachment
     /// rows and the retailer's loyalty points for it. Returns the stored file paths

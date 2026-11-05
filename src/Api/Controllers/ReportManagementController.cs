@@ -2269,6 +2269,7 @@ WHERE customertype = 2 AND deleted_at IS NULL AND executive_id IN ({zoneEmpCsv})
                     emp?.Name ?? "-",
                     emp?.DesignationId is { } did && designations.TryGetValue(did, out var dn) ? dn : "",
                     emp?.ReportingId is { } rid && allUsers.TryGetValue(rid, out var mgr) ? mgr.Name : "",
+                    x.Retailer.Id,
                     Name(retailerName, x.Retailer.Id),
                     KycStatusText(kycStates.GetValueOrDefault(x.Retailer.Id)),
                     scheme.SchemeName,
@@ -2287,8 +2288,8 @@ WHERE customertype = 2 AND deleted_at IS NULL AND executive_id IN ({zoneEmpCsv})
 
         using var workbook = new XLWorkbook();
         var sheet = workbook.Worksheets.Add("Retailer Wise");
-        var headers = new[] { "Zone", "Branch", "Dealer Code", "Dealer", "Employee Name", "Deg", "Reporting Manager", "Retailer Name", "Scheme Name", "Slab Qualified", "Incentive %", "ASR /DSR Act Sec Sales", "Incentive Amount", "Total Invoice Amount", "Approved Invoice Val", "KYC Status" };
-        const int labelColumns = 11; // Zone .. Incentive %; the four figures sit to the right, KYC Status last
+        var headers = new[] { "Zone", "Branch", "Dealer Code", "Dealer", "Employee Name", "Deg", "Reporting Manager", "Retailer ID", "Retailer Name", "Scheme Name", "Slab Qualified", "Incentive %", "ASR /DSR Act Sec Sales", "Incentive Amount", "Total Invoice Amount", "Approved Invoice Val", "KYC Status" };
+        const int labelColumns = 12; // Zone .. Incentive %; the four figures sit to the right, KYC Status last
         for (var i = 0; i < headers.Length; i++) sheet.Cell(1, i + 1).Value = headers[i];
 
         // Figures are full rupees (not lakhs); KYC Status is the last column, after them.
@@ -2321,7 +2322,7 @@ WHERE customertype = 2 AND deleted_at IS NULL AND executive_id IN ({zoneEmpCsv})
                 foreach (var row in branchGroup)
                 {
                     WriteRetailerLine(outputRow++,
-                        new object?[] { row.Zone, row.Branch, row.DealerCode, row.DealerName, row.AsrName, row.Designation, row.ReportingManager, row.RetailerName, row.SchemeName, row.SlabQualified, row.IncentivePercent },
+                        new object?[] { row.Zone, row.Branch, row.DealerCode, row.DealerName, row.AsrName, row.Designation, row.ReportingManager, row.RetailerId, row.RetailerName, row.SchemeName, row.SlabQualified, row.IncentivePercent },
                         new[] { row }, row.KycStatus);
                 }
                 WriteRetailerTotal(outputRow++, "SUBTOTAL - " + (string.IsNullOrWhiteSpace(branchGroup.Key) ? "No Branch" : branchGroup.Key), branchGroup.ToList(), XLColor.Yellow, whiteText: false);
@@ -2912,7 +2913,7 @@ public sealed class RfmMovementFilter : RfmFilter
 
 public sealed record LoyaltyReportRow(string Zone, string Branch, string? DealerName, string AsrName, string Designation, string EmployeeStatus, string ReportingManager, decimal SecondarySales, decimal TotalInvoiceAmount, decimal ApprovedInvoiceValue, int ActiveRetailers, int KycPending, string SlabQualified, string IncentivePercent, decimal IncentiveAmount);
 
-public sealed record RetailerLoyaltyRow(string Zone, string Branch, string DealerCode, string DealerName, string AsrName, string Designation, string ReportingManager, string RetailerName, string KycStatus, string SchemeName, string SlabQualified, string IncentivePercent, decimal SecondarySales, decimal IncentiveAmount, decimal TotalInvoiceAmount, decimal ApprovedInvoiceValue);
+public sealed record RetailerLoyaltyRow(string Zone, string Branch, string DealerCode, string DealerName, string AsrName, string Designation, string ReportingManager, ulong RetailerId, string RetailerName, string KycStatus, string SchemeName, string SlabQualified, string IncentivePercent, decimal SecondarySales, decimal IncentiveAmount, decimal TotalInvoiceAmount, decimal ApprovedInvoiceValue);
 
 public sealed class LoyaltyPerformanceFilter
 {

@@ -384,6 +384,18 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
         {
             ValidateSlabs(request, schemeType, errors);
         }
+        // Quantity Slab holds several groups; each group must pair a ladder with products, and a
+        // product belongs to exactly one group. Only worth checking once both sides are otherwise valid.
+        if (SchemeKinds.IsQuantity(schemeType))
+        {
+            ValidateQuantityGroups(request, errors);
+        }
+        // The explicit-id check above misses a product pulled in through a whole family or segment,
+        // so once the request is otherwise valid, expand the coverage and catch any resolved overlap.
+        if (SchemeKinds.IsQuantity(schemeType) && errors.Count == 0)
+        {
+            await ValidateQuantityGroupOverlapAsync(request, errors, cancellationToken);
+        }
 
         if (errors.Count > 0) throw Http(LaravelStatusCodes.NoContentLikeValidation, errors);
 
@@ -398,11 +410,12 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
     /// the ids so the sheet can be read by a person; on the way back in the ids decide, and
     /// a renamed product cannot break an import.</summary>
     private static readonly string[] ProductLineColumns =
-        ["segment_ids", "segment_names", "family_ids", "family_names", "product_ids", "product_names", "reward"];
+        ["group", "segment_ids", "segment_names", "family_ids", "family_names", "product_ids", "product_names", "reward"];
 
-    // The quantity-slab sheet for a Quantity Slab scheme: one band per row. qty_to blank on the
-    // last row means "no upper limit"; reward_per_unit is paid for each unit in that band.
-    private static readonly string[] SlabColumns = ["slab_name", "qty_from", "qty_to", "reward_per_unit"];
+    // The quantity-slab sheet for a Quantity Slab scheme: one band per row. "group" ties the band to a
+    // group's ladder (several groups, each its own ladder + products; blank = group 1). qty_to blank on
+    // the last row of a group means "no upper limit"; reward_per_unit is paid for each unit in that band.
+    private static readonly string[] SlabColumns = ["group", "slab_name", "qty_from", "qty_to", "reward_per_unit"];
 
     /// <summary>
     /// The blank sheet the scheme form hands out, with a second tab listing every segment
@@ -463,6 +476,7 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
             ProductLineColumns,
             scheme.Products.Select(line => new object?[]
             {
+                line.GroupNo,
                 string.Join(',', line.SegmentIds),
                 string.Join(", ", line.SegmentNames),
                 string.Join(',', line.FamilyIds),
@@ -479,9 +493,12 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
         ExportWorkbook.Create($"scheme-quantity-slabs-template-{IndiaToday():yyyy-MM-dd}.xlsx", SlabColumns,
             new List<object?[]>
             {
-                new object?[] { "Slab 1", 3, 4, 500 },
-                new object?[] { "Slab 2", 5, 10, 800 },
-                new object?[] { "Slab 3", 11, null, 1500 }
+                new object?[] { 1, "Slab 1", 3, 4, 500 },
+                new object?[] { 1, "Slab 2", 5, 10, 800 },
+                new object?[] { 1, "Slab 3", 11, null, 1500 },
+                new object?[] { 2, "Slab 1", 2, 4, 200 },
+                new object?[] { 2, "Slab 2", 5, 10, 500 },
+                new object?[] { 2, "Slab 3", 11, null, 1100 }
             });
 
     /// <summary>One scheme's quantity slabs, in the columns the import reads back.</summary>
@@ -493,7 +510,7 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
         return ExportWorkbook.Create(
             $"{scheme.SchemeCode}-quantity-slabs-{IndiaToday():yyyy-MM-dd}.xlsx",
             SlabColumns,
-            scheme.Slabs.Select(slab => new object?[] { slab.TierName, slab.ValueFrom, slab.ValueTo, slab.RewardValue }));
+            scheme.Slabs.Select(slab => new object?[] { slab.GroupNo, slab.TierName, slab.ValueFrom, slab.ValueTo, slab.RewardValue }));
     }
 
     /// <summary>Reads an edited quantity-slab sheet back for the form. Nothing is saved until the
@@ -532,11 +549,13 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
                     return string.Empty;
                 }
 
+                var groupText = Text("group", "group_no", "group_number");
                 var name = Text("slab_name", "tier_name", "slab", "name");
                 var fromText = Text("qty_from", "quantity_from", "value_from", "from");
                 var toText = Text("qty_to", "quantity_to", "value_to", "to");
                 var rewardText = Text("reward_per_unit", "reward", "reward_value");
-                if (name.Length == 0 && fromText.Length == 0 && toText.Length == 0 && rewardText.Length == 0) continue;
+                if (groupText.Length == 0 && name.Length == 0 && fromText.Length == 0 && toText.Length == 0 && rewardText.Length == 0) continue;
+                var groupNo = int.TryParse(groupText, NumberStyles.Any, CultureInfo.InvariantCulture, out var parsedGroup) && parsedGroup > 0 ? parsedGroup : 1;
 
                 if (!decimal.TryParse(fromText, NumberStyles.Any, CultureInfo.InvariantCulture, out var from) || from < 0)
                 {
@@ -561,6 +580,7 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
 
                 slabs.Add(new LoyaltySchemeSlabDto
                 {
+                    GroupNo = groupNo,
                     TierName = name.Length > 0 ? name : $"Slab {slabs.Count + 1}",
                     ValueFrom = from,
                     ValueTo = to,
@@ -624,11 +644,13 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
                     return string.Empty;
                 }
 
+                var groupText = Text("group", "group_no", "group_number");
                 var segments = ParseIds(Text("segment_ids", "segment_id"));
                 var families = ParseIds(Text("family_ids", "family_id"));
                 var products = ParseIds(Text("product_ids", "product_id"));
                 var rewardText = Text("reward", "reward_value");
-                if (segments.Count == 0 && families.Count == 0 && products.Count == 0 && rewardText.Length == 0) continue;
+                if (groupText.Length == 0 && segments.Count == 0 && families.Count == 0 && products.Count == 0 && rewardText.Length == 0) continue;
+                var groupNo = int.TryParse(groupText, NumberStyles.Any, CultureInfo.InvariantCulture, out var parsedGroup) && parsedGroup > 0 ? parsedGroup : 1;
 
                 if (segments.Count == 0 && families.Count == 0 && products.Count == 0)
                 {
@@ -655,6 +677,7 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
 
                 lines.Add(new LoyaltySchemeProductDto
                 {
+                    GroupNo = groupNo,
                     SegmentIds = [.. segments],
                     SegmentNames = [.. segments.Select(id => names.Segments.GetValueOrDefault(id, string.Empty)).Where(x => x.Length > 0)],
                     FamilyIds = [.. families],
@@ -756,9 +779,10 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
         }
     }
 
-    /// <summary>Validates the slab rows. For Invoice these are rupee bands; for Quantity Slab they
-    /// are quantity bands whose reward is the per-unit rate. The From/To contiguity rule is the
-    /// same either way (no gaps, no overlaps; only the top slab may be open-ended).</summary>
+    /// <summary>Validates the slab rows. For Invoice these are rupee bands forming one ladder.
+    /// For Quantity Slab they are quantity bands, and a scheme carries SEVERAL groups: each group
+    /// is its own ladder (its bands must be contiguous among themselves - no gaps, no overlaps,
+    /// only the top band open-ended), and groups are independent of one another.</summary>
     private static void ValidateSlabs(LoyaltySchemeRequestDto request, string schemeType, Dictionary<string, string[]> errors)
     {
         var isQuantity = SchemeKinds.IsQuantity(schemeType);
@@ -768,7 +792,7 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
             return;
         }
 
-        decimal? previousTo = null;
+        // Per-band field checks, the same wherever a band sits.
         for (var index = 0; index < request.Slabs.Count; index++)
         {
             var slab = request.Slabs[index];
@@ -800,11 +824,112 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
             {
                 errors[$"{prefix}.reward_value"] = [isQuantity ? "Reward per unit cannot be greater than 1,00,00,000." : "Reward amount cannot be greater than 1,00,00,000."];
             }
-            if (index > 0 && previousTo is null)
+        }
+
+        // Contiguity. Invoice is one ladder over every band. Quantity Slab is a ladder PER GROUP.
+        var indexed = request.Slabs.Select((slab, index) => (slab, index));
+        if (isQuantity)
+        {
+            foreach (var group in indexed.GroupBy(x => EffectiveGroupNo(x.slab.GroupNo)))
+                ValidateLadderContiguity(group, isQuantity, errors);
+        }
+        else
+        {
+            ValidateLadderContiguity(indexed, isQuantity, errors);
+        }
+    }
+
+    /// <summary>Within one ladder, each band must start one unit above the previous band's end,
+    /// so there are no gaps or overlaps; only the last band may be open-ended.</summary>
+    private static void ValidateLadderContiguity(
+        IEnumerable<(LoyaltySchemeSlabRequestDto slab, int index)> ordered, bool isQuantity, Dictionary<string, string[]> errors)
+    {
+        decimal? previousTo = null;
+        var first = true;
+        foreach (var (slab, index) in ordered)
+        {
+            var prefix = $"slabs.{index}";
+            if (!first && previousTo is null)
                 errors[$"{prefix}.value_from"] = ["The previous slab must have a value to before another slab is added."];
-            else if (index > 0 && slab.ValueFrom.HasValue && slab.ValueFrom.Value != previousTo!.Value + 1)
+            else if (!first && slab.ValueFrom.HasValue && slab.ValueFrom.Value != previousTo!.Value + 1)
                 errors[$"{prefix}.value_from"] = [$"{(isQuantity ? "Quantity from" : "Value from")} must be {previousTo.Value + 1} to avoid overlaps or gaps."];
             previousTo = slab.ValueTo;
+            first = false;
+        }
+    }
+
+    private static int EffectiveGroupNo(int? groupNo) => groupNo is int g && g > 0 ? g : 1;
+
+    /// <summary>Catches a product that two groups both cover once families and segments are expanded to
+    /// their actual products - e.g. one group names a product while another covers its whole family.
+    /// A product may be read on only one group, so such an overlap is rejected.</summary>
+    private async Task ValidateQuantityGroupOverlapAsync(
+        LoyaltySchemeRequestDto request, Dictionary<string, string[]> errors, CancellationToken cancellationToken)
+    {
+        var selections = request.Products
+            .Select(line => new GroupProductSelection(
+                EffectiveGroupNo(line.GroupNo), Ids(line.SegmentIds), Ids(line.FamilyIds), Ids(line.ProductIds)))
+            .ToList();
+        if (selections.Count == 0) return;
+
+        var resolved = await _repository.ResolveGroupProductIdsAsync(selections, cancellationToken);
+
+        var owner = new Dictionary<ulong, int>();
+        foreach (var (group, products) in resolved.OrderBy(entry => entry.Key))
+        {
+            foreach (var productId in products)
+            {
+                if (owner.TryGetValue(productId, out var firstGroup) && firstGroup != group)
+                {
+                    errors["groups"] =
+                    [
+                        $"Groups {firstGroup} and {group} cover the same product. A product can belong to only one group - " +
+                        "if a group covers a whole family or segment, do not also use one of its products in another group."
+                    ];
+                    return;
+                }
+                owner.TryAdd(productId, group);
+            }
+        }
+    }
+
+    /// <summary>Group-level rules for a Quantity Slab scheme. Every group must carry BOTH a ladder
+    /// and products, and a product (or family, or segment) belongs to exactly one group, so no
+    /// quantity is ever counted toward two ladders.</summary>
+    private static void ValidateQuantityGroups(LoyaltySchemeRequestDto request, Dictionary<string, string[]> errors)
+    {
+        var slabGroups = request.Slabs.Select(s => EffectiveGroupNo(s.GroupNo)).ToHashSet();
+        var productGroups = request.Products.Select(p => EffectiveGroupNo(p.GroupNo)).ToHashSet();
+
+        var groupErrors = new List<string>();
+        foreach (var g in slabGroups.Except(productGroups).OrderBy(x => x))
+            groupErrors.Add($"Group {g} has a quantity ladder but no products.");
+        foreach (var g in productGroups.Except(slabGroups).OrderBy(x => x))
+            groupErrors.Add($"Group {g} has products but no quantity slabs.");
+        if (groupErrors.Count > 0) errors["groups"] = [.. groupErrors];
+
+        // Only a specific PRODUCT may not be named in two groups - the same segment or family can be,
+        // as long as the products chosen under them differ (that is what keeps a quantity in one group).
+        var firstSeen = new Dictionary<ulong, int>();
+        for (var index = 0; index < request.Products.Count; index++)
+        {
+            var line = request.Products[index];
+            var group = EffectiveGroupNo(line.GroupNo);
+            foreach (var id in Ids(line.ProductIds))
+            {
+                if (firstSeen.TryGetValue(id, out var firstGroup))
+                {
+                    if (firstGroup != group)
+                    {
+                        errors[$"products.{index}.product_ids"] =
+                            [$"This product is already used in group {firstGroup}. A product can belong to only one group."];
+                    }
+                }
+                else
+                {
+                    firstSeen[id] = group;
+                }
+            }
         }
     }
 
@@ -819,6 +944,7 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
         var mixed = SchemeReward.IsMixedScheme(basedOn);
         return lines.Select((line, index) => new LoyaltySchemeProduct
         {
+            GroupNo = line.GroupNo is int g && g > 0 ? g : 1,
             SegmentIds = string.Join(',', Ids(line.SegmentIds)),
             FamilyIds = string.Join(',', Ids(line.FamilyIds)),
             ProductIds = string.Join(',', Ids(line.ProductIds)),
@@ -840,6 +966,7 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
         var mixed = SchemeReward.IsMixedScheme(basedOn);
         return slabs.Select((slab, index) => new LoyaltySchemeSlab
         {
+            GroupNo = slab.GroupNo is int g && g > 0 ? g : 1,
             TierName = slab.TierName!.Trim(),
             ValueFrom = slab.ValueFrom!.Value,
             ValueTo = slab.ValueTo,

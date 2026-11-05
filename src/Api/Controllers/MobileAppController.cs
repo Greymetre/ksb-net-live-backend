@@ -857,8 +857,18 @@ public sealed class MobileAppController : ControllerBase
                     points_earned = pointsEarned,
                     points_expected = pointsExpected
                 },
+                scheme_type = scheme.SchemeType,
                 slabs = scheme.Slabs.Where(x => x.DeletedAt == null).OrderBy(x => x.ValueFrom).ThenBy(x => x.SortOrder)
                     .Select(x => new { tier_name = x.TierName, value_from = x.ValueFrom, value_to = x.ValueTo, reward_value = x.RewardValue, reward_type = SchemeReward.TypeFor(scheme, x), reward_label = SchemeReward.Label(scheme, x) }),
+                groups = (SchemeKinds.IsQuantity(scheme.SchemeType)
+                        ? await _invoiceRepository.GetSchemeGroupDisplayAsync(scheme.Id, cancellationToken)
+                        : [])
+                    .Select(g => new
+                    {
+                        group_no = g.GroupNo,
+                        slabs = g.Slabs.Select(s => new { tier_name = s.TierName, value_from = s.ValueFrom, value_to = s.ValueTo, reward_value = s.RewardValue }),
+                        products = g.Products
+                    }),
                 retailers = retailerGroups
                     .Select(group => new
                     {

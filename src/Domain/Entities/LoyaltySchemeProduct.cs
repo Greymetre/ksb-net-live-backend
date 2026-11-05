@@ -14,6 +14,12 @@ namespace Domain.Entities;
 public sealed class LoyaltySchemeProduct : BaseEntity
 {
     public ulong LoyaltySchemeId { get; set; }
+
+    /// <summary>Which group's product set this line belongs to. A Quantity Slab scheme holds several
+    /// groups, each with its own products and its own ladder; a product belongs to exactly one group.
+    /// Product schemes (and every row saved before groups existed) use the single implicit group 1.</summary>
+    public int GroupNo { get; set; } = 1;
+
     /// <summary>categories.id - "Segment" on every screen.</summary>
     public string SegmentIds { get; set; } = string.Empty;
     /// <summary>subcategories.id - "Family" on every screen.</summary>

@@ -246,6 +246,61 @@ public sealed class LoyaltySchemeRepository : ILoyaltySchemeRepository
             .Where(x => x.DeletedAt == null).Select(x => x.Id).ToListAsync(cancellationToken)).ToHashSet(),
     };
 
+    public async Task<IReadOnlyDictionary<int, HashSet<ulong>>> ResolveGroupProductIdsAsync(
+        IReadOnlyCollection<GroupProductSelection> selections, CancellationToken cancellationToken)
+    {
+        // Only lines without a direct product need expanding: a family line to its products, a
+        // segment line (when it also names no family) to its segment's products.
+        var neededFamilies = new HashSet<ulong>();
+        var neededSegments = new HashSet<ulong>();
+        foreach (var sel in selections)
+        {
+            if (sel.ProductIds.Count > 0) continue;
+            if (sel.FamilyIds.Count > 0) neededFamilies.UnionWith(sel.FamilyIds);
+            else neededSegments.UnionWith(sel.SegmentIds);
+        }
+
+        var byFamily = new Dictionary<ulong, List<ulong>>();
+        var bySegment = new Dictionary<ulong, List<ulong>>();
+        if (neededFamilies.Count > 0 || neededSegments.Count > 0)
+        {
+            var rows = await _dbContext.Products.AsNoTracking()
+                .Where(p => p.DeletedAt == null && p.Active == "Y"
+                    && ((p.SubcategoryId != null && neededFamilies.Contains(p.SubcategoryId.Value))
+                        || (p.CategoryId != null && neededSegments.Contains(p.CategoryId.Value))))
+                .Select(p => new { p.Id, p.SubcategoryId, p.CategoryId })
+                .ToListAsync(cancellationToken);
+            foreach (var row in rows)
+            {
+                if (row.SubcategoryId is ulong family && neededFamilies.Contains(family))
+                {
+                    if (!byFamily.TryGetValue(family, out var famList)) byFamily[family] = famList = [];
+                    famList.Add(row.Id);
+                }
+                if (row.CategoryId is ulong segment && neededSegments.Contains(segment))
+                {
+                    if (!bySegment.TryGetValue(segment, out var segList)) bySegment[segment] = segList = [];
+                    segList.Add(row.Id);
+                }
+            }
+        }
+
+        var result = new Dictionary<int, HashSet<ulong>>();
+        foreach (var sel in selections)
+        {
+            if (!result.TryGetValue(sel.GroupNo, out var set)) result[sel.GroupNo] = set = [];
+            if (sel.ProductIds.Count > 0)
+                set.UnionWith(sel.ProductIds);
+            else if (sel.FamilyIds.Count > 0)
+                foreach (var family in sel.FamilyIds)
+                    if (byFamily.TryGetValue(family, out var famProducts)) set.UnionWith(famProducts);
+            else
+                foreach (var segment in sel.SegmentIds)
+                    if (bySegment.TryGetValue(segment, out var segProducts)) set.UnionWith(segProducts);
+        }
+        return result;
+    }
+
     public async Task<ProductNameMapsDto> GetProductNamesAsync(CancellationToken cancellationToken) => new()
     {
         Segments = await _dbContext.ProductCategories.AsNoTracking().Where(x => x.DeletedAt == null)
@@ -344,11 +399,13 @@ public sealed class LoyaltySchemeRepository : ILoyaltySchemeRepository
             CreatedAt = scheme.CreatedAt,
             Slabs = scheme.Slabs
                 .Where(x => x.DeletedAt == null)
-                .OrderBy(x => x.SortOrder)
+                .OrderBy(x => x.GroupNo)
+                .ThenBy(x => x.SortOrder)
                 .ThenBy(x => x.Id)
                 .Select(x => new LoyaltySchemeSlabDto
                 {
                     Id = x.Id,
+                    GroupNo = x.GroupNo,
                     TierName = x.TierName,
                     ValueFrom = x.ValueFrom,
                     ValueTo = x.ValueTo,
@@ -359,7 +416,8 @@ public sealed class LoyaltySchemeRepository : ILoyaltySchemeRepository
                 .ToList(),
             Products = scheme.Products
                 .Where(x => x.DeletedAt == null)
-                .OrderBy(x => x.SortOrder)
+                .OrderBy(x => x.GroupNo)
+                .ThenBy(x => x.SortOrder)
                 .ThenBy(x => x.Id)
                 .Select(x =>
                 {
@@ -369,6 +427,7 @@ public sealed class LoyaltySchemeRepository : ILoyaltySchemeRepository
                     return new LoyaltySchemeProductDto
                     {
                         Id = x.Id,
+                        GroupNo = x.GroupNo,
                         SegmentIds = segments,
                         SegmentNames = NamesOf(segments, names.Segments),
                         FamilyIds = families,

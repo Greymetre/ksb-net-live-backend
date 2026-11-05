@@ -56,6 +56,9 @@ public sealed class LoyaltySchemeDto
 public sealed class LoyaltySchemeProductDto
 {
     public ulong Id { get; set; }
+    /// <summary>Which group this product line belongs to (Quantity Slab scheme). 1 for every
+    /// other scheme and for anything saved before groups existed.</summary>
+    public int GroupNo { get; set; } = 1;
     public ulong[] SegmentIds { get; set; } = [];
     public string[] SegmentNames { get; set; } = [];
     public ulong[] FamilyIds { get; set; } = [];
@@ -91,6 +94,9 @@ public sealed class SchemeDealerOptionDto
 public sealed class LoyaltySchemeSlabDto
 {
     public ulong Id { get; set; }
+    /// <summary>Which group's ladder this band belongs to (Quantity Slab scheme). 1 for every
+    /// other scheme and for anything saved before groups existed.</summary>
+    public int GroupNo { get; set; } = 1;
     public string TierName { get; set; } = string.Empty;
     public decimal ValueFrom { get; set; }
     public decimal? ValueTo { get; set; }
@@ -125,6 +131,8 @@ public sealed class LoyaltySchemeRequestDto
 
 public sealed class LoyaltySchemeProductRequestDto
 {
+    /// <summary>Which group this product line belongs to (Quantity Slab scheme). Blank = group 1.</summary>
+    public int? GroupNo { get; set; }
     public ulong[]? SegmentIds { get; set; }
     public ulong[]? FamilyIds { get; set; }
     public ulong[]? ProductIds { get; set; }
@@ -135,6 +143,8 @@ public sealed class LoyaltySchemeProductRequestDto
 
 public sealed class LoyaltySchemeSlabRequestDto
 {
+    /// <summary>Which group's ladder this band belongs to (Quantity Slab scheme). Blank = group 1.</summary>
+    public int? GroupNo { get; set; }
     public string? TierName { get; set; }
     public decimal? ValueFrom { get; set; }
     public decimal? ValueTo { get; set; }
@@ -170,6 +180,14 @@ public sealed class LoyaltySchemeOptionDto
     public ulong Id { get; set; }
     public string Name { get; set; } = string.Empty;
 }
+
+/// <summary>One Quantity Slab product line's coverage, for resolving a group's actual products:
+/// a direct product wins, else every product of the named families, else of the named segments.</summary>
+public sealed record GroupProductSelection(
+    int GroupNo,
+    IReadOnlyCollection<ulong> SegmentIds,
+    IReadOnlyCollection<ulong> FamilyIds,
+    IReadOnlyCollection<ulong> ProductIds);
 
 /// <summary>The ids a scheme line may name, as the product master currently holds them.</summary>
 public sealed class ProductMasterIdsDto

@@ -75,7 +75,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         var schemes = await LoadSchemesAsync(rows.Select(x => x.Invoice.InvoiceDate), cancellationToken);
         var schemeInvoices = await LoadSchemeInvoicesAsync(rows.Select(x => x.Customer.Id), schemes, cancellationToken);
         var approvals = await LoadApprovalStageSummariesAsync(rows.Select(x => x.Invoice.Id), cancellationToken);
-        var items = rows.SelectMany(x => ToSchemeDtos(x.Invoice, x.Customer, CityName(x.Customer, cities), AssignedZoneName(x.Customer, assignedZones), AssignedBranchName(x.Customer, assignedBranches) ?? x.Branch?.BranchName, DealerName(x.Invoice, x.Customer, assignedDistributors), AssignedEmployeeName(x.Customer, assignedEmployees), AssignedEmployeeMobile(x.Customer, assignedEmployees), x.Creator, x.Branch, schemes, schemeInvoices, ApprovalSummary(x.Invoice.Id, approvals))).ToList();
+        var items = rows.SelectMany(x => ToSchemeDtos(x.Invoice, x.Customer, CityName(x.Customer, cities), AssignedZoneName(x.Customer, assignedZones), AssignedBranchName(x.Customer, assignedBranches) ?? x.Branch?.BranchName, DealerName(x.Invoice, x.Customer, assignedDistributors), DealerCode(x.Invoice, x.Customer, assignedDistributors), AssignedEmployeeName(x.Customer, assignedEmployees), AssignedEmployeeMobile(x.Customer, assignedEmployees), x.Creator, x.Branch, schemes, schemeInvoices, ApprovalSummary(x.Invoice.Id, approvals))).ToList();
         await ApplyCreatedByLabelsAsync(items, rows.Select(x => x.Creator), cancellationToken);
         await ApplyApproverNamesAsync(items, cancellationToken);
         await ApplyAttachmentsAsync(items, cancellationToken);
@@ -118,7 +118,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         var schemes = await LoadSchemesAsync([row.Invoice.InvoiceDate], cancellationToken);
         var schemeInvoices = await LoadSchemeInvoicesAsync([row.Customer.Id], schemes, cancellationToken);
         var approvals = await LoadApprovalStageSummariesAsync([row.Invoice.Id], cancellationToken);
-        var dto = ToSchemeDtos(row.Invoice, row.Customer, CityName(row.Customer, cities), AssignedZoneName(row.Customer, assignedZones), AssignedBranchName(row.Customer, assignedBranches) ?? row.Branch?.BranchName, DealerName(row.Invoice, row.Customer, assignedDistributors), AssignedEmployeeName(row.Customer, assignedEmployees), AssignedEmployeeMobile(row.Customer, assignedEmployees), row.Creator, row.Branch, schemes, schemeInvoices, ApprovalSummary(row.Invoice.Id, approvals)).First();
+        var dto = ToSchemeDtos(row.Invoice, row.Customer, CityName(row.Customer, cities), AssignedZoneName(row.Customer, assignedZones), AssignedBranchName(row.Customer, assignedBranches) ?? row.Branch?.BranchName, DealerName(row.Invoice, row.Customer, assignedDistributors), DealerCode(row.Invoice, row.Customer, assignedDistributors), AssignedEmployeeName(row.Customer, assignedEmployees), AssignedEmployeeMobile(row.Customer, assignedEmployees), row.Creator, row.Branch, schemes, schemeInvoices, ApprovalSummary(row.Invoice.Id, approvals)).First();
         await ApplyCreatedByLabelsAsync([dto], [row.Creator], cancellationToken);
         await ApplyApproverNamesAsync([dto], cancellationToken);
         await ApplyAttachmentsAsync([dto], cancellationToken);
@@ -334,6 +334,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
             BrochurePath = scheme.BrochurePath,
             Tag = scheme.SchemeTag,
             WalletType = scheme.SchemeTag?.Contains("booster", StringComparison.OrdinalIgnoreCase) == true ? "Booster" : "Regular",
+            SchemeType = scheme.SchemeType,
             BasedOn = scheme.BasedOn,
             StartDate = scheme.StartDate,
             EndDate = scheme.EndDate,
@@ -590,6 +591,115 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
             .ToListAsync(cancellationToken);
     }
 
+    /// <summary>Each covered product -> its group number (Quantity Slab). Resolved per line with the
+    /// same narrowest-wins rule as GetSchemeResolvedProductsAsync, but kept per group: a direct product
+    /// line wins over a family, a family over a segment, so each product lands in exactly one group.</summary>
+    public async Task<IReadOnlyDictionary<ulong, int>> GetSchemeProductGroupMapAsync(ulong schemeId, CancellationToken cancellationToken)
+    {
+        var lines = await _dbContext.Set<LoyaltySchemeProduct>().AsNoTracking()
+            .Where(x => x.LoyaltySchemeId == schemeId && x.DeletedAt == null)
+            .Select(x => new { x.GroupNo, x.ProductIds, x.FamilyIds, x.SegmentIds })
+            .ToListAsync(cancellationToken);
+
+        var directToGroup = new Dictionary<ulong, int>();
+        var familyToGroup = new Dictionary<ulong, int>();
+        var segmentToGroup = new Dictionary<ulong, int>();
+        foreach (var line in lines)
+        {
+            var products = ParseIdList(line.ProductIds);
+            var families = ParseIdList(line.FamilyIds);
+            var segments = ParseIdList(line.SegmentIds);
+            // Narrowest naming on the line decides, exactly as the resolved-products query does.
+            if (products.Count > 0) foreach (var id in products) directToGroup.TryAdd(id, line.GroupNo);
+            else if (families.Count > 0) foreach (var id in families) familyToGroup.TryAdd(id, line.GroupNo);
+            else foreach (var id in segments) segmentToGroup.TryAdd(id, line.GroupNo);
+        }
+
+        var map = new Dictionary<ulong, int>();
+        // 1. Direct products (narrowest) win outright.
+        foreach (var (id, group) in directToGroup) map[id] = group;
+
+        // 2. Family-covered products, unless already pinned by a direct line.
+        if (familyToGroup.Count > 0)
+        {
+            var familyIds = familyToGroup.Keys.ToList();
+            var byFamily = await _dbContext.Products.AsNoTracking()
+                .Where(p => p.DeletedAt == null && p.Active == "Y"
+                    && p.SubcategoryId != null && familyIds.Contains(p.SubcategoryId.Value))
+                .Select(p => new { p.Id, SubcategoryId = p.SubcategoryId!.Value })
+                .ToListAsync(cancellationToken);
+            foreach (var p in byFamily)
+                if (!map.ContainsKey(p.Id) && familyToGroup.TryGetValue(p.SubcategoryId, out var g)) map[p.Id] = g;
+        }
+
+        // 3. Segment-covered products, unless already pinned by a direct line or a family.
+        if (segmentToGroup.Count > 0)
+        {
+            var segmentIds = segmentToGroup.Keys.ToList();
+            var bySegment = await _dbContext.Products.AsNoTracking()
+                .Where(p => p.DeletedAt == null && p.Active == "Y"
+                    && p.CategoryId != null && segmentIds.Contains(p.CategoryId.Value))
+                .Select(p => new { p.Id, CategoryId = p.CategoryId!.Value })
+                .ToListAsync(cancellationToken);
+            foreach (var p in bySegment)
+                if (!map.ContainsKey(p.Id) && segmentToGroup.TryGetValue(p.CategoryId, out var g)) map[p.Id] = g;
+        }
+
+        return map;
+    }
+
+    public async Task<IReadOnlyList<SchemeGroupDisplayDto>> GetSchemeGroupDisplayAsync(ulong schemeId, CancellationToken cancellationToken)
+    {
+        var slabs = await _dbContext.Set<LoyaltySchemeSlab>().AsNoTracking()
+            .Where(s => s.LoyaltySchemeId == schemeId && s.DeletedAt == null)
+            .ToListAsync(cancellationToken);
+        var lines = await _dbContext.Set<LoyaltySchemeProduct>().AsNoTracking()
+            .Where(p => p.LoyaltySchemeId == schemeId && p.DeletedAt == null)
+            .ToListAsync(cancellationToken);
+        if (slabs.Count == 0 && lines.Count == 0) return [];
+
+        // Gather the ids the lines name, then look up their names in one pass each.
+        var productIds = new HashSet<ulong>();
+        var familyIds = new HashSet<ulong>();
+        var segmentIds = new HashSet<ulong>();
+        foreach (var line in lines)
+        {
+            foreach (var id in ParseIdList(line.ProductIds)) productIds.Add(id);
+            foreach (var id in ParseIdList(line.FamilyIds)) familyIds.Add(id);
+            foreach (var id in ParseIdList(line.SegmentIds)) segmentIds.Add(id);
+        }
+        var productNames = productIds.Count == 0 ? [] : await _dbContext.Products.AsNoTracking()
+            .Where(p => productIds.Contains(p.Id)).ToDictionaryAsync(p => p.Id, p => p.ProductName, cancellationToken);
+        var familyNames = familyIds.Count == 0 ? [] : await _dbContext.ProductFamilies.AsNoTracking()
+            .Where(f => familyIds.Contains(f.Id)).ToDictionaryAsync(f => f.Id, f => f.SubcategoryName, cancellationToken);
+        var segmentNames = segmentIds.Count == 0 ? new Dictionary<ulong, string>() : await _dbContext.ProductCategories.AsNoTracking()
+            .Where(c => segmentIds.Contains(c.Id)).ToDictionaryAsync(c => c.Id, c => c.CategoryName, cancellationToken);
+
+        string LineLabel(LoyaltySchemeProduct line)
+        {
+            // Narrowest naming wins, the same way the scheme reads a line.
+            var products = ParseIdList(line.ProductIds);
+            if (products.Count > 0)
+                return string.Join(", ", products.Select(id => productNames.GetValueOrDefault(id, $"#{id}")));
+            var families = ParseIdList(line.FamilyIds);
+            if (families.Count > 0)
+                return string.Join(", ", families.Select(id => $"{familyNames.GetValueOrDefault(id, $"#{id}")} (all)"));
+            var segments = ParseIdList(line.SegmentIds);
+            return string.Join(", ", segments.Select(id => $"{segmentNames.GetValueOrDefault(id, $"#{id}")} (all)"));
+        }
+
+        var groupNumbers = slabs.Select(s => s.GroupNo).Concat(lines.Select(l => l.GroupNo)).Distinct().OrderBy(g => g);
+        return groupNumbers.Select(group => new SchemeGroupDisplayDto
+        {
+            GroupNo = group,
+            Slabs = slabs.Where(s => s.GroupNo == group).OrderBy(s => s.ValueFrom).ThenBy(s => s.SortOrder)
+                .Select(s => new SchemeGroupSlabDto { TierName = s.TierName, ValueFrom = s.ValueFrom, ValueTo = s.ValueTo, RewardValue = s.RewardValue })
+                .ToList(),
+            Products = lines.Where(l => l.GroupNo == group).OrderBy(l => l.SortOrder)
+                .Select(LineLabel).Where(label => label.Length > 0).ToList()
+        }).ToList();
+    }
+
     /// <summary>Per product, the quantity already bought under this scheme by this customer inside
     /// the scheme period (rejected invoices excluded; the invoice being edited optionally excluded).</summary>
     public async Task<IReadOnlyDictionary<ulong, decimal>> GetCumulativeQuantitiesAsync(
@@ -784,7 +894,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         return await _dbContext.NewInvoices.FirstOrDefaultAsync(x => x.Id == id, cancellationToken);
     }
 
-    public async Task<NewInvoiceDto> SaveInvoiceAsync(NewInvoice invoice, string statusType, int? fromStatus, int toStatus, ulong actorUserId, string? remark, decimal? approvedAmount, decimal? approvedQuantity, CancellationToken cancellationToken)
+    public async Task<NewInvoiceDto> SaveInvoiceAsync(NewInvoice invoice, string statusType, int? fromStatus, int toStatus, ulong actorUserId, string? remark, decimal? approvedAmount, decimal? approvedQuantity, string? approvedQuantities, CancellationToken cancellationToken)
     {
         invoice.UpdatedAt = DateTime.UtcNow;
         await _dbContext.NewInvoiceApprovalLogs.AddAsync(new NewInvoiceApprovalLog
@@ -797,6 +907,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
             ToStatus = toStatus,
             ApprovedAmount = approvedAmount,
             ApprovedQuantity = approvedQuantity,
+            ApprovedQuantities = string.IsNullOrWhiteSpace(approvedQuantities) ? null : approvedQuantities,
             Remark = string.IsNullOrWhiteSpace(remark) ? null : remark.Trim(),
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
@@ -1398,7 +1509,7 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
         }
     }
 
-    private async Task<Dictionary<ulong, string>> LoadDealerNamesAsync(IEnumerable<InvoiceRow> rows, CancellationToken cancellationToken)
+    private async Task<Dictionary<ulong, (string Name, string? Code)>> LoadDealerNamesAsync(IEnumerable<InvoiceRow> rows, CancellationToken cancellationToken)
     {
         var dealerIds = rows
             .Select(row => InvoiceDealerId(row.Invoice, row.Customer))
@@ -1410,30 +1521,62 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
 
         return await _dbContext.Customers.AsNoTracking()
             .Where(x => dealerIds.Contains(x.Id))
-            .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
+            .ToDictionaryAsync(x => x.Id, x => (x.Name, string.IsNullOrWhiteSpace(x.CustomerCode) ? null : x.CustomerCode!.Trim()), cancellationToken);
     }
 
-    private async Task<IReadOnlyCollection<NewInvoiceApprovalLogDto>> GetApprovalLogsAsync(ulong invoiceId, CancellationToken cancellationToken) =>
-        await (from log in _dbContext.NewInvoiceApprovalLogs.AsNoTracking()
+    private async Task<IReadOnlyCollection<NewInvoiceApprovalLogDto>> GetApprovalLogsAsync(ulong invoiceId, CancellationToken cancellationToken)
+    {
+        // The per-group JSON is pulled out as a string and deserialized in memory - JSON cannot be
+        // deserialized inside the query.
+        var rows = await (from log in _dbContext.NewInvoiceApprovalLogs.AsNoTracking()
               where log.NewInvoiceId == invoiceId
               join userRow in _dbContext.Users.AsNoTracking() on log.CreatedBy equals userRow.Id into users
               from user in users.DefaultIfEmpty()
               orderby log.CreatedAt descending, log.Id descending
-              select new NewInvoiceApprovalLogDto
+              select new
               {
-                  Id = log.Id,
-                  LogDate = log.LogDate,
-                  CreatedBy = log.CreatedBy,
-                  CreatedByName = user != null ? user.Name : null,
-                  EmployeeCode = user != null ? user.EmployeeCodes : null,
-                  StatusType = log.StatusType ?? string.Empty,
-                  FromStatus = log.FromStatus,
-                  ToStatus = log.ToStatus,
-                  ApprovedAmount = log.ApprovedAmount,
-                  ApprovedQuantity = log.ApprovedQuantity,
-                  Remark = log.Remark,
-                  CreatedAt = log.CreatedAt
+                  Dto = new NewInvoiceApprovalLogDto
+                  {
+                      Id = log.Id,
+                      LogDate = log.LogDate,
+                      CreatedBy = log.CreatedBy,
+                      CreatedByName = user != null ? user.Name : null,
+                      EmployeeCode = user != null ? user.EmployeeCodes : null,
+                      StatusType = log.StatusType ?? string.Empty,
+                      FromStatus = log.FromStatus,
+                      ToStatus = log.ToStatus,
+                      ApprovedAmount = log.ApprovedAmount,
+                      ApprovedQuantity = log.ApprovedQuantity,
+                      Remark = log.Remark,
+                      CreatedAt = log.CreatedAt
+                  },
+                  ApprovedQuantitiesJson = log.ApprovedQuantities
               }).ToListAsync(cancellationToken);
+
+        foreach (var row in rows)
+            row.Dto.ApprovedQuantities = ParseApprovedQuantities(row.ApprovedQuantitiesJson);
+        return [.. rows.Select(x => x.Dto)];
+    }
+
+    /// <summary>Parses the per-group approved-quantity JSON ({ "1": 8, "2": 5 }) stored on an
+    /// approval log. Returns null for blank or unparseable text, so a bad row never breaks a read.</summary>
+    private static Dictionary<int, decimal>? ParseApprovedQuantities(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        try
+        {
+            var raw = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, decimal>>(json);
+            if (raw is null || raw.Count == 0) return null;
+            var map = new Dictionary<int, decimal>();
+            foreach (var (key, value) in raw)
+                if (int.TryParse(key, out var group)) map[group] = value;
+            return map.Count > 0 ? map : null;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null;
+        }
+    }
 
     private async Task<Dictionary<ulong, ApprovalStageSummary>> LoadApprovalStageSummariesAsync(IEnumerable<ulong> invoiceIds, CancellationToken cancellationToken)
     {
@@ -1556,7 +1699,7 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
     private static ApprovalStageSummary ApprovalSummary(ulong invoiceId, IReadOnlyDictionary<ulong, ApprovalStageSummary> approvals) =>
         approvals.TryGetValue(invoiceId, out var summary) ? summary : new ApprovalStageSummary();
 
-    private static IReadOnlyCollection<NewInvoiceDto> ToSchemeDtos(NewInvoice invoice, Customer customer, string? cityName, string? zoneName, string? branchName, string? assignedDistributorName, string? assignedEmployeeName, string? assignedEmployeeMobile, User? creator, Branch? branch, IReadOnlyCollection<LoyaltyScheme> schemes, IReadOnlyCollection<SchemeInvoiceAmount> schemeInvoices, ApprovalStageSummary approvalSummary)
+    private static IReadOnlyCollection<NewInvoiceDto> ToSchemeDtos(NewInvoice invoice, Customer customer, string? cityName, string? zoneName, string? branchName, string? assignedDistributorName, string? assignedDistributorCode, string? assignedEmployeeName, string? assignedEmployeeMobile, User? creator, Branch? branch, IReadOnlyCollection<LoyaltyScheme> schemes, IReadOnlyCollection<SchemeInvoiceAmount> schemeInvoices, ApprovalStageSummary approvalSummary)
     {
         var invoiceDate = DateOnly.FromDateTime(invoice.InvoiceDate.Date);
         var selectedScheme = invoice.LoyaltySchemeId.HasValue
@@ -1580,7 +1723,7 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
             if (SchemeEligibility.IsExcludedDealer(selectedScheme, dealerAudience)) selectedScheme = null;
         }
         if (selectedScheme is null)
-            return [ToDto(invoice, customer, cityName, zoneName, branchName, assignedDistributorName, assignedEmployeeName, assignedEmployeeMobile, creator, branch, null, null, approvalSummary)];
+            return [ToDto(invoice, customer, cityName, zoneName, branchName, assignedDistributorName, assignedDistributorCode, assignedEmployeeName, assignedEmployeeMobile, creator, branch, null, null, approvalSummary)];
 
         // An HO-approved invoice is paid on finalized turnover only. An invoice still in
         // approval is previewed against every non-rejected invoice of the period, so the
@@ -1596,10 +1739,10 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
         var schemeResult = SchemeKinds.IsQuantity(selectedScheme.SchemeType)
             ? new SchemeResult(invoice.Points, null, null, null)
             : CalculateSchemeResult(rewardBaseAmount, periodAmount, selectedScheme);
-        return [ToDto(invoice, customer, cityName, zoneName, branchName, assignedDistributorName, assignedEmployeeName, assignedEmployeeMobile, creator, branch, selectedScheme, schemeResult, approvalSummary)];
+        return [ToDto(invoice, customer, cityName, zoneName, branchName, assignedDistributorName, assignedDistributorCode, assignedEmployeeName, assignedEmployeeMobile, creator, branch, selectedScheme, schemeResult, approvalSummary)];
     }
 
-    private static NewInvoiceDto ToDto(NewInvoice invoice, Customer customer, string? cityName, string? zoneName, string? branchName, string? assignedDistributorName, string? assignedEmployeeName, string? assignedEmployeeMobile, User? creator, Branch? branch, LoyaltyScheme? scheme, SchemeResult? schemeResult, ApprovalStageSummary approvalSummary)
+    private static NewInvoiceDto ToDto(NewInvoice invoice, Customer customer, string? cityName, string? zoneName, string? branchName, string? assignedDistributorName, string? assignedDistributorCode, string? assignedEmployeeName, string? assignedEmployeeMobile, User? creator, Branch? branch, LoyaltyScheme? scheme, SchemeResult? schemeResult, ApprovalStageSummary approvalSummary)
     {
         var pointsCreated = invoice.ApprovalStatus == NewInvoice.StatusApprovedHo;
         var schemePoints = pointsCreated ? schemeResult?.Points ?? 0 : 0;
@@ -1617,6 +1760,7 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
             BranchName = branchName,
             AssignedDistributorId = InvoiceDealerId(invoice, customer),
             AssignedDistributorName = assignedDistributorName,
+            AssignedDistributorCode = assignedDistributorCode,
             AssignedEmployeeName = assignedEmployeeName,
             AssignedEmployeeMobile = assignedEmployeeMobile,
             InvoiceNumber = invoice.InvoiceNumber,
@@ -1783,10 +1927,16 @@ WHERE deleted_at IS NULL AND state_id IS NOT NULL AND customer_id IN ({string.Jo
     private static string? AssignedEmployeeMobile(Customer customer, IReadOnlyDictionary<ulong, AssignedEmployee> employees) =>
         employees.TryGetValue(customer.Id, out var employee) ? employee.Mobile : null;
 
-    private static string? DealerName(NewInvoice invoice, Customer customer, IReadOnlyDictionary<ulong, string> dealerNames)
+    private static string? DealerName(NewInvoice invoice, Customer customer, IReadOnlyDictionary<ulong, (string Name, string? Code)> dealers)
     {
         var dealerId = InvoiceDealerId(invoice, customer);
-        return dealerId.HasValue && dealerNames.TryGetValue(dealerId.Value, out var name) ? name : null;
+        return dealerId.HasValue && dealers.TryGetValue(dealerId.Value, out var dealer) ? dealer.Name : null;
+    }
+
+    private static string? DealerCode(NewInvoice invoice, Customer customer, IReadOnlyDictionary<ulong, (string Name, string? Code)> dealers)
+    {
+        var dealerId = InvoiceDealerId(invoice, customer);
+        return dealerId.HasValue && dealers.TryGetValue(dealerId.Value, out var dealer) ? dealer.Code : null;
     }
 
     private static ulong? FirstULong(string? value)

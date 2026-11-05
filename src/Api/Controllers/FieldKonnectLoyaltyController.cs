@@ -157,6 +157,12 @@ public sealed class FieldKonnectLoyaltyController : ControllerBase
         var currentSlab = slabs.LastOrDefault(x => achieved >= x.ValueFrom);
         var nextSlab = slabs.FirstOrDefault(x => achieved < x.ValueFrom);
 
+        // A Quantity Slab scheme is shown by its groups (each group's quantity ladder + products)
+        // instead of the rupee slabs; the rupee progress above does not apply to it.
+        var groups = SchemeKinds.IsQuantity(scheme.SchemeType)
+            ? await _invoices.GetSchemeGroupDisplayAsync(scheme.Id, ct)
+            : [];
+
         return Ok(new
         {
             status = "success",
@@ -174,6 +180,7 @@ public sealed class FieldKonnectLoyaltyController : ControllerBase
                 id = scheme.Id,
                 name = scheme.SchemeName,
                 code = scheme.SchemeCode,
+                scheme_type = scheme.SchemeType,
                 description = scheme.SchemeDescription,
                 scheme_note = scheme.SchemeNote,
                 brochure_url = string.IsNullOrWhiteSpace(scheme.BrochurePath) ? null : $"{Request.PublicBaseUrl()}{scheme.BrochurePath}",
@@ -219,6 +226,12 @@ public sealed class FieldKonnectLoyaltyController : ControllerBase
                     reward_type = SchemeReward.TypeFor(scheme, x),
                     reward_label = SchemeReward.Label(scheme, x),
                     is_achieved = achieved >= x.ValueFrom
+                }),
+                groups = groups.Select(g => new
+                {
+                    group_no = g.GroupNo,
+                    slabs = g.Slabs.Select(s => new { tier_name = s.TierName, value_from = s.ValueFrom, value_to = s.ValueTo, reward_value = s.RewardValue }),
+                    products = g.Products
                 }),
                 invoices = invoices
                     .OrderByDescending(x => x.InvoiceDate)

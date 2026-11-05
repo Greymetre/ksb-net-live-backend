@@ -19,6 +19,12 @@ public interface ILoyaltySchemeRepository
     /// names. Read in one pass because a line can name hundreds of products.</summary>
     Task<ProductMasterIdsDto> GetProductMasterIdsAsync(CancellationToken cancellationToken);
 
+    /// <summary>Expands each Quantity Slab group's lines to the actual product ids they cover, so a
+    /// product overlap between groups is caught even when a group covers a whole family or segment
+    /// (rather than naming the product directly). Returns group number -> covered product ids.</summary>
+    Task<IReadOnlyDictionary<int, HashSet<ulong>>> ResolveGroupProductIdsAsync(
+        IReadOnlyCollection<GroupProductSelection> selections, CancellationToken cancellationToken);
+
     /// <summary>Segment, family and product names by id, for showing an imported line.</summary>
     Task<ProductNameMapsDto> GetProductNamesAsync(CancellationToken cancellationToken);
 

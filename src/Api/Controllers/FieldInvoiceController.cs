@@ -165,10 +165,16 @@ public sealed class FieldInvoiceController : ControllerBase
         var detail = await _newInvoiceRepository.GetFieldSchemeAsync(id, CurrentUserId(), Today(), cancellationToken);
         if (detail is null) return NotFound(new { status = "error", message = "Scheme not found." });
 
+        var isQuantity = string.Equals(detail.Scheme.SchemeType, "Quantity", StringComparison.OrdinalIgnoreCase);
+        var groups = isQuantity
+            ? await _newInvoiceRepository.GetSchemeGroupDisplayAsync(id, cancellationToken)
+            : [];
+
         return Ok(new
         {
             status = "success",
             scheme = ToSchemeCard(detail.Scheme, Request.PublicBaseUrl()),
+            scheme_type = detail.Scheme.SchemeType,
             slabs = detail.Slabs.Select(slab => new
             {
                 from_amount = slab.FromAmount,
@@ -176,6 +182,12 @@ public sealed class FieldInvoiceController : ControllerBase
                 value = slab.Value,
                 value_type = slab.ValueType,
                 reward_label = slab.RewardLabel
+            }),
+            groups = groups.Select(g => new
+            {
+                group_no = g.GroupNo,
+                slabs = g.Slabs.Select(s => new { tier_name = s.TierName, value_from = s.ValueFrom, value_to = s.ValueTo, reward_value = s.RewardValue }),
+                products = g.Products
             }),
             performance = new
             {
