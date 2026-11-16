@@ -683,7 +683,12 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
         if (request.SapCode is not null) customer.SapCode = NormalizeText(request.SapCode);
         if (request.ManagerName is not null) customer.ManagerName = NormalizeText(request.ManagerName) ?? string.Empty;
         if (request.ManagerPhone is not null) customer.ManagerPhone = NormalizeText(request.ManagerPhone) ?? string.Empty;
-        if (request.AssignedUserIds is not null && request.AssignedUserIds.Count > 0) customer.ExecutiveId = FirstAssignedUserId(request.AssignedUserIds);
+        // Assignment is posted either as AssignedUserIds or (from the CRM form) as the employee_id /
+        // sales_executive_id custom field. Derive it so employee_details and the executive_id column
+        // stay in step with the form - otherwise an unchecked employee survives in employee_details and
+        // the read (AttachAssignmentFallbackAsync) unions it straight back into employee_id.
+        var assignedUserIds = request.AssignedUserIds ?? AssignedIdsFromFields(request.CustomFields, customer.CustomerType);
+        if (assignedUserIds is not null) customer.ExecutiveId = FirstAssignedUserId(assignedUserIds);
         // An update carries only the fields its caller knows about. The CRM form posts
         // the whole document, but the apps and any partial API call post a handful, and
         // assigning the request wholesale silently dropped everything they left out -
@@ -704,7 +709,7 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
         await _dbContext.SaveChangesAsync(cancellationToken);
         _kycIndex.Invalidate();
         await SyncCustomerRelatedTablesAsync(customer.Id, request.CustomFields, actorUserId, cancellationToken);
-        await SyncCustomerAssignmentsAsync(customer.Id, request.AssignedUserIds, actorUserId, cancellationToken);
+        await SyncCustomerAssignmentsAsync(customer.Id, assignedUserIds, actorUserId, cancellationToken);
         return ToCustomerDto(customer, null, null);
     }
 
@@ -970,6 +975,18 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
         return userId > 0 ? userId : null;
     }
 
+    /// <summary>The assigned employees a customer update posts in its custom fields - employee_id for a
+    /// retailer/influencer, sales_executive_id for a dealer. Returns null when the key was not posted
+    /// (a partial update that does not touch the assignment), so employee_details is left untouched;
+    /// an empty list means the user cleared the assignment.</summary>
+    private static IReadOnlyCollection<ulong>? AssignedIdsFromFields(IReadOnlyDictionary<string, string?>? customFields, ulong? customerType)
+    {
+        if (customFields is null) return null;
+        var key = customerType == DistributorCustomerType ? "sales_executive_id" : "employee_id";
+        if (!customFields.ContainsKey(key)) return null;
+        return ReadULongs(customFields[key]).Where(id => id > 0).Distinct().ToArray();
+    }
+
     private static IReadOnlyCollection<ulong>? AssignedUserIdsOrCreator(IReadOnlyCollection<ulong>? assignedUserIds, ulong? actorUserId)
     {
         var ids = assignedUserIds?.Where(id => id > 0).Distinct().ToArray() ?? [];
@@ -982,13 +999,15 @@ WHERE c.deleted_at IS NULL AND u.designation_id IN ({placeholders})", designatio
         if (assignedUserIds is null) return;
 
         var userIds = assignedUserIds.Where(id => id > 0).Distinct().ToArray();
-        if (userIds.Length == 0) return;
 
-        var idsCsv = string.Join(',', userIds);
+        // Soft-delete every current assignment that is not in the new set. An empty set clears them all
+        // (the caller passes an empty set only when the user cleared the assignment, never on a partial
+        // update - a partial update passes null above and returns).
+        var keepFilter = userIds.Length > 0 ? $" AND (user_id IS NULL OR user_id NOT IN ({string.Join(',', userIds)}))" : "";
         await _dbContext.Database.ExecuteSqlRawAsync(
             $@"UPDATE employee_details
 SET deleted_at = SYSUTCDATETIME(), updated_by = {{0}}, updated_at = SYSUTCDATETIME()
-WHERE customer_id = {{1}} AND deleted_at IS NULL AND (user_id IS NULL OR user_id NOT IN ({idsCsv}))",
+WHERE customer_id = {{1}} AND deleted_at IS NULL{keepFilter}",
             [actorUserId, customerId],
             cancellationToken);
 

@@ -25,7 +25,11 @@ builder.Logging.AddConsole();
 builder.Logging.AddDebug();
 
 builder.Services
-    .AddControllers(options => options.Filters.Add<ServerPaginationResultFilter>())
+    .AddControllers(options =>
+    {
+        options.Filters.Add<ServerPaginationResultFilter>();
+        options.Filters.Add<ExcelGridStyleFilter>();
+    })
     .AddJsonOptions(options =>
     {
         options.JsonSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower;

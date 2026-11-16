@@ -2226,6 +2226,12 @@ public sealed class MobileAppController : ControllerBase
             .ThenBy(scheme => scheme.SchemeName)
             .ToList();
 
+        // A Quantity Slab scheme is shown by its groups (each group's quantity ladder + products),
+        // fetched here so the synchronous projection below can attach them.
+        var groupsByScheme = new Dictionary<ulong, IReadOnlyList<Application.DTOs.NewInvoices.SchemeGroupDisplayDto>>();
+        foreach (var quantityScheme in schemes.Where(s => Domain.Services.SchemeKinds.IsQuantity(s.SchemeType)))
+            groupsByScheme[quantityScheme.Id] = await _invoiceRepository.GetSchemeGroupDisplayAsync(quantityScheme.Id, cancellationToken);
+
         return schemes.Select(scheme =>
         {
             var schemeInvoices = customerInvoices?
@@ -2288,7 +2294,9 @@ public sealed class MobileAppController : ControllerBase
                     RewardType = SchemeReward.TypeFor(scheme, slab),
                     SortOrder = slab.SortOrder
                 })
-                .ToList()
+                .ToList(),
+            SchemeType = scheme.SchemeType ?? "Invoice",
+            Groups = groupsByScheme.GetValueOrDefault(scheme.Id) ?? []
             };
         }).ToList();
     }
@@ -3347,6 +3355,11 @@ VALUES ('Y', {0}, {1}, {2}, {3}, {4}, {5}, {6}, SYSUTCDATETIME(), SYSUTCDATETIME
         public string? NextSlab { get; set; }
         public decimal AdditionalValueRequired { get; set; }
         public IReadOnlyCollection<CurrentSchemeTierDto> Tiers { get; set; } = [];
+        /// <summary>Invoice, Product or Quantity. A Quantity scheme is shown by its groups.</summary>
+        public string SchemeType { get; set; } = "Invoice";
+        /// <summary>For a Quantity Slab scheme: each group's own quantity ladder + its products.
+        /// Empty for other schemes (which use the flat Tiers above).</summary>
+        public IReadOnlyCollection<Application.DTOs.NewInvoices.SchemeGroupDisplayDto> Groups { get; set; } = [];
     }
 
     private sealed class CurrentSchemeTierDto
