@@ -484,22 +484,22 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
 
         using var workbook = new XLWorkbook();
         var sheet = workbook.Worksheets.Add("RFM Retailer Wise");
-        var headers = new[] { "Retailer ID", "Retailer Name", "Number", "Dealer Code", "Dealer Name", "State", "Dealer City",
+        var headers = new[] { "Retailer ID", "Retailer Name", "Number", "Dealer Code", "Dealer Name", "State", "Retailer City", "Dealer City",
             "ASR / DSR", "Recency (Days)", "R Rating", "Frequency (Orders)", "F Rating", "Monetary Value", "M Rating",
             "Total Rating", "Rating %", "Category" };
         for (var i = 0; i < headers.Length; i++) sheet.Cell(1, i + 1).Value = headers[i];
         var rowNumber = 2;
         foreach (var item in scored)
             WriteRow(sheet, rowNumber++, new object?[] { item.Row.CustomerId, item.Row.Name, item.Row.Mobile, item.Row.DealerCode,
-                item.Row.DealerName, item.Row.State, item.Row.DealerCity, item.Row.AsrDsr, item.Row.RecencyDays, item.R,
+                item.Row.DealerName, item.Row.State, item.Row.RetailerCity, item.Row.DealerCity, item.Row.AsrDsr, item.Row.RecencyDays, item.R,
                 item.Row.Frequency, item.F, item.Row.Monetary, item.M, item.Total, item.Percent, RfmCategory(item.Percent) });
         // Orders and rupees add up; a rating, a percentage and a category do not.
         var totalRow = rowNumber;
         WriteTotalRow(sheet, totalRow, headers.Length, new object?[] { "TOTAL", $"{scored.Count:N0} retailers", "", "", "", "", "", "",
-            "", "", scored.Sum(x => x.Row.Frequency), "", scored.Sum(x => x.Row.Monetary), "", "", "", "" });
+            "", "", "", scored.Sum(x => x.Row.Frequency), "", scored.Sum(x => x.Row.Monetary), "", "", "", "" });
         StyleSimpleExport(sheet, headers.Length, totalRow, "D9E1F2");
-        sheet.Range(2, 13, totalRow, 13).Style.NumberFormat.Format = "0.00";   // Monetary Value
-        if (rowNumber > 2) sheet.Range(2, 15, rowNumber - 1, 15).Style.NumberFormat.Format = "0.0";    // Total Rating
+        sheet.Range(2, 14, totalRow, 14).Style.NumberFormat.Format = "0.00";   // Monetary Value
+        if (rowNumber > 2) sheet.Range(2, 16, rowNumber - 1, 16).Style.NumberFormat.Format = "0.0";    // Total Rating
         WriteRfmLogicSheet(workbook, dealerWise: false, scored);
         using var stream = new MemoryStream(); workbook.SaveAs(stream);
         return File(stream.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", $"RFM_Report_Retailer_Wise_{DateTime.Now:yyyy-MM-dd_HHmmss}.xlsx");
@@ -1187,7 +1187,9 @@ AND user_id IN ({string.Join(',', userIds)}) GROUP BY user_id, YEAR(checkin_date
                 stats.Orders,
                 stats.Value,
                 fieldNames.GetValueOrDefault(customer.Id, string.Empty),
-                dealer is null ? string.Empty : fieldNames.GetValueOrDefault(dealer.Id, string.Empty));
+                dealer is null ? string.Empty : fieldNames.GetValueOrDefault(dealer.Id, string.Empty),
+                // The retailer's own city, read the same way its state is (custom_fields city_id).
+                Name(cities, JsonULong(customer.CustomFields, "city_id")));
         }).ToList();
         return (rows, registered);
     }
@@ -3658,7 +3660,9 @@ public sealed record RfmRow(ulong CustomerId, string Name, string Mobile, ulong?
     /// <summary>The retailer's own ASR, or its DSR where it has no ASR.</summary>
     string AsrDsr = "",
     /// <summary>The same, read for the dealer this retailer is mapped to.</summary>
-    string DealerAsrDsr = "");
+    string DealerAsrDsr = "",
+    /// <summary>The retailer's own city, from its custom_fields city_id.</summary>
+    string RetailerCity = "");
 
 /// <summary>A report row with its three ratings and what they add up to.</summary>
 public sealed record RfmScore<T>(T Row, int R, int F, int M,
