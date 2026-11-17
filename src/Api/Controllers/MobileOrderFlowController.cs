@@ -344,6 +344,7 @@ public sealed class MobileOrderFlowController : ControllerBase
         [FromQuery(Name = "startdate")] DateTime? startDate,
         [FromQuery(Name = "enddate")] DateTime? endDate,
         [FromQuery(Name = "user_id")] ulong? userId,
+        [FromQuery(Name = "status")] string? status,
         CancellationToken cancellationToken)
     {
         var currentUserId = CurrentUserId();
@@ -377,6 +378,17 @@ public sealed class MobileOrderFlowController : ControllerBase
         {
             where.Add($"{dateExpr} < '{endDate.Value.Date.AddDays(1):yyyy-MM-dd}'");
         }
+        // Dispatch status filter. StatusId: null = Pending, 1 = Fully Dispatched,
+        // 2 = Partially Dispatched, 4 = Cancelled. An unknown/blank value means "all".
+        var statusClause = (status ?? string.Empty).Trim().ToLowerInvariant() switch
+        {
+            "pending" => "o.status_id IS NULL",
+            "partial" or "partially" or "partially_dispatched" => "o.status_id = 2",
+            "full" or "fully" or "fully_dispatched" or "dispatched" => "o.status_id = 1",
+            "cancelled" or "canceled" => "o.status_id = 4",
+            _ => null
+        };
+        if (statusClause is not null) where.Add(statusClause);
         var whereSql = string.Join("\nAND ", where);
 
         var totalRow = (await QueryRows($@"SELECT COUNT(*) AS total
@@ -395,6 +407,7 @@ WHERE {whereSql}", cancellationToken)).FirstOrDefault();
     o.total_qty,
     o.grand_total,
     o.order_remark,
+    o.status_id,
     buyer.name AS buyer_name,
     buyer.custom_fields AS buyer_custom_fields,
     seller.name AS seller_name,
@@ -410,7 +423,7 @@ LEFT JOIN users creator ON creator.id = o.created_by
 LEFT JOIN users executive ON executive.id = o.executive_id
 LEFT JOIN order_details od ON od.order_id = o.id
 WHERE {whereSql}
-GROUP BY o.id, o.orderno, {dateExpr}, o.buyer_id, o.seller_id, o.total_qty, o.grand_total, o.order_remark,
+GROUP BY o.id, o.orderno, {dateExpr}, o.buyer_id, o.seller_id, o.total_qty, o.grand_total, o.order_remark, o.status_id,
     buyer.name, buyer.custom_fields, seller.name, seller.custom_fields, creator.name, executive.name
 ORDER BY display_order_date DESC, o.id DESC
 LIMIT {size} OFFSET {offset}", cancellationToken);
@@ -434,6 +447,8 @@ LIMIT {size} OFFSET {offset}", cancellationToken);
                 total_qty = Long(order, "detail_qty") > 0 ? Long(order, "detail_qty") : Long(order, "total_qty"),
                 grand_total = DecimalValue(order, "detail_total") > 0 ? DecimalValue(order, "detail_total") : DecimalValue(order, "grand_total"),
                 order_remark = Str(order, "order_remark"),
+                status_id = Obj(order, "status_id") is null ? (long?)null : Long(order, "status_id"),
+                status_label = OrderStatusLabel(Obj(order, "status_id")),
                 creatd_by = FirstNonEmpty(Str(order, "creator_name"), Str(order, "executive_name")) ?? string.Empty
             }).ToList(),
             users,
@@ -460,6 +475,7 @@ LIMIT {size} OFFSET {offset}", cancellationToken);
     o.buyer_id,
     o.seller_id,
     o.order_remark,
+    o.status_id,
     buyer.name AS buyer_name,
     buyer.mobile AS buyer_mobile,
     buyer.custom_fields AS buyer_custom_fields,
@@ -516,6 +532,8 @@ ORDER BY od.id ASC", cancellationToken);
                 seller_name = CustomerDisplayName(Str(order, "seller_name"), Str(order, "seller_custom_fields"), "legal_name", "trade_name", "shop_name"),
                 seller_address = sellerId > 0 && addresses.TryGetValue(sellerId, out var sellerAddress) ? sellerAddress : string.Empty,
                 order_remark = Str(order, "order_remark"),
+                status_id = Obj(order, "status_id") is null ? (long?)null : Long(order, "status_id"),
+                status_label = OrderStatusLabel(Obj(order, "status_id")),
                 grand_total = details.Sum(x => DecimalValue(x, "line_total")),
                 total_qty = details.Sum(x => Long(x, "quantity")),
                 buyers = buyerId == 0 ? null : new { id = buyerId, mobile_number = Str(order, "buyer_mobile") },
@@ -707,6 +725,19 @@ WHERE deleted_at IS NULL AND customer_id IN ({idList})", cancellationToken);
 
     private static string Str(IReadOnlyDictionary<string, object?> row, string key) =>
         Convert.ToString(Obj(row, key), CultureInfo.InvariantCulture) ?? string.Empty;
+
+    // Dispatch status shown in the app. StatusId: null = Pending, 1 = Fully Dispatched,
+    // 2 = Partially Dispatched, 4 = Cancelled.
+    private static string OrderStatusLabel(object? statusId) =>
+        statusId is null
+            ? "Pending"
+            : Convert.ToInt64(statusId, CultureInfo.InvariantCulture) switch
+            {
+                1 => "Fully Dispatched",
+                2 => "Partially Dispatched",
+                4 => "Cancelled",
+                _ => "Pending"
+            };
 
     private static ulong ULong(IReadOnlyDictionary<string, object?> row, string key) =>
         Obj(row, key) is null ? 0 : Convert.ToUInt64(Obj(row, key), CultureInfo.InvariantCulture);
