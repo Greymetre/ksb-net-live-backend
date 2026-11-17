@@ -363,6 +363,10 @@ public sealed class CustomerService : ICustomerService
                 }
             }
 
+            // Set once Employee Codes drives the assignment: the single key the codes rebuilt is
+            // then the only assignment allowed to survive the merge below, so a stored supervisor_id
+            // (or sales_executive_id) cannot be carried back in and folded into the employee.
+            string? authoritativeAssignmentKey = null;
             if (customerType is 1 or 2 && !string.IsNullOrWhiteSpace(row.Value("employee_codes")))
             {
                 var employeeCodes = SplitImportValues(row.Value("employee_codes")).ToArray();
@@ -378,8 +382,8 @@ public sealed class CustomerService : ICustomerService
                 // Employee Codes is the exported, user-editable assignment column.
                 // Treat it as authoritative and rebuild the internal ID assignment.
                 foreach (var assignmentKey in AssignmentFieldKeys) customFields.Remove(assignmentKey);
-                var targetAssignmentKey = customerType == 1 ? "sales_executive_id" : "employee_id";
-                SetField(customFields, targetAssignmentKey, string.Join(',', employeeCodes.Select(code => usersByCode[code])));
+                authoritativeAssignmentKey = customerType == 1 ? "sales_executive_id" : "employee_id";
+                SetField(customFields, authoritativeAssignmentKey, string.Join(',', employeeCodes.Select(code => usersByCode[code])));
             }
 
             var request = new CustomerRequestDto
@@ -410,6 +414,18 @@ public sealed class CustomerService : ICustomerService
                 var existing = await _repository.GetCustomerAsync(id, actorUserId, cancellationToken)
                     ?? throw NotFound($"Customer ID {id} was not found.");
                 request.CustomFields = MergeImportFields(existing.CustomFields, request.CustomFields);
+                // Employee Codes is authoritative: clear every other stored assignment key, so a
+                // leftover supervisor_id (or sales_executive_id) is not folded back into the
+                // employee when the record is saved. The repository starts the update from the
+                // stored fields, so a key that is merely dropped from the request would survive -
+                // it must be blanked, which the field serializer then removes from the record.
+                if (authoritativeAssignmentKey is not null)
+                {
+                    foreach (var key in AssignmentFieldKeys.Where(key => key != authoritativeAssignmentKey))
+                    {
+                        request.CustomFields[key] = "";
+                    }
+                }
                 // The merge carries the stored fields along, so the file paths are taken back out
                 // here: an import must leave every document exactly as it was saved.
                 DropAttachments(request.CustomFields);
