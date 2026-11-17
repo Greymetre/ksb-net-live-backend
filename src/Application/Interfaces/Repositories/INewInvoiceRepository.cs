@@ -19,7 +19,10 @@ public interface INewInvoiceRepository
     Task<IReadOnlyCollection<FieldSchemeDto>> GetFieldSchemesAsync(ulong? actorUserId, DateOnly today, CancellationToken cancellationToken);
     Task<FieldSchemeDetailDto?> GetFieldSchemeAsync(ulong id, ulong? actorUserId, DateOnly today, CancellationToken cancellationToken);
     Task<Customer?> GetRetailerAsync(ulong id, ulong? actorUserId, CancellationToken cancellationToken);
-    Task<IReadOnlyCollection<InvoiceSchemeOptionDto>> GetEligibleSchemeOptionsAsync(ulong customerId, DateTime invoiceDate, CancellationToken cancellationToken);
+    // includeInvoiceDisabled: when true, schemes switched off for invoice creation are still
+    // returned. Used when editing an existing invoice so it keeps working even after its scheme
+    // is turned off; every "new invoice" caller leaves it false so those schemes stay hidden.
+    Task<IReadOnlyCollection<InvoiceSchemeOptionDto>> GetEligibleSchemeOptionsAsync(ulong customerId, DateTime invoiceDate, CancellationToken cancellationToken, bool includeInvoiceDisabled = false);
     Task<IReadOnlyCollection<SchemeProductOptionDto>> GetSchemeResolvedProductsAsync(ulong schemeId, CancellationToken cancellationToken);
     /// <summary>Each covered product mapped to the group it belongs to (Quantity Slab). A product is
     /// assigned to exactly one group, narrowest naming first (a direct product line beats a family,

@@ -505,7 +505,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         return dealer is null ? (null, null) : (dealer.CustomerCode, dealer.Name);
     }
 
-    public async Task<IReadOnlyCollection<InvoiceSchemeOptionDto>> GetEligibleSchemeOptionsAsync(ulong customerId, DateTime invoiceDate, CancellationToken cancellationToken)
+    public async Task<IReadOnlyCollection<InvoiceSchemeOptionDto>> GetEligibleSchemeOptionsAsync(ulong customerId, DateTime invoiceDate, CancellationToken cancellationToken, bool includeInvoiceDisabled = false)
     {
         var date = DateOnly.FromDateTime(invoiceDate.Date);
         var customer = await _dbContext.Customers.AsNoTracking().FirstOrDefaultAsync(x => x.Id == customerId && x.Active == "Y", cancellationToken);
@@ -517,6 +517,7 @@ public sealed class NewInvoiceRepository : INewInvoiceRepository
         var schemes = await _dbContext.LoyaltySchemes.AsNoTracking()
             .Where(x => x.DeletedAt == null
                 && x.Active == "Y"
+                && (includeInvoiceDisabled || x.InvoiceEnabled)
                 && (x.Status == "Published" || x.Status == "Live")
                 && (x.SchemeType == "Invoice" || x.SchemeType == "Quantity")
                 && x.StartDate <= date

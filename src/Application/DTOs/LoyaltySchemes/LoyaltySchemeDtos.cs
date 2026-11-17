@@ -21,6 +21,7 @@ public sealed class LoyaltySchemeDto
     public string BasedOn { get; set; } = "Value";
     public bool RedemptionEnabled { get; set; }
     public bool RedemptionCrmEnabled { get; set; }
+    public bool InvoiceEnabled { get; set; } = true;
     public string Status { get; set; } = "Draft";
     public string WorkflowStatus { get; set; } = "Draft";
     public string? BrochurePath { get; set; }
@@ -124,6 +125,7 @@ public sealed class LoyaltySchemeRequestDto
     public string? BasedOn { get; set; }
     public bool RedemptionEnabled { get; set; }
     public bool RedemptionCrmEnabled { get; set; }
+    public bool InvoiceEnabled { get; set; } = true;
     public string? Status { get; set; }
     public List<LoyaltySchemeSlabRequestDto> Slabs { get; set; } = [];
     public List<LoyaltySchemeProductRequestDto> Products { get; set; } = [];

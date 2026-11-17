@@ -27,6 +27,11 @@ public sealed class LoyaltyScheme : BaseEntity
     /// <summary>"Redemption CRM" toggle: redemption raised from the CRM (the create form and
     /// the bulk import). Independent of <see cref="RedemptionEnabled"/>; defaults off.</summary>
     public bool RedemptionCrmEnabled { get; set; }
+    /// <summary>"Invoice Creation" toggle: whether an invoice can be raised under this scheme
+    /// (CRM form, bulk import, and both apps). Defaults ON so existing schemes keep working;
+    /// switched off per scheme it is hidden from every invoice scheme picker and rejected on
+    /// create.</summary>
+    public bool InvoiceEnabled { get; set; } = true;
     public string Status { get; set; } = "Draft";
     public string? BrochurePath { get; set; }
     public DateTime? SubmittedAt { get; set; }

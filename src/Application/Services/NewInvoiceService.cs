@@ -708,7 +708,9 @@ public sealed class NewInvoiceService : INewInvoiceService
             throw Http(LaravelStatusCodes.NoContentLikeValidation, new { invoice_number = new[] { "This invoice number is already used for this dealer." } });
         }
 
-        var eligibleSchemes = await _repository.GetEligibleSchemeOptionsAsync(request.SecondaryCustomerId, request.InvoiceDate!.Value, cancellationToken);
+        // On create the scheme must be switched on for invoices; on edit (exceptId set) an
+        // existing invoice keeps working even if its scheme was later turned off.
+        var eligibleSchemes = await _repository.GetEligibleSchemeOptionsAsync(request.SecondaryCustomerId, request.InvoiceDate!.Value, cancellationToken, includeInvoiceDisabled: exceptId.HasValue);
         var scheme = eligibleSchemes.FirstOrDefault(x => x.Id == request.SchemeId!.Value);
         if (scheme is null)
             throw Http(LaravelStatusCodes.NoContentLikeValidation, new { scheme_id = new[] { "The selected scheme was not published and active for the invoice date." } });

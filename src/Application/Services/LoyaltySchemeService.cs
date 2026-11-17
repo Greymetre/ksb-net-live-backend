@@ -139,6 +139,7 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
             BasedOn = NormalizeChoice(request.BasedOn, SchemeReward.Value, BasedOnOptions),
             RedemptionEnabled = request.RedemptionEnabled,
             RedemptionCrmEnabled = request.RedemptionCrmEnabled,
+            InvoiceEnabled = request.InvoiceEnabled,
             Status = "Draft",
             CreatedBy = actorUserId,
             UpdatedBy = actorUserId,
@@ -184,6 +185,7 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
         scheme.BasedOn = NormalizeChoice(request.BasedOn, SchemeReward.Value, BasedOnOptions);
         scheme.RedemptionEnabled = request.RedemptionEnabled;
         scheme.RedemptionCrmEnabled = request.RedemptionCrmEnabled;
+        scheme.InvoiceEnabled = request.InvoiceEnabled;
         // Approval is a separate permission-gated action. Editing must never
         // publish or demote a scheme through a client-supplied status.
         scheme.UpdatedBy = actorUserId;
