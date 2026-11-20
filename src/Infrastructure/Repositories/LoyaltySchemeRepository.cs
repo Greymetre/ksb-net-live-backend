@@ -369,6 +369,7 @@ public sealed class LoyaltySchemeRepository : ILoyaltySchemeRepository
             CustomerType = scheme.CustomerType,
             AreaScope = scheme.AreaScope,
             AreaValues = areaValues,
+            ReportZoneIds = ReadExcludedDealerIds(scheme.ReportZoneIds),
             ExcludedDealerIds = ReadExcludedDealerIds(scheme.ExcludedDealerIds),
             AreaDisplay = AreaDisplay(scheme.AreaScope, areaValues),
             StartDate = scheme.StartDate,

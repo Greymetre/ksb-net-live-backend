@@ -132,6 +132,7 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
             CustomerType = NormalizeChoice(request.CustomerType, string.Empty, CustomerTypes),
             AreaScope = NormalizeChoice(request.AreaScope, "All", AreaScopes),
             AreaValues = SerializeAreaValues(request.AreaScope, request.AreaValues),
+            ReportZoneIds = SerializeIdList(request.ReportZoneIds),
             ExcludedDealerIds = SerializeExcludedDealerIds(request.ExcludedDealerIds),
             StartDate = request.StartDate!.Value,
             EndDate = request.EndDate!.Value,
@@ -178,6 +179,7 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
         scheme.CustomerType = NormalizeChoice(request.CustomerType, string.Empty, CustomerTypes);
         scheme.AreaScope = NormalizeChoice(request.AreaScope, "All", AreaScopes);
         scheme.AreaValues = SerializeAreaValues(request.AreaScope, request.AreaValues);
+        scheme.ReportZoneIds = SerializeIdList(request.ReportZoneIds);
         scheme.ExcludedDealerIds = SerializeExcludedDealerIds(request.ExcludedDealerIds);
         scheme.StartDate = request.StartDate!.Value;
         scheme.EndDate = request.EndDate!.Value;
@@ -993,6 +995,13 @@ public sealed class LoyaltySchemeService : ILoyaltySchemeService
     private static string SerializeExcludedDealerIds(ulong[]? dealerValues)
     {
         var ids = (dealerValues ?? []).Where(x => x > 0).Distinct().OrderBy(x => x).ToArray();
+        return ids.Length == 0 ? "[]" : JsonSerializer.Serialize(ids);
+    }
+
+    /// <summary>A numeric id list (e.g. Report Zones) stored as a JSON array, deduped and sorted.</summary>
+    private static string SerializeIdList(ulong[]? values)
+    {
+        var ids = (values ?? []).Where(x => x > 0).Distinct().OrderBy(x => x).ToArray();
         return ids.Length == 0 ? "[]" : JsonSerializer.Serialize(ids);
     }
 

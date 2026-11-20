@@ -12,6 +12,10 @@ public sealed class LoyaltyScheme : BaseEntity
     public string CustomerType { get; set; } = string.Empty;
     public string AreaScope { get; set; } = "All";
     public string AreaValues { get; set; } = "[]";
+    /// <summary>"Report Zones": division ids (JSON array) this scheme is tagged to for the
+    /// loyalty report export filters. Independent of the area scope. Empty = the scheme is not
+    /// offered once a zone is selected in those filters.</summary>
+    public string ReportZoneIds { get; set; } = "[]";
     /// <summary>Dealers this scheme deliberately leaves out - "Exclusion Dealers" on the
     /// form - as a JSON array of customer ids. Stored like AreaValues, and empty when none
     /// were picked. Ids rather than names, so renaming a dealer changes nothing.</summary>

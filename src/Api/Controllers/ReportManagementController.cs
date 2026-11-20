@@ -67,14 +67,29 @@ public sealed class ReportManagementController : ControllerBase
             .Select(x => new { id = x.Id, name = x.CategoryName }).ToListAsync(cancellationToken);
         var zones = (await _db.Divisions.AsNoTracking().Where(x => x.Active == "Y" && x.DeletedAt == null)
             .Select(x => new { id = x.Id, name = x.DivisionName }).ToListAsync(cancellationToken)).Where(x => ZoneOrder.IsSalesZone(x.name)).ByZone(x => x.name).ToList();
-        var schemes = await _db.LoyaltySchemes.AsNoTracking().Where(x => x.Status == "Published" && x.DeletedAt == null)
+        var schemeRows = await _db.LoyaltySchemes.AsNoTracking().Where(x => x.Status == "Published" && x.DeletedAt == null)
             .OrderByDescending(x => x.StartDate).ThenBy(x => x.SchemeName)
-            .Select(x => new { id = x.Id, name = x.SchemeName, code = x.SchemeCode, start_date = x.StartDate, end_date = x.EndDate })
+            .Select(x => new { id = x.Id, name = x.SchemeName, code = x.SchemeCode, start_date = x.StartDate, end_date = x.EndDate, report_zone_ids = x.ReportZoneIds })
             .ToListAsync(cancellationToken);
+        // zone_ids = the scheme's "Report Zones" (division ids). The filters show a scheme only
+        // when a selected zone is among these; empty means it is hidden once a zone is picked.
+        var schemes = schemeRows.Select(x => new
+        {
+            x.id, x.name, x.code, x.start_date, x.end_date,
+            zone_ids = ParseIdArray(x.report_zone_ids)
+        }).ToList();
         // Branches (each with its zone) feed the Wallet Report's Branch filter; the other
         // Loyalty Performance sheets ignore them.
         var branches = await BranchOptionRowsAsync(cancellationToken);
         return Ok(new { segments, zones, schemes, branches });
+    }
+
+    /// <summary>Parses a stored JSON id array ("[1,2,3]") into ids; empty/invalid gives none.</summary>
+    private static ulong[] ParseIdArray(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return [];
+        try { return System.Text.Json.JsonSerializer.Deserialize<ulong[]>(json) ?? []; }
+        catch (System.Text.Json.JsonException) { return []; }
     }
 
     [HttpGet("rating-report/options")]
@@ -2115,7 +2130,18 @@ WHERE customertype = 1 AND deleted_at IS NULL AND executive_id IN ({string.Join(
     // incentive that slab pays (percentage or flat) plus the points it earned in the period.
     [HttpGet("loyalty-performance/retailer-export")]
     [RequirePermission("loyalty_performance_report.export_retailer")]
-    public async Task<IActionResult> ExportLoyaltyPerformanceRetailer([FromQuery] LoyaltyPerformanceFilter filter, CancellationToken cancellationToken)
+    public Task<IActionResult> ExportLoyaltyPerformanceRetailer([FromQuery] LoyaltyPerformanceFilter filter, CancellationToken cancellationToken) =>
+        RetailerReportAsync(filter, invoicedOnly: false, cancellationToken);
+
+    // Invoiced Retailers: the same Retailer Wise sheet, but limited to retailers that raised at
+    // least one invoice under the selected scheme in the period. The plain Retailer Wise also
+    // lists every zone retailer (even with no invoice); this one drops those.
+    [HttpGet("loyalty-performance/invoiced-retailer-export")]
+    [RequirePermission("loyalty_performance_report.export_invoiced_retailer")]
+    public Task<IActionResult> ExportLoyaltyPerformanceInvoicedRetailer([FromQuery] LoyaltyPerformanceFilter filter, CancellationToken cancellationToken) =>
+        RetailerReportAsync(filter, invoicedOnly: true, cancellationToken);
+
+    private async Task<IActionResult> RetailerReportAsync(LoyaltyPerformanceFilter filter, bool invoicedOnly, CancellationToken cancellationToken)
     {
         var validation = ValidateLoyaltyPerformanceFilter(filter);
         if (validation is not null) return BadRequest(new { status = false, message = validation });
@@ -2249,7 +2275,9 @@ WHERE customertype = 2 AND deleted_at IS NULL AND executive_id IN ({zoneEmpCsv})
                 allUsers.TryGetValue(empId, out var emp);
                 return (Retailer: r, Emp: emp, InZone: zoneEmployees.ContainsKey(empId), HasInvoice: invoicesByRetailer.ContainsKey(r.Id));
             })
-            .Where(x => x.InZone || x.HasInvoice)
+            // Invoiced Retailers keeps only those that raised an invoice; the plain sheet also
+            // keeps every zone retailer so no one is dropped.
+            .Where(x => invoicedOnly ? x.HasInvoice : (x.InZone || x.HasInvoice))
             .Select(x =>
             {
                 var emp = x.Emp;
@@ -2372,7 +2400,8 @@ WHERE customertype = 2 AND deleted_at IS NULL AND executive_id IN ({zoneEmpCsv})
         sheet.Range(3, 17, lastRow, 17).Style.NumberFormat.Format = "#,##0";
         sheet.SheetView.FreezeRows(2); sheet.Columns().AdjustToContents(1, lastRow, 8, 45);
         using var stream = new MemoryStream(); workbook.SaveAs(stream);
-        return File(stream.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "Loyalty_Performance_Retailer_Wise.xlsx");
+        var fileName = invoicedOnly ? "Loyalty_Performance_Invoiced_Retailers.xlsx" : "Loyalty_Performance_Retailer_Wise.xlsx";
+        return File(stream.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", fileName);
     }
 
     // Payout Report: the Retailer Wise loyalty sheet plus the retailer's payout/KYC details

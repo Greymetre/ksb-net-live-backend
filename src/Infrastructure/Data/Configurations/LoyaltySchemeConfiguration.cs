@@ -20,6 +20,7 @@ public sealed class LoyaltySchemeConfiguration : IEntityTypeConfiguration<Loyalt
         builder.Property(x => x.CustomerType).HasColumnName("customer_type").HasMaxLength(100);
         builder.Property(x => x.AreaScope).HasColumnName("area_scope").HasMaxLength(50);
         builder.Property(x => x.AreaValues).HasColumnName("area_values").HasColumnType("nvarchar(max)");
+        builder.Property(x => x.ReportZoneIds).HasColumnName("report_zone_ids").HasColumnType("nvarchar(max)").HasDefaultValue("[]");
         builder.Property(x => x.ExcludedDealerIds).HasColumnName("excluded_dealer_ids").HasColumnType("nvarchar(max)");
         builder.Property(x => x.StartDate).HasColumnName("start_date").HasColumnType("date");
         builder.Property(x => x.EndDate).HasColumnName("end_date").HasColumnType("date");

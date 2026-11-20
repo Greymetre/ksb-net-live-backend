@@ -13,6 +13,8 @@ public sealed class LoyaltySchemeDto
     public string AreaScope { get; set; } = "All";
     public string[] AreaValues { get; set; } = [];
     public string AreaDisplay { get; set; } = "All India";
+    /// <summary>Division ids tagged for the loyalty report filters ("Report Zones").</summary>
+    public ulong[] ReportZoneIds { get; set; } = [];
     /// <summary>Customer ids of the dealers excluded from this scheme.</summary>
     public ulong[] ExcludedDealerIds { get; set; } = [];
     public DateOnly StartDate { get; set; }
@@ -118,6 +120,7 @@ public sealed class LoyaltySchemeRequestDto
     public string? CustomerType { get; set; }
     public string? AreaScope { get; set; }
     public string[]? AreaValues { get; set; }
+    public ulong[]? ReportZoneIds { get; set; }
     public ulong[]? ExcludedDealerIds { get; set; }
     public DateOnly? StartDate { get; set; }
     public DateOnly? EndDate { get; set; }
