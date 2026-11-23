@@ -210,6 +210,10 @@ public static class PermissionCatalog
         new("user.export", "Export", "user", "User Details", "users", "User Management", "export", 1460, ["user_download"], []),
         new("user.import", "Import", "user", "User Details", "users", "User Management", "import", 1470, ["user_upload"], []),
         new("user.template", "Download Template", "user", "User Details", "users", "User Management", "template", 1480, ["user_template"], []),
+        new("user.calling_details", "Calling Details", "user", "User Details", "users", "User Management", "calling_details", 1490, [], []),
+        new("user.calling_submit", "Calling Submit", "user", "User Details", "users", "User Management", "calling_submit", 1500, [], []),
+        new("user.calling_report_export", "Calling Report Export", "user", "User Details", "users", "User Management", "calling_report_export", 1510, [], []),
+        new("user.issue_report_export", "Issue Report Export", "user", "User Details", "users", "User Management", "issue_report_export", 1520, [], []),
         // User App Details
         new("user_app.view", "View Listing", "user_app", "User App Details", "users", "User Management", "view", 1490, ["user_app_details_access"], []),
         new("user_app.force_logout", "Force Logout", "user_app", "User App Details", "users", "User Management", "force_logout", 1500, ["user_app_force_logout"], []),
