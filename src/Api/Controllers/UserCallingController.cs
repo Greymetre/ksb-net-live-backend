@@ -160,12 +160,9 @@ SELECT
     (SELECT CONVERT(varchar(8), MIN(ci.checkin_time), 108) FROM check_in ci WHERE ci.user_id=@uid AND ci.checkin_date=@d) AS first_checkin_time,
     (SELECT CONVERT(varchar(8), MAX(ci.checkout_time), 108) FROM check_in ci WHERE ci.user_id=@uid AND ci.checkin_date=@d AND ci.checkout_time IS NOT NULL) AS last_checkout_time,
     (SELECT COUNT(*) FROM orders o WHERE o.created_by=@uid AND o.deleted_at IS NULL AND CAST(COALESCE(o.order_date,o.created_at) AS date)=@d) AS total_order,
-    (SELECT COUNT(*) FROM customers c WHERE c.created_by=@uid AND c.customertype=2 AND c.deleted_at IS NULL AND CAST(c.created_at AS date)<=@d) AS total_retailer_registered,
-    (SELECT COUNT(*) FROM customers c WHERE c.created_by=@uid AND c.customertype=3 AND c.deleted_at IS NULL AND CAST(c.created_at AS date)<=@d) AS total_influencer_registered,
-    (SELECT COUNT(*) FROM customers c WHERE c.created_by=@uid AND c.customertype=2 AND c.deleted_at IS NULL AND c.active='Y'
-        AND EXISTS (SELECT 1 FROM orders o WHERE o.buyer_id=c.id AND o.deleted_at IS NULL AND CAST(COALESCE(o.order_date,o.created_at) AS date)<=@d)) AS total_retailer_order_active,
-    (SELECT COUNT(*) FROM customers c WHERE c.created_by=@uid AND c.customertype=2 AND c.deleted_at IS NULL AND c.active='N'
-        AND EXISTS (SELECT 1 FROM orders o WHERE o.buyer_id=c.id AND o.deleted_at IS NULL AND CAST(COALESCE(o.order_date,o.created_at) AS date)<=@d)) AS total_retailer_order_inactive
+    (SELECT COUNT(*) FROM customers c WHERE c.customertype=3 AND c.deleted_at IS NULL
+        AND (c.created_by=@uid OR c.executive_id=@uid
+             OR EXISTS (SELECT 1 FROM employee_details ed WHERE ed.customer_id=c.id AND ed.user_id=@uid AND ed.deleted_at IS NULL AND (ed.active='Y' OR ed.active IS NULL)))) AS total_influencer_registered
 FROM users u
 LEFT JOIN divisions dv ON dv.id=u.division_id
 LEFT JOIN designations dg ON dg.id=u.designation_id
@@ -176,26 +173,34 @@ WHERE u.id=@uid;",
 
         if (main is null) return null;
 
-        // R-30/60/90+: among the user's ACTIVE retailers (created by OR assigned to the user) that
-        // have ordered at least once, how many have NOT ordered in the last 30/60/90 days. One row
-        // per retailer; the buckets nest (R-90+ subset of R-60 subset of R-30).
-        var buckets = (await QueryRows(@"
-SELECT SUM(r30) AS r30, SUM(r60) AS r60, SUM(r90) AS r90
+        // All retailer counts are over the user's retailers - created by OR assigned to the user
+        // (unique per retailer, no customer active/inactive flag). "Order In Active" = has at least
+        // one order; "Order In Inactive" = no order yet; the two sum to Total Retailer Registered.
+        // R-30/60/90 are, among the retailers that HAVE ordered, how many have not ordered in the
+        // last 30/60/90 days (nested: R-90 subset of R-60 subset of R-30).
+        var ret = (await QueryRows(@"
+SELECT
+    COUNT(*) AS registered,
+    SUM(has_order) AS order_active,
+    SUM(1 - has_order) AS order_inactive,
+    SUM(CASE WHEN has_order=1 AND no30=1 THEN 1 ELSE 0 END) AS r30,
+    SUM(CASE WHEN has_order=1 AND no60=1 THEN 1 ELSE 0 END) AS r60,
+    SUM(CASE WHEN has_order=1 AND no90=1 THEN 1 ELSE 0 END) AS r90
 FROM (
     SELECT
+        CASE WHEN EXISTS (SELECT 1 FROM orders o WHERE o.buyer_id=c.id AND o.deleted_at IS NULL
+             AND CAST(COALESCE(o.order_date,o.created_at) AS date)<=@d) THEN 1 ELSE 0 END AS has_order,
         CASE WHEN NOT EXISTS (SELECT 1 FROM orders o WHERE o.buyer_id=c.id AND o.deleted_at IS NULL
-             AND CAST(COALESCE(o.order_date,o.created_at) AS date) BETWEEN DATEADD(day,-30,@d) AND @d) THEN 1 ELSE 0 END AS r30,
+             AND CAST(COALESCE(o.order_date,o.created_at) AS date) BETWEEN DATEADD(day,-30,@d) AND @d) THEN 1 ELSE 0 END AS no30,
         CASE WHEN NOT EXISTS (SELECT 1 FROM orders o WHERE o.buyer_id=c.id AND o.deleted_at IS NULL
-             AND CAST(COALESCE(o.order_date,o.created_at) AS date) BETWEEN DATEADD(day,-60,@d) AND @d) THEN 1 ELSE 0 END AS r60,
+             AND CAST(COALESCE(o.order_date,o.created_at) AS date) BETWEEN DATEADD(day,-60,@d) AND @d) THEN 1 ELSE 0 END AS no60,
         CASE WHEN NOT EXISTS (SELECT 1 FROM orders o WHERE o.buyer_id=c.id AND o.deleted_at IS NULL
-             AND CAST(COALESCE(o.order_date,o.created_at) AS date) BETWEEN DATEADD(day,-90,@d) AND @d) THEN 1 ELSE 0 END AS r90
+             AND CAST(COALESCE(o.order_date,o.created_at) AS date) BETWEEN DATEADD(day,-90,@d) AND @d) THEN 1 ELSE 0 END AS no90
     FROM customers c
-    WHERE c.customertype=2 AND c.deleted_at IS NULL AND c.active='Y'
+    WHERE c.customertype=2 AND c.deleted_at IS NULL
       AND (c.created_by=@uid OR c.executive_id=@uid
            OR EXISTS (SELECT 1 FROM employee_details ed
                       WHERE ed.customer_id=c.id AND ed.user_id=@uid AND ed.deleted_at IS NULL AND (ed.active='Y' OR ed.active IS NULL)))
-      AND EXISTS (SELECT 1 FROM orders o WHERE o.buyer_id=c.id AND o.deleted_at IS NULL
-                  AND CAST(COALESCE(o.order_date,o.created_at) AS date)<=@d)
 ) x;",
             cancellationToken, ("@uid", (long)id), ("@d", reportDate))).FirstOrDefault();
 
@@ -204,9 +209,9 @@ FROM (
             Str(main, "designation"), Str(main, "head_quarters"), Str(main, "date_of_joining"),
             Str(main, "punchin_time"), Str(main, "punchout_time"), Str(main, "total_working_time"), Str(main, "working_type"),
             Str(main, "first_checkin_time"), Str(main, "last_checkout_time"),
-            Int(main, "total_visit"), Int(main, "total_order"), Int(buckets, "r30"), Int(buckets, "r60"), Int(buckets, "r90"),
-            Int(main, "total_retailer_registered"), Int(main, "total_retailer_order_active"),
-            Int(main, "total_retailer_order_inactive"), Int(main, "total_influencer_registered"));
+            Int(main, "total_visit"), Int(main, "total_order"), Int(ret, "r30"), Int(ret, "r60"), Int(ret, "r90"),
+            Int(ret, "registered"), Int(ret, "order_active"),
+            Int(ret, "order_inactive"), Int(main, "total_influencer_registered"));
     }
 
     private static object ToResponse(CallingDetail d) => new
