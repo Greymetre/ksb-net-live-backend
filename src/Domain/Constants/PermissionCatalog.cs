@@ -214,6 +214,11 @@ public static class PermissionCatalog
         new("user.calling_submit", "Calling Submit", "user", "User Details", "users", "User Management", "calling_submit", 1500, [], []),
         new("user.calling_report_export", "Calling Report Export", "user", "User Details", "users", "User Management", "calling_report_export", 1510, [], []),
         new("user.issue_report_export", "Issue Report Export", "user", "User Details", "users", "User Management", "issue_report_export", 1520, [], []),
+        // User Issues (resolution of issues raised from the calling popup)
+        new("user_issue.view", "View Listing", "user_issue", "User Issues", "users", "User Management", "view", 1560, [], []),
+        new("user_issue.create", "Create", "user_issue", "User Issues", "users", "User Management", "create", 1565, [], []),
+        new("user_issue.export", "Export", "user_issue", "User Issues", "users", "User Management", "export", 1570, [], []),
+        new("user_issue.resolve", "Resolve", "user_issue", "User Issues", "users", "User Management", "resolve", 1580, [], []),
         // User App Details
         new("user_app.view", "View Listing", "user_app", "User App Details", "users", "User Management", "view", 1490, ["user_app_details_access"], []),
         new("user_app.force_logout", "Force Logout", "user_app", "User App Details", "users", "User Management", "force_logout", 1500, ["user_app_force_logout"], []),
