@@ -90,6 +90,7 @@ SELECT CONVERT(varchar(10), report_date, 23) AS report_date, zone, branch, emplo
     calling_remark
 FROM dbo.user_calling_report
 WHERE report_date BETWEEN @start AND @end
+  AND calling_remark IS NOT NULL AND LTRIM(RTRIM(calling_remark)) <> ''
 ORDER BY report_date DESC, id DESC;",
             cancellationToken, ("@start", start), ("@end", end));
 
