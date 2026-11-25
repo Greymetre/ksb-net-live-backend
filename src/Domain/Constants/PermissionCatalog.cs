@@ -221,6 +221,7 @@ public static class PermissionCatalog
         new("customer_app.view", "View Listing", "customer_app", "Customer App Details", "customers", "Customers Management", "view", 1520, ["customer_app_details_access"], []),
         new("customer_app.force_logout", "Force Logout", "customer_app", "Customer App Details", "customers", "Customers Management", "force_logout", 1530, ["customer_app_force_logout"], []),
         new("customer_app.reset_device", "Remove Device UUID", "customer_app", "Customer App Details", "customers", "Customers Management", "reset_device", 1540, ["customer_app_uuid_reset"], []),
+        new("customer_app.export", "Export", "customer_app", "Customer App Details", "customers", "Customers Management", "export", 1550, [], []),
         // User Live Activity
         new("user_activity.view", "View Live Activity", "user_activity", "User Live Activity", "users", "User Management", "view", 1520, ["user_location"], []),
         // User Target

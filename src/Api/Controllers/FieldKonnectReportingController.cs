@@ -1,5 +1,6 @@
 using System.Data;
 using System.Globalization;
+using ClosedXML.Excel;
 using System.Security.Claims;
 using System.Text.Json;
 using Api.Filters;
@@ -205,6 +206,143 @@ OFFSET {offset} ROWS FETCH NEXT {pageSize} ROWS ONLY", cancellationToken);
 
         var lastPage = Math.Max(1, (long)Math.Ceiling(total / (double)pageSize));
         return Ok(new { data, pagination = new { current_page = page, last_page = lastPage, page_size = pageSize, total } });
+    }
+
+    // Excel of the customers who installed/signed in on the app, enriched with the customer's
+    // zone (its assigned employee's division), city, owner/shop, and distributor (blank for a
+    // dealer, since it is the distributor). Same columns as the manual pull.
+    [HttpGet("customer-app-details/export")]
+    [RequirePermission("customer_app.export")]
+    public async Task<IActionResult> ExportCustomerAppDetails(
+        [FromQuery(Name = "customer_type")] ulong? customerType,
+        CancellationToken cancellationToken = default)
+    {
+        var headers = new[] { "Zone", "Customer Name", "Shop Name", "Owner Name", "Customer Type",
+            "Mobile Number", "City", "Distributor Name", "Last Login", "App Version", "Device", "Platform" };
+
+        var ids = await SignedInCustomerIds(cancellationToken);
+        if (ids.Count == 0) return AppDetailsWorkbook(headers, new List<string[]>());
+
+        var typeClause = customerType.HasValue ? $" AND c.customertype = {customerType.Value}" : string.Empty;
+        var rows = await QueryRows($@"WITH latest AS (
+    SELECT m.id, m.customer_id, c.name AS customer_name, c.mobile, c.custom_fields,
+        ct.customertype_name AS customer_type, m.app_version, m.device_name, m.device_type,
+        m.last_login_date, m.login_at, m.first_login_date,
+        (SELECT TOP 1 ci.city_name FROM cities ci WHERE ci.id = TRY_CONVERT(bigint, JSON_VALUE(c.custom_fields,'$.city_id'))) AS city_name,
+        (SELECT TOP 1 d.name FROM customers d WHERE d.id = TRY_CONVERT(bigint, JSON_VALUE(c.custom_fields,'$.distributor_name'))) AS distributor_name,
+        ROW_NUMBER() OVER (PARTITION BY m.customer_id ORDER BY COALESCE(m.updated_at,m.last_login_date,m.created_at) DESC,m.id DESC) AS rn
+    FROM mobile_user_login_details m
+    INNER JOIN customers c ON c.id=m.customer_id AND c.deleted_at IS NULL AND c.active='Y'
+    LEFT JOIN customer_types ct ON ct.id=c.customertype AND ct.deleted_at IS NULL
+    WHERE m.app='{CustomerAppKey}' AND m.customer_id IN ({string.Join(',', ids)}){typeClause})
+SELECT * FROM latest WHERE rn=1 ORDER BY COALESCE(login_at,last_login_date,first_login_date) DESC, id DESC", cancellationToken);
+
+        // Parse custom_fields for owner/shop and the assigned employee; collect employee ids for zone.
+        var parsed = new List<(Dictionary<string, object?> Row, string Owner, string Shop, ulong? EmpId)>();
+        var empIds = new HashSet<ulong>();
+        foreach (var r in rows)
+        {
+            string owner = "", shop = ""; ulong? emp = null;
+            var cf = Str(r, "custom_fields");
+            if (!string.IsNullOrWhiteSpace(cf))
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(cf);
+                    var root = doc.RootElement;
+                    if (root.ValueKind == JsonValueKind.Object)
+                    {
+                        owner = JsonStr(root, "owner_name");
+                        shop = JsonStr(root, "shop_name");
+                        emp = JsonFirstId(root, "employee_id") ?? JsonFirstId(root, "sales_executive_id");
+                    }
+                }
+                catch (JsonException) { }
+            }
+            if (emp.HasValue) empIds.Add(emp.Value);
+            parsed.Add((r, owner, shop, emp));
+        }
+
+        var zoneByUser = new Dictionary<ulong, string>();
+        if (empIds.Count > 0)
+        {
+            foreach (var z in await QueryRows($@"SELECT u.id, dv.division_name
+FROM users u LEFT JOIN divisions dv ON dv.id=u.division_id WHERE u.id IN ({string.Join(',', empIds)})", cancellationToken))
+                zoneByUser[ULong(z, "id")] = Str(z, "division_name");
+        }
+
+        var data = new List<string[]>();
+        foreach (var (r, owner, shop, emp) in parsed)
+        {
+            var type = Str(r, "customer_type");
+            var isDealer = type.Trim().Equals("Dealer", StringComparison.OrdinalIgnoreCase)
+                        || type.Trim().Equals("Distributor", StringComparison.OrdinalIgnoreCase);
+            data.Add(new[]
+            {
+                emp.HasValue && zoneByUser.TryGetValue(emp.Value, out var z) ? z : "",
+                Str(r, "customer_name"),
+                string.IsNullOrWhiteSpace(shop) ? Str(r, "customer_name") : shop,
+                owner,
+                type,
+                Str(r, "mobile"),
+                Str(r, "city_name"),
+                isDealer ? "" : Str(r, "distributor_name"),
+                LoginStamp(Obj(r, "last_login_date")),
+                Str(r, "app_version"),
+                Str(r, "device_name"),
+                Str(r, "device_type")
+            });
+        }
+        return AppDetailsWorkbook(headers, data);
+    }
+
+    private FileContentResult AppDetailsWorkbook(string[] headers, List<string[]> data)
+    {
+        using var workbook = new XLWorkbook();
+        var sheet = workbook.Worksheets.Add("App Customers");
+        for (var c = 0; c < headers.Length; c++) sheet.Cell(1, c + 1).Value = headers[c];
+        var r = 2;
+        foreach (var row in data)
+        {
+            for (var c = 0; c < row.Length; c++) sheet.Cell(r, c + 1).Value = row[c] ?? string.Empty;
+            r++;
+        }
+        sheet.Columns().AdjustToContents();
+        using var stream = new MemoryStream();
+        workbook.SaveAs(stream);
+        return File(stream.ToArray(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "Customer_App_Details.xlsx");
+    }
+
+    private static string JsonStr(JsonElement root, string key) =>
+        root.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? string.Empty : string.Empty;
+
+    private static ulong? JsonFirstId(JsonElement root, string key)
+    {
+        if (!root.TryGetProperty(key, out var v)) return null;
+        foreach (var id in JsonIds(v)) return id;
+        return null;
+    }
+
+    private static IEnumerable<ulong> JsonIds(JsonElement v)
+    {
+        if (v.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in v.EnumerateArray())
+                foreach (var id in JsonIds(item)) yield return id;
+            yield break;
+        }
+        if (v.ValueKind == JsonValueKind.Number && v.TryGetUInt64(out var n) && n > 0) { yield return n; yield break; }
+        if (v.ValueKind == JsonValueKind.String)
+            foreach (var part in (v.GetString() ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                if (ulong.TryParse(part, out var id) && id > 0) yield return id;
+    }
+
+    private static string LoginStamp(object? value)
+    {
+        if (value is null or DBNull) return string.Empty;
+        if (value is DateTime dt) return dt.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+        var s = Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty;
+        return s.Length >= 16 ? s[..16].Replace('T', ' ') : s;
     }
 
     [HttpPost("customer-app-details/{customerId:long}/force-logout")]
