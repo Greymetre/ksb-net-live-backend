@@ -51,13 +51,13 @@ public sealed class UserCallingController : ControllerBase
 INSERT INTO dbo.user_calling_report
     (user_id, report_date, zone, branch, employee_code, employee_name, designation, head_quarters, date_of_joining,
      punchin_time, punchout_time, total_working_time, working_type, first_customer_checkin_time, last_customer_checkout_time,
-     total_visit, total_order, r30_count, r60_count, r90_count,
+     total_visit, total_order, total_order_value, r30_count, r60_count, r90_count,
      total_retailer_registered, total_retailer_order_active, total_retailer_order_inactive, total_influencer_registered,
      calling_remark, issue, created_by, created_at)
 VALUES
     (@uid, @d, @zone, @branch, @ecode, @ename, @desig, @hq, @doj,
      @pin, @pout, @wtime, @wtype, @fci, @lco,
-     @tvisit, @torder, @r30, @r60, @r90,
+     @tvisit, @torder, @tov, @r30, @r60, @r90,
      @trr, @troa, @troi, @tir,
      @remark, @issue, @by, SYSUTCDATETIME());",
             cancellationToken,
@@ -66,7 +66,7 @@ VALUES
             ("@desig", d.Designation), ("@hq", d.HeadQuarters), ("@doj", d.DateOfJoining),
             ("@pin", d.PunchinTime), ("@pout", d.PunchoutTime), ("@wtime", d.TotalWorkingTime), ("@wtype", d.WorkingType),
             ("@fci", d.FirstCheckinTime), ("@lco", d.LastCheckoutTime),
-            ("@tvisit", d.TotalVisit), ("@torder", d.TotalOrder), ("@r30", d.R30), ("@r60", d.R60), ("@r90", d.R90),
+            ("@tvisit", d.TotalVisit), ("@torder", d.TotalOrder), ("@tov", d.TotalOrderValue), ("@r30", d.R30), ("@r60", d.R60), ("@r90", d.R90),
             ("@trr", d.TotalRetailerRegistered), ("@troa", d.TotalRetailerOrderActive),
             ("@troi", d.TotalRetailerOrderInactive), ("@tir", d.TotalInfluencerRegistered),
             ("@remark", request.CallingRemark.Trim()),
@@ -85,7 +85,7 @@ VALUES
         var rows = await QueryRows(@"
 SELECT CONVERT(varchar(10), report_date, 23) AS report_date, zone, branch, employee_code, employee_name, designation,
     head_quarters, date_of_joining, punchin_time, punchout_time, total_working_time, working_type,
-    first_customer_checkin_time, last_customer_checkout_time, total_visit, total_order,
+    first_customer_checkin_time, last_customer_checkout_time, total_visit, COALESCE(total_order_value,0) AS total_order_value,
     r30_count, r60_count, r90_count, total_retailer_registered, total_retailer_order_active, total_retailer_order_inactive, total_influencer_registered,
     calling_remark
 FROM dbo.user_calling_report
@@ -96,12 +96,12 @@ ORDER BY report_date DESC, id DESC;",
 
         var headers = new[] { "Date", "Zone", "Branch", "Employee Code", "Employee Name", "Designation", "Head Quarters",
             "Date of Joining", "Punchin Time", "Punchout Time", "Total Working Time", "Working Type",
-            "First Customer Checkin Time", "Last Customer Checkout Time", "Total Visit", "Total Order",
+            "First Customer Checkin Time", "Last Customer Checkout Time", "Total Visit", "Total Order Value",
             "R-30 Count", "R-60 Count", "R-90+ Count", "Total Retailer Registered", "Total Retailer Order In Active", "Total Retailer Order In Inactive",
             "Total Influencer Registered", "Calling Remark" };
         var keys = new[] { "report_date", "zone", "branch", "employee_code", "employee_name", "designation", "head_quarters",
             "date_of_joining", "punchin_time", "punchout_time", "total_working_time", "working_type",
-            "first_customer_checkin_time", "last_customer_checkout_time", "total_visit", "total_order",
+            "first_customer_checkin_time", "last_customer_checkout_time", "total_visit", "total_order_value",
             "r30_count", "r60_count", "r90_count", "total_retailer_registered", "total_retailer_order_active", "total_retailer_order_inactive",
             "total_influencer_registered", "calling_remark" };
         return BuildWorkbook("Calling Report", headers, keys, rows, "Calling_Report.xlsx");
@@ -161,6 +161,8 @@ SELECT
     (SELECT CONVERT(varchar(8), MIN(ci.checkin_time), 108) FROM check_in ci WHERE ci.user_id=@uid AND ci.checkin_date=@d) AS first_checkin_time,
     (SELECT CONVERT(varchar(8), MAX(ci.checkout_time), 108) FROM check_in ci WHERE ci.user_id=@uid AND ci.checkin_date=@d AND ci.checkout_time IS NOT NULL) AS last_checkout_time,
     (SELECT COUNT(*) FROM orders o WHERE o.created_by=@uid AND o.deleted_at IS NULL AND CAST(COALESCE(o.order_date,o.created_at) AS date)=@d) AS total_order,
+    (SELECT COALESCE(SUM(COALESCE(NULLIF(o.grand_total,0), NULLIF(o.total_amount,0), NULLIF(o.sub_total,0), 0)),0)
+       FROM orders o WHERE o.created_by=@uid AND o.deleted_at IS NULL AND CAST(COALESCE(o.order_date,o.created_at) AS date)=@d) AS total_order_value,
     (SELECT COUNT(*) FROM customers c WHERE c.customertype=3 AND c.deleted_at IS NULL
         AND (c.created_by=@uid OR c.executive_id=@uid
              OR EXISTS (SELECT 1 FROM employee_details ed WHERE ed.customer_id=c.id AND ed.user_id=@uid AND ed.deleted_at IS NULL AND (ed.active='Y' OR ed.active IS NULL)))) AS total_influencer_registered
@@ -212,7 +214,7 @@ FROM (
             Str(main, "first_checkin_time"), Str(main, "last_checkout_time"),
             Int(main, "total_visit"), Int(main, "total_order"), Int(ret, "r30"), Int(ret, "r60"), Int(ret, "r90"),
             Int(ret, "registered"), Int(ret, "order_active"),
-            Int(ret, "order_inactive"), Int(main, "total_influencer_registered"));
+            Int(ret, "order_inactive"), Int(main, "total_influencer_registered"), Dec(main, "total_order_value"));
     }
 
     private static object ToResponse(CallingDetail d) => new
@@ -225,7 +227,8 @@ FROM (
         r30_count = d.R30, r60_count = d.R60, r90_count = d.R90, total_retailer_registered = d.TotalRetailerRegistered,
         total_retailer_order_active = d.TotalRetailerOrderActive,
         total_retailer_order_inactive = d.TotalRetailerOrderInactive,
-        total_influencer_registered = d.TotalInfluencerRegistered
+        total_influencer_registered = d.TotalInfluencerRegistered,
+        total_order_value = d.TotalOrderValue
     };
 
     private sealed record CallingDetail(
@@ -233,7 +236,7 @@ FROM (
         string HeadQuarters, string DateOfJoining, string PunchinTime, string PunchoutTime, string TotalWorkingTime,
         string WorkingType, string FirstCheckinTime, string LastCheckoutTime, long TotalVisit, long TotalOrder,
         long R30, long R60, long R90, long TotalRetailerRegistered, long TotalRetailerOrderActive,
-        long TotalRetailerOrderInactive, long TotalInfluencerRegistered);
+        long TotalRetailerOrderInactive, long TotalInfluencerRegistered, decimal TotalOrderValue);
 
     public sealed class CallingReportRequest
     {
@@ -289,6 +292,11 @@ FROM (
         row is not null && row.TryGetValue(key, out var v) && v is not null and not DBNull
             ? Convert.ToInt64(v, CultureInfo.InvariantCulture)
             : 0;
+
+    private static decimal Dec(IReadOnlyDictionary<string, object?>? row, string key) =>
+        row is not null && row.TryGetValue(key, out var v) && v is not null and not DBNull
+            ? Convert.ToDecimal(v, CultureInfo.InvariantCulture)
+            : 0m;
 
     private async Task<IReadOnlyList<Dictionary<string, object?>>> QueryRows(string sql, CancellationToken cancellationToken, params (string Name, object? Value)[] parameters)
     {
